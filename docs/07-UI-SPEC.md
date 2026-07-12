@@ -454,7 +454,10 @@ as the dockable **Preview panel**.
   every frame live, continuously choosing the resolution tier that sustains the comp frame
   rate instead of waiting on cache — the "just play it now" mode for heavy comps. The
   active tier shows in the Viewer's degradation indicator
-  ([06-RENDER-PIPELINE.md](06-RENDER-PIPELINE.md) §6.5).
+  ([06-RENDER-PIPELINE.md](06-RENDER-PIPELINE.md) §6.5). This toggle lives here and in
+  Settings → Preview, deliberately **not** in the Viewer bar's resolution dropdown: picking
+  a resolution and picking a mode are different decisions, and the resolution picker stays
+  the default way to work through a project.
 
 ---
 

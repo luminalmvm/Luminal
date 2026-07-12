@@ -400,7 +400,13 @@ the work is kept. First (possibly degraded) frame within the scrub budget
 
 ### 6.5 Preview modes (K-030)
 
-Playback runs in one of two user-selected modes (toggle in the transport, per comp):
+Two independent controls, never merged: the **preview resolution picker** (§6.1 —
+Full/Half/Third/Quarter/Auto, in the Viewer bar, the default way to move through a
+project) and the **preview mode toggle** (Cached/Realtime, in the transport and Settings →
+Preview). Realtime is NOT an entry in the resolution dropdown; when the mode is Cached,
+the picked resolution is always honoured (§6.2's interaction-only degradation aside).
+
+Playback runs in one of two user-selected modes (per comp):
 
 - **Cached** (default): as above — full chosen quality, render-ahead ring plus the three-tier
   cache; if the ring underruns, the degradation ladder engages, and background cache fill

@@ -111,6 +111,14 @@ The main process runs a thin proxy node in the evaluation graph.
   host owns all parameters.
 - Plugins advertising thread-unsafe render serialise on their own server process without
   stalling the rest of the graph.
+- **Multi-frame scheduling (K-066)**: OFX plugins cannot be forced to be
+  frame-parallel, so the host schedules from each plugin's declared
+  `kOfxImageEffectPluginRenderThreadSafety`: *fully safe* → frames render in parallel
+  across pooled instances (same adaptive-concurrency policy as KFX §3.4); *instance safe*
+  → parallel across instances, serialised within one; *unsafe* → bundle-serialised. Depth:
+  the host offers fp32 (all major OFX plugins accept it) and converts fp16 comps at the
+  boundary — the depth guarantee of K-066 is delivered by the host here, by the plugin in
+  KFX.
 
 ### 2.4 GPU rendering
 
@@ -190,9 +198,12 @@ values are the only truth. This is the one OFX idea kept whole, minus the string
 
 ### 3.3 Frame I/O contract
 
-- Frames are **scene-linear, premultiplied alpha, fp16 RGBA** — the working space, no
-  boundary conversion ([06-RENDER-PIPELINE.md](06-RENDER-PIPELINE.md)). An fp32 negotiation
-  exists for comps opted into fp32 (K-026).
+- Frames are **scene-linear, premultiplied alpha, RGBA float** — the working space, no
+  colour conversion at the boundary ([06-RENDER-PIPELINE.md](06-RENDER-PIPELINE.md)).
+- **Every colour depth is mandatory (K-066)**: a KFX plugin MUST process both fp16 and
+  fp32 frames correctly — the host sends whichever the comp is set to (K-026) and never
+  converts to accommodate a plugin. A plugin MAY declare a preferred depth as a
+  performance hint only. The validator (§3.6) runs the conformance suite at both depths.
 - **ROI-aware**: a process request carries the output ROI and DoD; the plugin declared its
   ROI-expansion function at describe time, and receives exactly the input region it asked
   for. Full-frame is the degenerate case, not the assumption.
@@ -214,6 +225,18 @@ Stated precisely, in the header comments, per function — the CLAP lesson:
 - `describe` and instance lifecycle run on a single host-designated control thread.
 - Every callback in every extension is annotated with its allowed calling context; the
   validator (§3.6) enforces the annotations at test time.
+
+**Multi-frame rendering is mandatory (K-066).** The two rules above make it so: because
+the host may run many instances concurrently, it renders **different frames in parallel by
+default** through a host-owned instance pool (one instance per in-flight frame, parameters
+applied per evaluation snapshot). Plugins therefore MUST NOT assume frames arrive in order,
+one at a time, or on one thread. `kfx.thread-unsafe` is the sole, discouraged opt-out and
+serialises the bundle. **Scheduling is entirely the host's decision**: how many instances,
+which frames, and in what order is chosen by the host from the plugin's declared traits
+(cost class, temporal window, ROI honesty) and its *measured* per-frame cost and memory
+ledger — the same adaptive-concurrency approach as the engine's own nodes
+(instances scale up while throughput rises and VRAM/RAM budgets hold, back off under
+governor pressure). Plugins get no say at render time; they declare, the host optimises.
 
 ### 3.5 Sandbox and transport
 

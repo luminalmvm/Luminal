@@ -128,7 +128,10 @@ effect ships a CPU reference implementation, which doubles as its test oracle.
 plays at full chosen quality from the render-ahead ring and cache. Realtime never waits:
 every frame renders live at whatever resolution tier sustains the comp frame rate, adjusted
 continuously with hysteresis — judge motion now at reduced resolution rather than full
-quality after a wait. Added 2026-07-12 at Mack's request. Spec:
+quality after a wait. Clarified same day: the mode toggle is a **separate control** from
+the Viewer bar's resolution picker (Full/Half/Third/Quarter/Auto) — it lives in the
+transport and Settings → Preview, never in the resolution dropdown, and Cached always
+honours the picked resolution. Added 2026-07-12 at Mack's request. Spec:
 [06-RENDER-PIPELINE.md](06-RENDER-PIPELINE.md) §6.5.
 
 ## Persistence
@@ -179,3 +182,13 @@ core genre look. Spec: [08-EFFECTS.md](08-EFFECTS.md).
 **K-065 · PROPOSED · Preset and project sharing is a first-class feature** (import/export of
 presets and template projects), because shared project files and CC packs are how the montage
 scene onboards. Nothing in the file format may make shared projects machine-specific.
+
+**K-066 · DECIDED · Every plugin supports every colour depth and multi-frame rendering.**
+KFX plugins MUST process fp16 and fp32 correctly (validator-enforced at both depths) and
+MUST tolerate frames rendering in parallel, out of order, on any thread — the host renders
+frame-parallel by default through instance pooling, and `kfx.thread-unsafe` is the sole,
+discouraged opt-out. **The host owns the optimisation strategy**: instance counts and frame
+scheduling are decided from declared traits plus measured cost under the governor's
+budgets, exactly as for built-in nodes. OFX plugins are scheduled per their declared
+render-thread-safety, with the host converting depth at the boundary. Added 2026-07-12 at
+Mack's request. Spec: [12-PLUGINS.md](12-PLUGINS.md) §2.3, §3.3–3.4.
