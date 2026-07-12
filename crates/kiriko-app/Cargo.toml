@@ -1,0 +1,17 @@
+[package]
+name = "kiriko-app"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-only"
+
+[[bin]]
+name = "kiriko"
+path = "src/main.rs"
+
+[dependencies]
+kiriko-ui = { path = "../kiriko-ui" }
+eframe = { version = "0.31", features = ["persistence", "wgpu"] }
+egui = "0.31"
+
+[lints]
+workspace = true

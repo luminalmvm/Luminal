@@ -1,0 +1,13 @@
+[package]
+name = "kiriko-ui"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-only"
+
+[dependencies]
+egui = "0.31"
+egui_dock = { version = "0.16", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
+
+[lints]
+workspace = true
