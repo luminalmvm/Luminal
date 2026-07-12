@@ -76,30 +76,30 @@ impl Theme {
 
         visuals.widgets.noninteractive.bg_fill = self.surface_1;
         visuals.widgets.noninteractive.weak_bg_fill = self.surface_1;
-        visuals.widgets.noninteractive.bg_stroke = Stroke::new(1.0, self.hairline);
-        visuals.widgets.noninteractive.fg_stroke = Stroke::new(1.0, self.text_secondary);
+        visuals.widgets.noninteractive.bg_stroke = Stroke::new(1.0_f32, self.hairline);
+        visuals.widgets.noninteractive.fg_stroke = Stroke::new(1.0_f32, self.text_secondary);
 
         visuals.widgets.inactive.bg_fill = self.surface_2;
         visuals.widgets.inactive.weak_bg_fill = self.surface_2;
-        visuals.widgets.inactive.bg_stroke = Stroke::new(1.0, self.hairline);
-        visuals.widgets.inactive.fg_stroke = Stroke::new(1.0, self.text_secondary);
+        visuals.widgets.inactive.bg_stroke = Stroke::new(1.0_f32, self.hairline);
+        visuals.widgets.inactive.fg_stroke = Stroke::new(1.0_f32, self.text_secondary);
 
         visuals.widgets.hovered.bg_fill = self.surface_3;
         visuals.widgets.hovered.weak_bg_fill = self.surface_3;
-        visuals.widgets.hovered.bg_stroke = Stroke::new(1.0, self.hairline_strong);
-        visuals.widgets.hovered.fg_stroke = Stroke::new(1.0, self.text_primary);
+        visuals.widgets.hovered.bg_stroke = Stroke::new(1.0_f32, self.hairline_strong);
+        visuals.widgets.hovered.fg_stroke = Stroke::new(1.0_f32, self.text_primary);
 
         visuals.widgets.active.bg_fill = self.surface_4;
         visuals.widgets.active.weak_bg_fill = self.surface_4;
-        visuals.widgets.active.bg_stroke = Stroke::new(1.0, self.accent);
-        visuals.widgets.active.fg_stroke = Stroke::new(1.0, self.text_primary);
+        visuals.widgets.active.bg_stroke = Stroke::new(1.0_f32, self.accent);
+        visuals.widgets.active.fg_stroke = Stroke::new(1.0_f32, self.text_primary);
 
         visuals.widgets.open.bg_fill = self.surface_3;
-        visuals.widgets.open.bg_stroke = Stroke::new(1.0, self.hairline_strong);
-        visuals.widgets.open.fg_stroke = Stroke::new(1.0, self.text_primary);
+        visuals.widgets.open.bg_stroke = Stroke::new(1.0_f32, self.hairline_strong);
+        visuals.widgets.open.fg_stroke = Stroke::new(1.0_f32, self.text_primary);
 
         visuals.selection.bg_fill = self.accent.gamma_multiply(0.35);
-        visuals.selection.stroke = Stroke::new(1.0, self.accent);
+        visuals.selection.stroke = Stroke::new(1.0_f32, self.accent);
         visuals.hyperlink_color = self.accent;
         visuals.warn_fg_color = self.warning;
         visuals.error_fg_color = self.error;

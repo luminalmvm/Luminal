@@ -103,7 +103,7 @@ fn viewer_panel(ui: &mut egui::Ui, theme: &Theme, app: &mut AppState) {
                 }
                 egui::Frame::group(ui.style())
                     .fill(theme.surface_1)
-                    .stroke(egui::Stroke::new(1.0, theme.hairline_strong))
+                    .stroke(egui::Stroke::new(1.0_f32, theme.hairline_strong))
                     .corner_radius(egui::CornerRadius::same(8))
                     .inner_margin(egui::Margin::symmetric(28, 20))
                     .show(ui, |ui| {
@@ -152,7 +152,7 @@ fn viewer_panel(ui: &mut egui::Ui, theme: &Theme, app: &mut AppState) {
     ui.scope_builder(egui::UiBuilder::new().max_rect(bar), |ui| {
         egui::Frame::new()
             .fill(theme.surface_1)
-            .stroke(egui::Stroke::new(1.0, theme.hairline))
+            .stroke(egui::Stroke::new(1.0_f32, theme.hairline))
             .inner_margin(egui::Margin::symmetric(8, 3))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
