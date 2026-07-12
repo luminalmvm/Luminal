@@ -135,7 +135,7 @@ pub fn show(ctx: &egui::Context, theme: &Theme, splash: &Splash) -> bool {
             ui.painter().text(
                 egui::pos2(full.center().x, full.top() + 156.0),
                 egui::Align2::CENTER_CENTER,
-                format!("{}", env!("CARGO_PKG_VERSION")),
+                env!("CARGO_PKG_VERSION"),
                 egui::FontId::monospace(10.0),
                 theme.text_disabled,
             );
