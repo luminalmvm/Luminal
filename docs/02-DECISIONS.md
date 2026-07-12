@@ -58,6 +58,13 @@ fix ships with a regression test, CI enforces fmt/clippy/tests on macOS + Window
 engine-crate coverage gate whose threshold may rise but never fall, and a design-token
 lint. Added 2026-07-13 at Mack's request. Spec: [14-ENGINEERING-RULES.md](14-ENGINEERING-RULES.md).
 
+**K-008 · DECIDED · Brand mark and boot splash.** The mark is an Edo-kiriko faceted glass
+hexagon whose clay facets form a K (assets/brand/; construction and colour constants in
+[15-DESIGN.md](15-DESIGN.md) §brand). Boot shows a small centred splash listing each module
+and effect as it initialises (the boot log — real registry plumbing that grows with the
+effect suite and OFX scanning), minimum ~1 s dwell, failure lines in kraft. Added
+2026-07-13 at Mack's request.
+
 **K-020 · DECIDED · Layer-based model with a Sequence layer type.** Ordinary layers stay 1:1
 with a source, as in AE. A dedicated **Sequence layer** holds clips cut back-to-back on one
 row — the Vegas-style surface. This was chosen over (a) making every layer multi-clip and

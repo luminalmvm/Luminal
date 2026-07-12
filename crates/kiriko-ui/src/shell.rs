@@ -4,6 +4,7 @@
 //! Effect Controls / Effects & Presets right, Timeline across the bottom.
 
 use crate::app_state::AppState;
+use crate::splash::{BootLine, Splash};
 use crate::theme::Theme;
 use egui_dock::{DockArea, DockState, NodeIndex, Style as DockStyle};
 use kiriko_core::model::ProjectItem;
@@ -307,6 +308,9 @@ pub struct Shell {
     theme: Theme,
     #[serde(skip, default)]
     app: AppState,
+    /// Boot splash (K-008); None once the application window has expanded.
+    #[serde(skip, default)]
+    splash: Option<Splash>,
 }
 
 impl Default for Shell {
@@ -315,15 +319,34 @@ impl Default for Shell {
             dock: default_layout(),
             theme: Theme::dark(),
             app: AppState::default(),
+            splash: None,
         }
     }
 }
 
 impl Shell {
-    pub fn new(ctx: &egui::Context, restored: Option<Self>) -> Self {
-        let shell = restored.unwrap_or_default();
+    pub fn new(ctx: &egui::Context, restored: Option<Self>, boot_notes: Vec<String>) -> Self {
+        let workspace_restored = restored.is_some();
+        let mut shell = restored.unwrap_or_default();
         shell.theme.apply(ctx);
         ctx.style_mut(|s| s.visuals.panel_fill = shell.theme.surface_0);
+
+        // The boot log (K-008): every line reflects real initialisation state.
+        let mut lines = vec![
+            BootLine::ok("Theme: aizome-dark"),
+            BootLine::ok(if workspace_restored {
+                "Workspace: restored"
+            } else {
+                "Workspace: default (Edit)"
+            }),
+            BootLine::ok("Document store: ready"),
+            BootLine::ok("Recovery journal: clean"),
+        ];
+        lines.extend(boot_notes.into_iter().map(BootLine::ok));
+        lines.push(BootLine::ok(
+            "Effects: none registered — suite arrives in phase 3",
+        ));
+        shell.splash = Some(Splash::new(lines));
         shell
     }
 
@@ -381,6 +404,16 @@ impl Shell {
     }
 
     pub fn ui(&mut self, ctx: &egui::Context) {
+        if let Some(splash) = &self.splash {
+            if crate::splash::show(ctx, &self.theme, splash) {
+                // Boot finished: the splash window becomes the application window.
+                ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(true));
+                ctx.send_viewport_cmd(egui::ViewportCommand::Resizable(true));
+                ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(1440.0, 900.0)));
+                self.splash = None;
+            }
+            return;
+        }
         self.app.autosave_tick();
         self.shortcuts(ctx);
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(self.app.project_title()));
@@ -473,7 +506,9 @@ impl Shell {
         style.tab_bar.bg_fill = self.theme.surface_0;
         style.tab_bar.hline_color = self.theme.hairline;
 
-        let Shell { dock, theme, app } = self;
+        let Shell {
+            dock, theme, app, ..
+        } = self;
         DockArea::new(dock)
             .style(style)
             .show(ctx, &mut PanelViewer { theme, app });

@@ -15,8 +15,16 @@ impl KirikoApp {
         let restored = cc
             .storage
             .and_then(|s| eframe::get_value::<Shell>(s, STORAGE_KEY));
+        // Real GPU information for the boot log (K-008).
+        let boot_notes = match cc.wgpu_render_state.as_ref() {
+            Some(rs) => {
+                let info = rs.adapter.get_info();
+                vec![format!("GPU: {} via {:?}", info.name, info.backend)]
+            }
+            None => vec!["GPU: unavailable — software rendering".to_owned()],
+        };
         Self {
-            shell: Shell::new(&cc.egui_ctx, restored),
+            shell: Shell::new(&cc.egui_ctx, restored, boot_notes),
         }
     }
 }
@@ -32,11 +40,17 @@ impl eframe::App for KirikoApp {
 }
 
 fn main() -> eframe::Result<()> {
+    // Boot begins as the splash card (K-008): small, frameless, centred; the
+    // same window expands into the application when the boot log completes.
     let options = eframe::NativeOptions {
+        centered: true,
+        persist_window: false,
         viewport: egui::ViewportBuilder::default()
             .with_title("Kiriko")
-            .with_inner_size([1440.0, 900.0])
-            .with_min_inner_size([960.0, 600.0])
+            .with_inner_size([460.0, 300.0])
+            .with_min_inner_size([460.0, 300.0])
+            .with_decorations(false)
+            .with_resizable(false)
             .with_app_id("kiriko"),
         ..Default::default()
     };

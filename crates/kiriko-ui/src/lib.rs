@@ -3,6 +3,7 @@
 
 pub mod app_state;
 pub mod shell;
+pub mod splash;
 pub mod theme;
 
 pub use shell::Shell;

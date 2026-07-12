@@ -473,6 +473,38 @@ The Kiriko equivalent of the household §9 checklist. Every new panel or feature
 10. Works at the dense end: test at minimum row height, minimum panel width, and 125%/150%
     Windows display scaling.
 
+## Brand: the mark and the splash (K-008)
+
+**The mark.** An Edo-kiriko faceted glass form — a point-up hexagon with hairline facet
+spokes and an inner facet ring — with three facets cut in clay that read as a K. The
+namesake made visible: cut glass is cuts, precision, and light. Files:
+`assets/brand/kiriko-mark.svg` (transparent) and `kiriko-icon.svg` (dark rounded tile —
+the app icon; with the mark's own colours these are the only permitted hex values outside
+the theme module: facet hairlines `#3d4042`, outline `#5c6165`, clay `#e05a72`, mist fill
+`#22262a→#141618`). The wordmark is the word "Kiriko" set in Schibsted Grotesk beside or
+beneath the mark; no custom lettering. The mark MUST also be paintable from theme tokens
+in code (it is pure strokes, no raster assets) so the splash and about box never ship
+image files.
+
+**The splash.** A small frameless window, centred on the monitor (~460×300), surface_0,
+shown while the application boots:
+
+- Contents: the mark (≈96 px), the wordmark, version in 10 px mono, and the **boot log** —
+  a JetBrains Mono list that shows each module and effect as it initialises ("Workspace:
+  restored", "GPU: <adapter> via <backend>", "Effects: 24 built-in", "OFX: scanning
+  <vendor>…"). This is real plumbing, not theatre: modules and the effect/OFX registries
+  append to the boot log as they come up, so slow items (plugin scans, font loads) are
+  visible and attributable, AE-splash style.
+- A 2 px clay progress hairline along the card's bottom edge; total minimum dwell ≈ 1 s so
+  the log is readable, no maximum (the splash stays until boot genuinely finishes).
+- Calm rules apply: no animation beyond the log lines appearing and the hairline's
+  progress, nothing pulses, reduced-motion shows the same thing (lines appear without
+  fades). When boot completes the same window gains decorations and expands into the
+  application window.
+- Failure honesty: a module that fails to initialise shows its line in kraft with a short
+  reason, and the splash proceeds — the app opens degraded rather than hanging on a
+  spinner (K-018's spirit at boot time).
+
 ## Open questions
 
 - **Promote KD-2 to the decision log?** The hit-target compensation deserves a numbered entry
