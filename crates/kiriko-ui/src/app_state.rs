@@ -123,13 +123,12 @@ pub mod preview {
                     }
                     let result = match req {
                         Message::Footage(r) => {
-                            decode(&mut decoders, &r).map(PreviewResult::Footage)
+                            decode(&mut decoders, &mut frame_cache, &r).map(PreviewResult::Footage)
                         }
                         Message::Comp {
                             comp, frame, jobs, ..
-                        } => {
-                            decode_comp(&mut decoders, comp, frame, &jobs).map(PreviewResult::Comp)
-                        }
+                        } => decode_comp(&mut decoders, &mut frame_cache, comp, frame, &jobs)
+                            .map(PreviewResult::Comp),
                     };
                     let _ = result_tx.send(result);
                 }
