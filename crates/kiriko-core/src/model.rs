@@ -84,8 +84,15 @@ pub struct TransformGroup {
     /// Percent, 100 = natural size.
     pub scale_x: Property,
     pub scale_y: Property,
-    /// Degrees.
+    /// Degrees (z rotation — the 2D rotation).
     pub rotation: Property,
+    /// 2.5D additions (K-023; serde-defaulted so pre-3D projects load).
+    #[serde(default = "Property::zero")]
+    pub position_z: Property,
+    #[serde(default = "Property::zero")]
+    pub rotation_x: Property,
+    #[serde(default = "Property::zero")]
+    pub rotation_y: Property,
     /// Percent, 0..100.
     pub opacity: Property,
     #[serde(flatten, default, skip_serializing_if = "serde_json::Map::is_empty")]
@@ -102,6 +109,9 @@ impl Default for TransformGroup {
             scale_x: Property::fixed(100.0),
             scale_y: Property::fixed(100.0),
             rotation: Property::fixed(0.0),
+            position_z: Property::fixed(0.0),
+            rotation_x: Property::fixed(0.0),
+            rotation_y: Property::fixed(0.0),
             opacity: Property::fixed(100.0),
             extra: serde_json::Map::new(),
         }
@@ -115,9 +125,12 @@ pub enum TransformProp {
     AnchorY,
     PositionX,
     PositionY,
+    PositionZ,
     ScaleX,
     ScaleY,
     Rotation,
+    RotationX,
+    RotationY,
     Opacity,
 }
 
@@ -131,6 +144,9 @@ impl TransformGroup {
             TransformProp::ScaleX => &self.scale_x,
             TransformProp::ScaleY => &self.scale_y,
             TransformProp::Rotation => &self.rotation,
+            TransformProp::PositionZ => &self.position_z,
+            TransformProp::RotationX => &self.rotation_x,
+            TransformProp::RotationY => &self.rotation_y,
             TransformProp::Opacity => &self.opacity,
         }
     }
@@ -144,6 +160,9 @@ impl TransformGroup {
             TransformProp::ScaleX => &mut self.scale_x,
             TransformProp::ScaleY => &mut self.scale_y,
             TransformProp::Rotation => &mut self.rotation,
+            TransformProp::PositionZ => &mut self.position_z,
+            TransformProp::RotationX => &mut self.rotation_x,
+            TransformProp::RotationY => &mut self.rotation_y,
             TransformProp::Opacity => &mut self.opacity,
         }
     }
@@ -169,6 +188,9 @@ pub struct Switches {
     pub visible: bool,
     pub audible: bool,
     pub locked: bool,
+    /// 2.5D: this layer positions in z and honours the active camera.
+    #[serde(default)]
+    pub three_d: bool,
 }
 
 impl Default for Switches {
@@ -177,6 +199,7 @@ impl Default for Switches {
             visible: true,
             audible: true,
             locked: false,
+            three_d: false,
         }
     }
 }
@@ -200,6 +223,55 @@ pub enum LayerKind {
     Text {
         document: TextDocument,
     },
+    /// A 3D viewpoint (docs/01-GLOSSARY.md: Camera layer). Only affects
+    /// layers with the 3D switch; the topmost visible camera is active.
+    /// `zoom` is the AE model: focal distance in comp pixels — the z=0
+    /// plane maps 1:1.
+    Camera {
+        zoom: Property,
+    },
+}
+
+/// The active camera's evaluated placement at one comp time — what both the
+/// preview and the export pipeline hand to the GPU camera matrix, so the two
+/// can never disagree (K-031).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CameraPose {
+    /// Focal distance in comp pixels (the z=0 plane maps 1:1).
+    pub zoom: f64,
+    pub position: (f64, f64, f64),
+    /// (x, y, z) rotation in degrees.
+    pub rotation_deg: (f64, f64, f64),
+}
+
+impl Composition {
+    /// The topmost visible Camera layer whose span contains `t`, evaluated at
+    /// its layer time. None → the comp renders flat (3D switches ignored).
+    pub fn camera_pose(&self, t: f64) -> Option<CameraPose> {
+        self.layers.iter().find_map(|l| {
+            let LayerKind::Camera { zoom } = &l.kind else {
+                return None;
+            };
+            if !l.switches.visible || t < l.in_point.0.to_f64() || t >= l.out_point.0.to_f64() {
+                return None;
+            }
+            let lt = t - l.start_offset.0.to_f64();
+            let tr = &l.transform;
+            Some(CameraPose {
+                zoom: zoom.value_at(lt),
+                position: (
+                    tr.position_x.value_at(lt),
+                    tr.position_y.value_at(lt),
+                    tr.position_z.value_at(lt),
+                ),
+                rotation_deg: (
+                    tr.rotation_x.value_at(lt),
+                    tr.rotation_y.value_at(lt),
+                    tr.rotation.value_at(lt),
+                ),
+            })
+        })
+    }
 }
 
 /// v1 text: single run. Styled runs, fonts and animators follow the doc.
@@ -335,5 +407,78 @@ impl Document {
 impl Default for Document {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod tests {
+    use super::*;
+    use crate::time::{CompTime, Rational};
+
+    fn secs(s: i64) -> CompTime {
+        CompTime(Rational::new(s, 1).unwrap())
+    }
+
+    fn comp_with_cameras() -> Composition {
+        let mut comp = Composition {
+            id: Uuid::now_v7(),
+            name: "cam test".into(),
+            width: 1920,
+            height: 1080,
+            frame_rate: FrameRate::new(60, 1).unwrap(),
+            duration: Duration(Rational::new(10, 1).unwrap()),
+            background: LinearColour([0.0, 0.0, 0.0, 1.0]),
+            work_area: None,
+            layers: Vec::new(),
+            extra: serde_json::Map::new(),
+        };
+        let cam = |name: &str, zoom: f64, z_pos: f64, visible: bool, in_s: i64, out_s: i64| Layer {
+            id: Uuid::now_v7(),
+            name: name.into(),
+            kind: LayerKind::Camera {
+                zoom: Property::fixed(zoom),
+            },
+            in_point: secs(in_s),
+            out_point: secs(out_s),
+            start_offset: secs(0),
+            transform: TransformGroup {
+                position_z: Property::fixed(z_pos),
+                ..TransformGroup::default()
+            },
+            matte: None,
+            blend: BlendMode::Normal,
+            masks: Vec::new(),
+            switches: Switches {
+                visible,
+                ..Switches::default()
+            },
+            extra: serde_json::Map::new(),
+        };
+        comp.layers.push(cam("hidden", 500.0, -10.0, false, 0, 10));
+        comp.layers.push(cam("short", 800.0, -20.0, true, 2, 4));
+        comp.layers.push(cam("main", 1200.0, -30.0, true, 0, 10));
+        comp
+    }
+
+    /// The topmost visible in-span camera wins; hidden and out-of-span ones
+    /// never do; no camera at all → None (flat comp).
+    #[test]
+    fn camera_pose_picks_topmost_visible_in_span() {
+        let comp = comp_with_cameras();
+        // t=1: "hidden" is invisible, "short" not yet in span → "main".
+        let pose = comp.camera_pose(1.0).unwrap();
+        assert_eq!(pose.zoom, 1200.0);
+        assert_eq!(pose.position.2, -30.0);
+        // t=3: "short" is topmost visible in-span.
+        let pose = comp.camera_pose(3.0).unwrap();
+        assert_eq!(pose.zoom, 800.0);
+        assert_eq!(pose.position.2, -20.0);
+        // Out point is exclusive.
+        assert_eq!(comp.camera_pose(4.0).unwrap().zoom, 1200.0);
+        // No cameras → flat.
+        let mut flat = comp_with_cameras();
+        flat.layers.clear();
+        assert!(flat.camera_pose(1.0).is_none());
     }
 }

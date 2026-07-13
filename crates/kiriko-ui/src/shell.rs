@@ -629,6 +629,20 @@ fn timeline_panel(ui: &mut egui::Ui, theme: &Theme, app: &mut AppState) {
                             }
                         }
                     });
+                ui.separator();
+                if ui
+                    .selectable_label(layer.switches.three_d, egui::RichText::new("3D").small())
+                    .on_hover_text(
+                        "Place this layer in z-space (needs a Camera layer to show depth)",
+                    )
+                    .clicked()
+                {
+                    pending = Some(kiriko_core::Op::SetLayerThreeD {
+                        comp: comp_id,
+                        layer: layer.id,
+                        three_d: !layer.switches.three_d,
+                    });
+                }
             });
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new("Masks").small().color(theme.text_muted));
@@ -717,6 +731,46 @@ fn timeline_panel(ui: &mut egui::Ui, theme: &Theme, app: &mut AppState) {
                 });
             });
         }
+        if let kiriko_core::model::LayerKind::Camera { zoom } = &layer.kind {
+            ui.indent(("camera", layer.id), |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new("Zoom px")
+                            .small()
+                            .color(theme.text_muted),
+                    );
+                    let fps = comp.frame_rate.fps().max(1.0);
+                    let lt = app.preview_frame as f64 / fps - layer.start_offset.0.to_f64();
+                    let committed = zoom.value_at(lt);
+                    let id = egui::Id::new(("zoom_edit", layer.id));
+                    let mut value = ui.data(|d| d.get_temp::<f64>(id)).unwrap_or(committed);
+                    let resp = ui.add(
+                        egui::DragValue::new(&mut value)
+                            .speed(4.0)
+                            .range(1.0..=100_000.0)
+                            .max_decimals(1),
+                    );
+                    if resp.dragged() || resp.has_focus() {
+                        ui.data_mut(|d| d.insert_temp(id, value));
+                    }
+                    if resp.drag_stopped() || resp.lost_focus() {
+                        if (value - committed).abs() > f64::EPSILON {
+                            let animation = if zoom.is_animated() {
+                                Animation::Keyframed(upsert_key(zoom, lt, value))
+                            } else {
+                                Animation::Static(value)
+                            };
+                            pending = Some(kiriko_core::Op::SetCameraZoom {
+                                comp: comp_id,
+                                layer: layer.id,
+                                animation,
+                            });
+                        }
+                        ui.data_mut(|d| d.remove::<f64>(id));
+                    }
+                });
+            });
+        }
         ui.indent(("transform", layer.id), |ui| {
             ui.collapsing(
                 egui::RichText::new("Transform")
@@ -727,7 +781,7 @@ fn timeline_panel(ui: &mut egui::Ui, theme: &Theme, app: &mut AppState) {
                         .num_columns(2)
                         .spacing(egui::vec2(12.0, 2.0))
                         .show(ui, |ui| {
-                            let rows: [(&str, TransformProp, f64); 6] = [
+                            let mut rows: Vec<(&str, TransformProp, f64)> = vec![
                                 ("Position x", TransformProp::PositionX, 1.0),
                                 ("Position y", TransformProp::PositionY, 1.0),
                                 ("Scale x %", TransformProp::ScaleX, 0.5),
@@ -735,6 +789,15 @@ fn timeline_panel(ui: &mut egui::Ui, theme: &Theme, app: &mut AppState) {
                                 ("Rotation °", TransformProp::Rotation, 0.5),
                                 ("Opacity %", TransformProp::Opacity, 0.5),
                             ];
+                            let is_camera =
+                                matches!(layer.kind, kiriko_core::model::LayerKind::Camera { .. });
+                            if layer.switches.three_d || is_camera {
+                                rows.extend([
+                                    ("Position z", TransformProp::PositionZ, 1.0),
+                                    ("Rotation x °", TransformProp::RotationX, 0.5),
+                                    ("Rotation y °", TransformProp::RotationY, 0.5),
+                                ]);
+                            }
                             // Layer time at the playhead: where keyframes land
                             // (AE behaviour: editing an animated value writes a
                             // key at the current time).
@@ -1367,6 +1430,7 @@ fn build_comp_draws(
                 (r.rgba, r.width, r.height, (r.width as f32, r.height as f32))
             }),
             LayerKind::Precomp { .. } => None, // handled as Nested below
+            LayerKind::Camera { .. } => None,  // shapes the view, draws nothing
         };
         raw.map(|(mut rgba, w, h, natural)| {
             kiriko_core::mask::apply_masks(
@@ -1412,6 +1476,7 @@ fn build_comp_draws(
                             f64::from(nbg[3]),
                         ],
                         draws: nested_draws,
+                        camera: nested.camera_pose(lt),
                     },
                     (nested.width as f32, nested.height as f32),
                 )
@@ -1455,6 +1520,10 @@ fn build_comp_draws(
                 ),
                 rotation_deg: mtr.rotation.value_at(mlt) as f32,
                 opacity: mtr.opacity.value_at(mlt) as f32,
+                z: mtr.position_z.value_at(mlt) as f32,
+                rotation_x_deg: mtr.rotation_x.value_at(mlt) as f32,
+                rotation_y_deg: mtr.rotation_y.value_at(mlt) as f32,
+                three_d: src.switches.three_d,
                 luma: matches!(mr.channel, kiriko_core::model::MatteChannel::Luma),
                 inverted: mr.inverted,
             })
@@ -1477,6 +1546,10 @@ fn build_comp_draws(
             ),
             rotation_deg: tr.rotation.value_at(lt) as f32,
             opacity: tr.opacity.value_at(lt) as f32,
+            z: tr.position_z.value_at(lt) as f32,
+            rotation_x_deg: tr.rotation_x.value_at(lt) as f32,
+            rotation_y_deg: tr.rotation_y.value_at(lt) as f32,
+            three_d: layer.switches.three_d,
             matte,
             blend: blend_of(layer.blend),
         });
@@ -1493,6 +1566,7 @@ fn mask_space(
     match &layer.kind {
         kiriko_core::model::LayerKind::Solid { .. }
         | kiriko_core::model::LayerKind::Precomp { .. }
+        | kiriko_core::model::LayerKind::Camera { .. }
         | kiriko_core::model::LayerKind::Text { .. } => {
             (f64::from(comp.width), f64::from(comp.height))
         }
@@ -1601,6 +1675,10 @@ pub struct MatteDraw {
     pub scale: (f32, f32),
     pub rotation_deg: f32,
     pub opacity: f32,
+    pub z: f32,
+    pub rotation_x_deg: f32,
+    pub rotation_y_deg: f32,
+    pub three_d: bool,
     pub luma: bool,
     pub inverted: bool,
 }
@@ -1619,6 +1697,8 @@ pub enum DrawSource {
         height: u32,
         background: [f64; 4],
         draws: Vec<CompLayerDraw>,
+        /// The nested comp's own active camera at this time.
+        camera: Option<kiriko_core::model::CameraPose>,
     },
 }
 
@@ -1633,6 +1713,10 @@ pub struct CompLayerDraw {
     pub scale: (f32, f32),
     pub rotation_deg: f32,
     pub opacity: f32,
+    pub z: f32,
+    pub rotation_x_deg: f32,
+    pub rotation_y_deg: f32,
+    pub three_d: bool,
     pub matte: Option<MatteDraw>,
     pub blend: kiriko_gpu::Blend,
 }
@@ -1678,6 +1762,7 @@ impl GpuViewer {
     /// Realise a draw list into a linear comp texture (recursive for Nested).
     fn realise(
         &self,
+        camera: Option<kiriko_core::model::CameraPose>,
         width: u32,
         height: u32,
         background: [f64; 4],
@@ -1695,9 +1780,11 @@ impl GpuViewer {
                     height,
                     background,
                     draws,
-                } => self.realise(*width, *height, *background, draws),
+                    camera,
+                } => self.realise(*camera, *width, *height, *background, draws),
             })
             .collect();
+        let cam_mat = camera.map(|pose| crate::export::camera_mat(width, height, pose));
         // Matte layers render alone into comp space (one texture per consumer;
         // the shared-matte cache optimisation arrives with the evaluator).
         let matte_textures: Vec<Option<egui_wgpu::wgpu::Texture>> = layers
@@ -1708,7 +1795,7 @@ impl GpuViewer {
                         .engine
                         .upload_srgb8(&self.ctx, &m.rgba, m.tex_w, m.tex_h);
                     let linear = self.engine.linearise(&self.ctx, &src);
-                    self.compositor.composite(
+                    self.compositor.composite_with_camera(
                         &self.ctx,
                         width,
                         height,
@@ -1723,7 +1810,12 @@ impl GpuViewer {
                             opacity: m.opacity,
                             matte: None,
                             blend: kiriko_gpu::Blend::Normal,
+                            z: m.z,
+                            rotation_x_deg: m.rotation_x_deg,
+                            rotation_y_deg: m.rotation_y_deg,
+                            three_d: m.three_d,
                         }],
+                        cam_mat,
                     )
                 })
             })
@@ -1740,6 +1832,10 @@ impl GpuViewer {
                 scale: l.scale,
                 rotation_deg: l.rotation_deg,
                 opacity: l.opacity,
+                z: l.z,
+                rotation_x_deg: l.rotation_x_deg,
+                rotation_y_deg: l.rotation_y_deg,
+                three_d: l.three_d,
                 matte: matte_tex.as_ref().map(|mt| kiriko_gpu::MatteInput {
                     texture: mt,
                     luma: l.matte.as_ref().is_some_and(|m| m.luma),
@@ -1748,19 +1844,26 @@ impl GpuViewer {
                 blend: l.blend,
             })
             .collect();
-        self.compositor
-            .composite(&self.ctx, width, height, background, &comp_layers)
+        self.compositor.composite_with_camera(
+            &self.ctx,
+            width,
+            height,
+            background,
+            &comp_layers,
+            cam_mat,
+        )
     }
 
     /// Realise a comp's draws and register the frame for painting.
     fn present_comp(
         &mut self,
+        camera: Option<kiriko_core::model::CameraPose>,
         width: u32,
         height: u32,
         background: [f64; 4],
         layers: &[CompLayerDraw],
     ) -> (egui::TextureId, egui::Vec2) {
-        let linear = self.realise(width, height, background, layers);
+        let linear = self.realise(camera, width, height, background, layers);
         let shown = self.engine.display(&self.ctx, &linear);
         let view = shown.create_view(&Default::default());
         let id = self.render_state.renderer.write().register_native_texture(
@@ -1946,6 +2049,7 @@ impl Shell {
                 MenuAction::NewComposition => self.app.new_composition(),
                 MenuAction::AddSolidLayer => self.app.add_solid_layer(),
                 MenuAction::AddTextLayer => self.app.add_text_layer(),
+                MenuAction::AddCameraLayer => self.app.add_camera_layer(),
                 MenuAction::ResetWorkspace => self.dock = default_layout(),
             }
         }
@@ -2212,6 +2316,7 @@ impl Shell {
                             );
                             let bg = comp.background.0;
                             self.preview_display = Some(gpu.present_comp(
+                                comp.camera_pose(t_comp),
                                 comp.width,
                                 comp.height,
                                 [
@@ -2325,6 +2430,10 @@ impl Shell {
                     }
                     if ui.button("Add text layer").clicked() {
                         self.app.add_text_layer();
+                        ui.close_menu();
+                    }
+                    if ui.button("Add camera layer").clicked() {
+                        self.app.add_camera_layer();
                         ui.close_menu();
                     }
                 });

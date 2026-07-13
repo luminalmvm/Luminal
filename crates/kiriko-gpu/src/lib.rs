@@ -383,4 +383,5 @@ mod tests {
 
 pub mod composite;
 pub mod oklab;
-pub use composite::{Blend, CompositeLayer, Compositor, MatteInput};
+pub use composite::{camera_matrix, Blend, CompositeLayer, Compositor, MatteInput};
+pub use glam::Mat4;

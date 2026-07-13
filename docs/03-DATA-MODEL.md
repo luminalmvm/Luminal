@@ -331,7 +331,11 @@ offset, wiggle-path are tier 2 ([08-EFFECTS.md](08-EFFECTS.md) keeps the list).
 ### 9.3 2.5D (K-023)
 
 All transforms are 4×4 internally from day one; the `three_d` switch exposes z and full
-rotation. `CameraProps` v1: one-node/two-node, focal length/zoom, depth of field (focus
+rotation. The Phase 1 camera is the seed of `CameraProps`: `Camera { zoom: Property }` —
+a one-node camera whose zoom is the AE model (focal distance in comp pixels; the z=0
+plane maps 1:1, a layer at depth z scales by zoom/(z+zoom)), positioned and rotated by
+the layer's own transform group, with the topmost visible camera active. `CameraProps`
+v1 grows from there: one-node/two-node, focal length presets, depth of field (focus
 distance, aperture, blur level). `LightProps` v1: ambient/point/spot/directional with
 intensity, colour, cone; shadows post-v1. 2D layers ignore cameras (render in a fixed
 orthographic pass), matching AE's mental model.

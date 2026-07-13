@@ -175,6 +175,20 @@ Two mechanisms make this safe, and you'll see them by name in the code:
   undo per drag), double-click the background to add a key, right-click to remove one.
   The curve you see is sampled from the same evaluator that renders the comp, so what the
   graph shows is exactly what plays.
+- The **2.5D camera** — the parallax tool. Every layer has a z position and x/y
+  rotations alongside the flat transform; they sleep until you switch the layer to 3D
+  (the "3D" toggle in its twirl-down) *and* the comp has a Camera layer
+  (Composition → Add camera layer). The camera follows the After Effects model: its
+  *zoom* is a focal distance in comp pixels, and a layer sitting at z = 0 draws
+  pixel-for-pixel exactly as it did flat — so turning the system on changes nothing
+  until you actually move something in depth. Push a layer back (positive z) and it
+  shrinks by zoom ÷ (z + zoom); move the camera and near layers slide faster than far
+  ones — that's parallax, the flow style's second-most-used trick after speed ramps.
+  The topmost visible Camera layer wins when there are several (AE's rule), everything
+  on it keyframes like any other property, and the maths lives in one place
+  (`camera_matrix` in the GPU crate) shared by preview and export, so a camera move
+  can't look different in the exported file. A regression test proves both promises:
+  z = 0 maps 1:1, and depth scales exactly as the formula says.
 - `crates/kiriko-ui/src/theme.rs` — **the Aizome tokens.** The only file allowed to contain
   colour values. Change a colour here, it changes everywhere.
 - `crates/kiriko-ui/src/shell.rs` + `app_state.rs` — **the window**: panels, menus,

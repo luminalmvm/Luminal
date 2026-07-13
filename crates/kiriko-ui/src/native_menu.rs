@@ -25,6 +25,7 @@ pub enum MenuAction {
     NewComposition,
     AddSolidLayer,
     AddTextLayer,
+    AddCameraLayer,
     ResetWorkspace,
 }
 
@@ -103,6 +104,7 @@ impl NativeMenu {
             &item("comp.new", "New composition", cmd_shift(Code::KeyN)),
             &item("comp.solid", "Add solid layer", None),
             &item("comp.text", "Add text layer", None),
+            &item("comp.camera", "Add camera layer", None),
         ])?;
 
         let window = Submenu::new("Window", true);
@@ -140,6 +142,7 @@ impl NativeMenu {
                 "comp.new" => Some(MenuAction::NewComposition),
                 "comp.solid" => Some(MenuAction::AddSolidLayer),
                 "comp.text" => Some(MenuAction::AddTextLayer),
+                "comp.camera" => Some(MenuAction::AddCameraLayer),
                 "window.reset" => Some(MenuAction::ResetWorkspace),
                 _ => None,
             };

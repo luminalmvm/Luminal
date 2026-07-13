@@ -66,6 +66,11 @@ pub enum Op {
         layer: Uuid,
         masks: Vec<crate::mask::Mask>,
     },
+    SetLayerThreeD {
+        comp: Uuid,
+        layer: Uuid,
+        three_d: bool,
+    },
     /// Replace a Text layer's document (exactly invertible).
     SetTextDocument {
         comp: Uuid,
@@ -94,6 +99,13 @@ pub enum Op {
         comp: Uuid,
         layer: Uuid,
         prop: TransformProp,
+        animation: Animation,
+    },
+    /// Replace a Camera layer's zoom animation (same coarse-grained shape as
+    /// SetTransformProperty, for the same invertibility reason).
+    SetCameraZoom {
+        comp: Uuid,
+        layer: Uuid,
         animation: Animation,
     },
 }
@@ -199,6 +211,24 @@ pub fn apply(doc: &mut Document, op: &Op) -> Result<Op, OpError> {
                 masks: previous,
             })
         }
+        Op::SetLayerThreeD {
+            comp,
+            layer,
+            three_d,
+        } => {
+            let c = doc.comp_mut(*comp).ok_or(OpError::UnknownComp)?;
+            let l = c
+                .layers
+                .iter_mut()
+                .find(|l| l.id == *layer)
+                .ok_or(OpError::UnknownLayer)?;
+            let previous = std::mem::replace(&mut l.switches.three_d, *three_d);
+            Ok(Op::SetLayerThreeD {
+                comp: *comp,
+                layer: *layer,
+                three_d: previous,
+            })
+        }
         Op::SetTextDocument {
             comp,
             layer,
@@ -279,6 +309,27 @@ pub fn apply(doc: &mut Document, op: &Op) -> Result<Op, OpError> {
                 comp: *comp,
                 layer: *layer,
                 prop: *prop,
+                animation: previous,
+            })
+        }
+        Op::SetCameraZoom {
+            comp,
+            layer,
+            animation,
+        } => {
+            let c = doc.comp_mut(*comp).ok_or(OpError::UnknownComp)?;
+            let l = c
+                .layers
+                .iter_mut()
+                .find(|l| l.id == *layer)
+                .ok_or(OpError::UnknownLayer)?;
+            let crate::model::LayerKind::Camera { zoom } = &mut l.kind else {
+                return Err(OpError::UnknownLayer);
+            };
+            let previous = std::mem::replace(&mut zoom.animation, animation.clone());
+            Ok(Op::SetCameraZoom {
+                comp: *comp,
+                layer: *layer,
                 animation: previous,
             })
         }

@@ -198,6 +198,8 @@ impl Renderer<'_> {
                     natural: (nested.width as f32, nested.height as f32),
                 }))
             }
+            // Cameras shape the view; they never draw pixels themselves.
+            LayerKind::Camera { .. } => Ok(None),
         }
     }
 
@@ -210,6 +212,9 @@ impl Renderer<'_> {
         visited: &mut Vec<Uuid>,
     ) -> Result<Tex, String> {
         let dims = (comp.width, comp.height);
+        let camera = comp
+            .camera_pose(t)
+            .map(|pose| camera_mat(comp.width, comp.height, pose));
         let mut prepared: HashMap<Uuid, Prepared> = HashMap::new();
         for l in &comp.layers {
             let needed = l.switches.visible
@@ -234,7 +239,7 @@ impl Renderer<'_> {
                 ) {
                     let mlt = t - src_layer.start_offset.0.to_f64();
                     let mtr = &src_layer.transform;
-                    let rendered = self.compositor.composite(
+                    let rendered = self.compositor.composite_with_camera(
                         self.gpu,
                         comp.width,
                         comp.height,
@@ -258,7 +263,12 @@ impl Renderer<'_> {
                             opacity: mtr.opacity.value_at(mlt) as f32,
                             matte: None,
                             blend: kiriko_gpu::Blend::Normal,
+                            z: mtr.position_z.value_at(mlt) as f32,
+                            rotation_x_deg: mtr.rotation_x.value_at(mlt) as f32,
+                            rotation_y_deg: mtr.rotation_y.value_at(mlt) as f32,
+                            three_d: src_layer.switches.three_d,
                         }],
+                        camera,
                     );
                     matte_tex.insert(l.id, rendered);
                 }
@@ -292,6 +302,10 @@ impl Renderer<'_> {
                 ),
                 rotation_deg: tr.rotation.value_at(lt) as f32,
                 opacity: tr.opacity.value_at(lt) as f32,
+                z: tr.position_z.value_at(lt) as f32,
+                rotation_x_deg: tr.rotation_x.value_at(lt) as f32,
+                rotation_y_deg: tr.rotation_y.value_at(lt) as f32,
+                three_d: l.switches.three_d,
                 matte: l.matte.as_ref().and_then(|mr| {
                     matte_tex.get(&l.id).map(|mt| kiriko_gpu::MatteInput {
                         texture: mt,
@@ -309,7 +323,7 @@ impl Renderer<'_> {
         }
 
         let bg = comp.background.0;
-        Ok(self.compositor.composite(
+        Ok(self.compositor.composite_with_camera(
             self.gpu,
             comp.width,
             comp.height,
@@ -320,6 +334,7 @@ impl Renderer<'_> {
                 f64::from(bg[3]),
             ],
             &draws,
+            camera,
         ))
     }
 }
@@ -397,6 +412,30 @@ pub fn srgb_encode(v: f32) -> u8 {
         1.055 * v.powf(1.0 / 2.4) - 0.055
     };
     (e * 255.0).round() as u8
+}
+
+/// CameraPose (core model) -> GPU camera matrix: the single conversion both
+/// the preview and the export path share, so they cannot disagree (K-031).
+pub fn camera_mat(
+    comp_w: u32,
+    comp_h: u32,
+    pose: kiriko_core::model::CameraPose,
+) -> kiriko_gpu::Mat4 {
+    kiriko_gpu::camera_matrix(
+        comp_w as f32,
+        comp_h as f32,
+        pose.zoom as f32,
+        (
+            pose.position.0 as f32,
+            pose.position.1 as f32,
+            pose.position.2 as f32,
+        ),
+        (
+            pose.rotation_deg.0 as f32,
+            pose.rotation_deg.1 as f32,
+            pose.rotation_deg.2 as f32,
+        ),
+    )
 }
 
 pub fn solid_rgba(c: kiriko_core::model::LinearColour) -> [u8; 4] {

@@ -56,21 +56,32 @@ pub struct CompositeLayer<'a> {
     pub opacity: f32,
     pub matte: Option<MatteInput<'a>>,
     pub blend: Blend,
+    /// 2.5D placement (K-023): z position and x/y rotations, honoured when
+    /// the comp provides a camera.
+    pub z: f32,
+    pub rotation_x_deg: f32,
+    pub rotation_y_deg: f32,
+    pub three_d: bool,
 }
 
 impl CompositeLayer<'_> {
     /// comp pixel space → NDC, with the layer transform applied.
     /// Full 4×4 (K-023). Order: quad(0..1) → layer px → −anchor → scale →
     /// rotate → +position → NDC.
-    fn matrix(&self, comp_w: f32, comp_h: f32) -> Mat4 {
+    fn matrix(&self, comp_w: f32, comp_h: f32, camera: Option<&Mat4>) -> Mat4 {
         let ndc_from_comp = Mat4::from_translation(glam::vec3(-1.0, 1.0, 0.0))
             * Mat4::from_scale(glam::vec3(2.0 / comp_w, -2.0 / comp_h, 1.0));
-        let place = Mat4::from_translation(glam::vec3(self.position.0, self.position.1, 0.0))
+        let place = Mat4::from_translation(glam::vec3(self.position.0, self.position.1, self.z))
+            * Mat4::from_rotation_y(self.rotation_y_deg.to_radians())
+            * Mat4::from_rotation_x(self.rotation_x_deg.to_radians())
             * Mat4::from_rotation_z(self.rotation_deg.to_radians())
             * Mat4::from_scale(glam::vec3(self.scale.0 / 100.0, self.scale.1 / 100.0, 1.0))
             * Mat4::from_translation(glam::vec3(-self.anchor.0, -self.anchor.1, 0.0));
         let quad_to_px = Mat4::from_scale(glam::vec3(self.size.0, self.size.1, 1.0));
-        ndc_from_comp * place * quad_to_px
+        match camera {
+            Some(view_proj) if self.three_d => ndc_from_comp * *view_proj * place * quad_to_px,
+            _ => ndc_from_comp * place * quad_to_px,
+        }
     }
 }
 
@@ -82,6 +93,40 @@ fn half_bits(v: f32) -> u16 {
     } else {
         0
     }
+}
+
+/// Build the comp-space camera matrix (view * perspective) from the AE
+/// model: the camera sits `zoom` px back from its position, and the z=0
+/// plane maps 1:1 when the camera is at the comp centre with no rotation.
+pub fn camera_matrix(
+    comp_w: f32,
+    comp_h: f32,
+    zoom: f32,
+    position: (f32, f32, f32),
+    rotation_deg: (f32, f32, f32),
+) -> Mat4 {
+    let zoom = zoom.max(1.0);
+    // Perspective in comp space: x' = cx + (x-cx)·zoom/(z+zoom), with the
+    // homogeneous divide doing the work (w = (z+zoom)/zoom).
+    let (cx, cy) = (comp_w * 0.5, comp_h * 0.5);
+    let persp = Mat4::from_cols_array_2d(&[
+        // column-major: each inner array is one column
+        [1.0, 0.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0, 0.0],
+        // z output is flattened to 0: layer order is painter's (timeline
+        // stacking), so depth only feeds the divide, never the depth test.
+        [cx / zoom, cy / zoom, 0.0, 1.0 / zoom],
+        [0.0, 0.0, 0.0, 1.0],
+    ]);
+    // View: undo the camera's own placement (rotate about its position).
+    // cam_place maps "default camera at the comp centre" to the actual pose,
+    // so its inverse is the identity when the camera hasn't moved.
+    let cam_place = Mat4::from_translation(glam::vec3(position.0, position.1, position.2))
+        * Mat4::from_rotation_y(rotation_deg.1.to_radians())
+        * Mat4::from_rotation_x(rotation_deg.0.to_radians())
+        * Mat4::from_rotation_z(rotation_deg.2.to_radians())
+        * Mat4::from_translation(glam::vec3(-cx, -cy, 0.0));
+    persp * cam_place.inverse()
 }
 
 pub struct Compositor {
@@ -321,6 +366,20 @@ impl Compositor {
         background: [f64; 4],
         layers: &[CompositeLayer<'_>],
     ) -> wgpu::Texture {
+        self.composite_with_camera(ctx, width, height, background, layers, None)
+    }
+
+    /// As [`Self::composite`], with a comp-space camera matrix applied to
+    /// 3D-switched layers (the AE 2.5D model — docs/03-DATA-MODEL.md §9.3).
+    pub fn composite_with_camera(
+        &self,
+        ctx: &GpuContext,
+        width: u32,
+        height: u32,
+        background: [f64; 4],
+        layers: &[CompositeLayer<'_>],
+        camera: Option<Mat4>,
+    ) -> wgpu::Texture {
         let target = ctx.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("comp-frame"),
             size: wgpu::Extent3d {
@@ -363,7 +422,9 @@ impl Compositor {
             .iter()
             .map(|layer| {
                 let uniform = LayerUniform {
-                    matrix: layer.matrix(width as f32, height as f32).to_cols_array_2d(),
+                    matrix: layer
+                        .matrix(width as f32, height as f32, camera.as_ref())
+                        .to_cols_array_2d(),
                     params: [
                         (layer.opacity / 100.0).clamp(0.0, 1.0),
                         f32::from(layer.matte.is_some()),
@@ -598,6 +659,10 @@ mod tests {
             opacity: 50.0,
             matte: None,
             blend: Blend::Normal,
+            z: 0.0,
+            rotation_x_deg: 0.0,
+            rotation_y_deg: 0.0,
+            three_d: false,
         };
         // Background: linear green = sRGB 0,255,0 decoded.
         let g_lin = srgb_decode(1.0);
@@ -653,6 +718,10 @@ mod tests {
                 opacity: 100.0,
                 matte: None,
                 blend: Blend::Normal,
+                z: 0.0,
+                rotation_x_deg: 0.0,
+                rotation_y_deg: 0.0,
+                three_d: false,
             }],
         );
 
@@ -672,6 +741,10 @@ mod tests {
                 inverted,
             }),
             blend: Blend::Normal,
+            z: 0.0,
+            rotation_x_deg: 0.0,
+            rotation_y_deg: 0.0,
+            three_d: false,
         };
 
         let shown = render_for_display(
@@ -707,6 +780,56 @@ mod tests {
         );
     }
 
+    /// The AE camera model: at default placement the z=0 plane maps 1:1;
+    /// pushing a 3D layer back in z shrinks it by zoom/(z+zoom).
+    #[test]
+    fn camera_perspective_scales_by_depth() {
+        let Ok(ctx) = GpuContext::headless() else {
+            eprintln!("skipping: no GPU adapter");
+            return;
+        };
+        let colour = ColourEngine::new(&ctx);
+        let compositor = Compositor::new(&ctx);
+        let white = solid_linear(&ctx, &colour, [255, 255, 255, 255], 8, 8);
+        let cam = camera_matrix(32.0, 32.0, 100.0, (16.0, 16.0, 0.0), (0.0, 0.0, 0.0));
+        let layer = |z: f32| CompositeLayer {
+            texture: &white,
+            size: (8.0, 8.0),
+            position: (16.0, 16.0),
+            anchor: (4.0, 4.0),
+            scale: (100.0, 100.0),
+            rotation_deg: 0.0,
+            opacity: 100.0,
+            matte: None,
+            blend: Blend::Normal,
+            z,
+            rotation_x_deg: 0.0,
+            rotation_y_deg: 0.0,
+            three_d: true,
+        };
+        let count_white = |z: f32| {
+            let linear = compositor.composite_with_camera(
+                &ctx,
+                32,
+                32,
+                [0.0, 0.0, 0.0, 1.0],
+                &[layer(z)],
+                Some(cam),
+            );
+            let shown = colour.display(&ctx, &linear);
+            let back = colour.readback8(&ctx, &shown).unwrap();
+            back.chunks_exact(4).filter(|p| p[0] > 200).count() as f64
+        };
+        let at_zero = count_white(0.0);
+        let at_back = count_white(100.0); // zoom/(z+zoom) = 0.5 → area ×0.25
+        assert!((at_zero - 64.0).abs() <= 8.0, "z=0 area {at_zero} (≈64)");
+        let ratio = at_back / at_zero;
+        assert!(
+            (ratio - 0.25).abs() < 0.08,
+            "depth scaling ratio {ratio} (≈0.25)"
+        );
+    }
+
     /// Screen is computed perceptually: grey over grey must land at the
     /// encoded-space screen result (~192), not the linear one.
     #[test]
@@ -736,6 +859,10 @@ mod tests {
                 opacity: 100.0,
                 matte: None,
                 blend: Blend::Screen,
+                z: 0.0,
+                rotation_x_deg: 0.0,
+                rotation_y_deg: 0.0,
+                three_d: false,
             }],
         );
         let out = colour.readback8(&ctx, &shown).unwrap()[0];
@@ -769,6 +896,10 @@ mod tests {
             opacity: 100.0,
             matte: None,
             blend,
+            z: 0.0,
+            rotation_x_deg: 0.0,
+            rotation_y_deg: 0.0,
+            three_d: false,
         };
         let g_lin = srgb_decode(128.0 / 255.0);
         let bg = [g_lin, g_lin, g_lin, 1.0];
@@ -810,6 +941,10 @@ mod tests {
             opacity: 100.0,
             matte: None,
             blend: Blend::Normal,
+            z: 0.0,
+            rotation_x_deg: 0.0,
+            rotation_y_deg: 0.0,
+            three_d: false,
         };
         let shown = render_for_display(
             &ctx,

@@ -338,6 +338,89 @@ mod tests {
         assert_eq!(layer.transform.opacity.value_at(1.0), 100.0);
     }
 
+    /// A camera layer's zoom and a layer's 3D switch both round-trip through
+    /// undo — the two ops the 2.5D camera work added.
+    #[test]
+    fn camera_zoom_and_three_d_ops_round_trip_through_undo() {
+        use crate::anim::Animation;
+        use crate::model::{Layer, LayerKind, Switches, TransformGroup};
+        use crate::time::CompTime;
+        let store = DocumentStore::new(Document::new());
+        let (ops, comp_id) = scripted_ops(&store.snapshot());
+        let mut layer_id = None;
+        for op in &ops {
+            if let Op::AddLayer { layer, .. } = op {
+                layer_id = Some(layer.id);
+            }
+        }
+        for op in ops {
+            store.commit(op).unwrap();
+        }
+        let layer_id = layer_id.unwrap();
+        let cam_id = uuid::Uuid::now_v7();
+        let duration = store.snapshot().comp(comp_id).unwrap().duration.0;
+        store
+            .commit(Op::AddLayer {
+                comp: comp_id,
+                index: 0,
+                layer: Box::new(Layer {
+                    id: cam_id,
+                    name: "Camera".into(),
+                    kind: LayerKind::Camera {
+                        zoom: crate::anim::Property::fixed(1000.0),
+                    },
+                    in_point: CompTime(Rational::ZERO),
+                    out_point: CompTime(duration),
+                    start_offset: CompTime(Rational::ZERO),
+                    transform: TransformGroup::default(),
+                    matte: None,
+                    blend: Default::default(),
+                    masks: Vec::new(),
+                    switches: Switches::default(),
+                    extra: serde_json::Map::new(),
+                }),
+            })
+            .unwrap();
+
+        store
+            .commit(Op::SetCameraZoom {
+                comp: comp_id,
+                layer: cam_id,
+                animation: Animation::Static(2500.0),
+            })
+            .unwrap();
+        store
+            .commit(Op::SetLayerThreeD {
+                comp: comp_id,
+                layer: layer_id,
+                three_d: true,
+            })
+            .unwrap();
+
+        let doc = store.snapshot();
+        let comp = doc.comp(comp_id).unwrap();
+        assert_eq!(comp.camera_pose(1.0).unwrap().zoom, 2500.0);
+        let layer = comp.layers.iter().find(|l| l.id == layer_id).unwrap();
+        assert!(layer.switches.three_d);
+
+        store.undo().unwrap();
+        store.undo().unwrap();
+        let doc = store.snapshot();
+        let comp = doc.comp(comp_id).unwrap();
+        assert_eq!(comp.camera_pose(1.0).unwrap().zoom, 1000.0);
+        let layer = comp.layers.iter().find(|l| l.id == layer_id).unwrap();
+        assert!(!layer.switches.three_d);
+
+        // Zoom on a non-camera layer is an error, not a silent no-op.
+        assert!(store
+            .commit(Op::SetCameraZoom {
+                comp: comp_id,
+                layer: layer_id,
+                animation: Animation::Static(1.0),
+            })
+            .is_err());
+    }
+
     #[test]
     fn matte_op_round_trips_and_targets_any_layer() {
         use crate::model::{MatteChannel, MatteRef};

@@ -190,6 +190,11 @@ pub struct Property {
 }
 
 impl Property {
+    /// serde-default helper for 2.5D fields added after 1.0 projects existed.
+    pub fn zero() -> Self {
+        Self::fixed(0.0)
+    }
+
     pub fn fixed(value: f64) -> Self {
         Self {
             animation: Animation::Static(value),

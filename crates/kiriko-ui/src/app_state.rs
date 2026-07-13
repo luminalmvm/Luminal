@@ -853,6 +853,51 @@ impl AppState {
         self.refresh_preview();
     }
 
+    /// Add a Camera layer at the comp centre. Default zoom follows the AE
+    /// 50 mm model: comp width x 50/36 (full-frame film width in mm), so a
+    /// fresh camera shows the comp exactly as it looked flat.
+    pub fn add_camera_layer(&mut self) {
+        use kiriko_core::model::{Layer, LayerKind, Switches, TransformGroup};
+        use kiriko_core::time::CompTime;
+        let Some(comp_id) = self.preview_comp.or(self.selected_comp) else {
+            self.error = Some("select a composition first".into());
+            return;
+        };
+        let doc = self.store.snapshot();
+        let Some(comp) = doc.comp(comp_id) else {
+            return;
+        };
+        let transform = TransformGroup {
+            position_x: kiriko_core::anim::Property::fixed(f64::from(comp.width) * 0.5),
+            position_y: kiriko_core::anim::Property::fixed(f64::from(comp.height) * 0.5),
+            ..TransformGroup::default()
+        };
+        let layer = Layer {
+            id: Uuid::now_v7(),
+            name: "Camera".into(),
+            kind: LayerKind::Camera {
+                zoom: kiriko_core::anim::Property::fixed(f64::from(comp.width) * 50.0 / 36.0),
+            },
+            in_point: CompTime(Rational::ZERO),
+            out_point: CompTime(comp.duration.0),
+            start_offset: CompTime(Rational::ZERO),
+            transform,
+            matte: None,
+            blend: Default::default(),
+            masks: Vec::new(),
+            switches: Switches::default(),
+            extra: serde_json::Map::new(),
+        };
+        self.commit(Op::AddLayer {
+            comp: comp_id,
+            index: 0,
+            layer: Box::new(layer),
+        });
+        self.preview_comp = Some(comp_id);
+        #[cfg(feature = "media")]
+        self.refresh_preview();
+    }
+
     /// Add a white comp-sized Solid layer (colour editing joins the layer
     /// properties panel).
     pub fn add_solid_layer(&mut self) {
@@ -1057,7 +1102,7 @@ impl AppState {
             }
             let lt = t - layer.start_offset.0.to_f64();
             match &layer.kind {
-                LayerKind::Solid { .. } | LayerKind::Text { .. } => {}
+                LayerKind::Solid { .. } | LayerKind::Text { .. } | LayerKind::Camera { .. } => {}
                 LayerKind::Precomp { comp: nested_id } => {
                     if visited.contains(nested_id) {
                         continue; // cycle guard
