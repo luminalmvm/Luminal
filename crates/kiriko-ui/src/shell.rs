@@ -212,6 +212,7 @@ fn project_panel(ui: &mut egui::Ui, theme: &Theme, app: &mut AppState) {
     ui.add_space(4.0);
     let mut select = None;
     let mut add_to_comp: Option<uuid::Uuid> = None;
+    let mut nest_comp: Option<uuid::Uuid> = None;
     for item in &doc.items {
         let (kind, colour) = match item {
             ProjectItem::Footage(_) => ("footage", theme.text_muted),
@@ -252,6 +253,19 @@ fn project_panel(ui: &mut egui::Ui, theme: &Theme, app: &mut AppState) {
                 }
                 _ => {}
             }
+        }
+        if let ProjectItem::Composition(_) = item {
+            let target = app.preview_comp.or(app.selected_comp);
+            let nestable = target.is_some_and(|t| t != item.id());
+            ui.indent(("nest", item.id()), |ui| {
+                if ui
+                    .add_enabled(nestable, egui::Button::new("Nest in comp").small())
+                    .on_hover_text("Add as a Precomp layer of the selected composition")
+                    .clicked()
+                {
+                    nest_comp = Some(item.id());
+                }
+            });
         }
         if let ProjectItem::Footage(_) = item {
             let target = app.preview_comp.or(app.selected_comp);
@@ -324,6 +338,9 @@ fn project_panel(ui: &mut egui::Ui, theme: &Theme, app: &mut AppState) {
     }
     if let Some(id) = add_to_comp {
         app.add_footage_to_comp(id);
+    }
+    if let Some(id) = nest_comp {
+        app.add_precomp_to_comp(id);
     }
 }
 
@@ -1276,7 +1293,8 @@ fn mask_space(
     comp: &kiriko_core::model::Composition,
 ) -> (f64, f64) {
     match &layer.kind {
-        kiriko_core::model::LayerKind::Solid { .. } => {
+        kiriko_core::model::LayerKind::Solid { .. }
+        | kiriko_core::model::LayerKind::Precomp { .. } => {
             (f64::from(comp.width), f64::from(comp.height))
         }
         #[cfg(feature = "media")]
@@ -1970,6 +1988,7 @@ impl Shell {
                                                 )
                                             })
                                         }
+                                        kiriko_core::model::LayerKind::Precomp { .. } => None, // stage 2: recursion
                                         kiriko_core::model::LayerKind::Solid { colour } => {
                                             let in_span = t_now >= layer.in_point.0.to_f64()
                                                 && t_now < layer.out_point.0.to_f64();

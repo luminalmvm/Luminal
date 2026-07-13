@@ -732,6 +732,77 @@ impl AppState {
         self.refresh_preview();
     }
 
+    /// Nest one comp inside another as a Precomp layer (cycle-guarded).
+    pub fn add_precomp_to_comp(&mut self, nested_id: Uuid) {
+        use kiriko_core::model::{Layer, LayerKind, Switches, TransformGroup};
+        use kiriko_core::time::CompTime;
+        let Some(target_id) = self.preview_comp.or(self.selected_comp) else {
+            self.error = Some("select a composition first".into());
+            return;
+        };
+        if target_id == nested_id || self.would_cycle(nested_id, target_id) {
+            self.error = Some("that nesting would loop compositions".into());
+            return;
+        }
+        let doc = self.store.snapshot();
+        let (Some(target), Some(nested)) = (doc.comp(target_id), doc.comp(nested_id)) else {
+            return;
+        };
+        let out = if nested.duration.0 < target.duration.0 {
+            nested.duration.0
+        } else {
+            target.duration.0
+        };
+        let layer = Layer {
+            id: Uuid::now_v7(),
+            name: nested.name.clone(),
+            kind: LayerKind::Precomp { comp: nested_id },
+            in_point: CompTime(Rational::ZERO),
+            out_point: CompTime(out),
+            start_offset: CompTime(Rational::ZERO),
+            transform: TransformGroup::default(),
+            matte: None,
+            blend: Default::default(),
+            masks: Vec::new(),
+            switches: Switches::default(),
+            extra: serde_json::Map::new(),
+        };
+        self.commit(Op::AddLayer {
+            comp: target_id,
+            index: 0,
+            layer: Box::new(layer),
+        });
+        self.preview_comp = Some(target_id);
+        #[cfg(feature = "media")]
+        self.refresh_preview();
+    }
+
+    /// Would nesting `nested` inside `target` create a cycle? True if target
+    /// is reachable from nested through Precomp layers.
+    fn would_cycle(&self, nested: Uuid, target: Uuid) -> bool {
+        use kiriko_core::model::LayerKind;
+        let doc = self.store.snapshot();
+        let mut stack = vec![nested];
+        let mut seen = vec![];
+        while let Some(id) = stack.pop() {
+            if id == target {
+                return true;
+            }
+            if seen.contains(&id) {
+                continue;
+            }
+            seen.push(id);
+            if let Some(c) = doc.comp(id) {
+                for l in &c.layers {
+                    if let LayerKind::Precomp { comp } = &l.kind {
+                        stack.push(*comp);
+                    }
+                }
+            }
+        }
+        false
+    }
+
     /// Add a white comp-sized Solid layer (colour editing joins the layer
     /// properties panel).
     pub fn add_solid_layer(&mut self) {
@@ -907,6 +978,8 @@ impl AppState {
             let item = match &layer.kind {
                 LayerKind::Footage { item } => item,
                 LayerKind::Solid { .. } => continue, // no decode: drawn directly
+                // Stage 1: nested comps render in the follow-up (recursive jobs).
+                LayerKind::Precomp { .. } => continue,
             };
             let Some(ProjectItem::Footage(f)) = doc.item(*item) else {
                 continue;

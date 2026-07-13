@@ -190,6 +190,12 @@ pub enum LayerKind {
     Solid {
         colour: LinearColour,
     },
+    /// Another composition as this layer's source (docs/01-GLOSSARY.md:
+    /// Precomp layer). Cycles are invalid states, guarded at insertion and
+    /// defensively at render.
+    Precomp {
+        comp: Uuid,
+    },
 }
 
 /// Per-layer composite operator — the linear subset first

@@ -142,6 +142,7 @@ fn run(
             }
             let item = match &l.kind {
                 LayerKind::Footage { item } => item,
+                LayerKind::Precomp { .. } => continue, // stage 2: recursion
                 LayerKind::Solid { colour } => {
                     let px = solid_rgba(*colour);
                     let mut rgba = px_tile(&px, comp.width, comp.height);
