@@ -341,6 +341,70 @@ mod tests {
     /// A camera layer's zoom and a layer's 3D switch both round-trip through
     /// undo — the two ops the 2.5D camera work added.
     /// Retime on a Footage layer round-trips through undo; the op refuses a
+    /// SetSequenceClips round-trips through undo (a cut is one such op).
+    #[test]
+    fn sequence_clips_op_round_trips() {
+        use crate::model::{Layer, LayerKind, Switches, TransformGroup};
+        use crate::sequence::{Clip, ClipSource};
+        use crate::time::{CompTime, Rational};
+        let store = DocumentStore::new(Document::new());
+        let (ops, comp_id) = scripted_ops(&store.snapshot());
+        for op in ops {
+            store.commit(op).unwrap();
+        }
+        let r = |n| Rational::new(n, 1).unwrap();
+        let src = Uuid::now_v7();
+        let one = Clip::new(ClipSource::Footage(src), r(0), r(4), r(0), r(4));
+        let seq_id = Uuid::now_v7();
+        store
+            .commit(Op::AddLayer {
+                comp: comp_id,
+                index: 0,
+                layer: Box::new(Layer {
+                    id: seq_id,
+                    name: "Seq".into(),
+                    kind: LayerKind::Sequence {
+                        clips: vec![one.clone()],
+                    },
+                    in_point: CompTime(r(0)),
+                    out_point: CompTime(r(4)),
+                    start_offset: CompTime(r(0)),
+                    transform: TransformGroup::default(),
+                    matte: None,
+                    blend: Default::default(),
+                    masks: Vec::new(),
+                    switches: Switches::default(),
+                    extra: serde_json::Map::new(),
+                }),
+            })
+            .unwrap();
+        // Cut into two, commit as SetSequenceClips.
+        let (l, rc) = one.cut(r(2)).unwrap();
+        store
+            .commit(Op::SetSequenceClips {
+                comp: comp_id,
+                layer: seq_id,
+                clips: vec![l, rc],
+            })
+            .unwrap();
+        let n = |doc: &Document| match &doc
+            .comp(comp_id)
+            .unwrap()
+            .layers
+            .iter()
+            .find(|l| l.id == seq_id)
+            .unwrap()
+            .kind
+        {
+            LayerKind::Sequence { clips } => clips.len(),
+            _ => 0,
+        };
+        assert_eq!(n(&store.snapshot()), 2);
+        store.undo().unwrap();
+        assert_eq!(n(&store.snapshot()), 1);
+    }
+
+    /// Retime on a Footage layer round-trips through undo; the op refuses a
     /// non-Footage target.
     #[test]
     fn retime_op_round_trips_and_targets_footage() {

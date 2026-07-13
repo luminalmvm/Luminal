@@ -96,6 +96,45 @@ impl Clip {
         let clip_time = lt - self.place_start.to_f64();
         self.retime.evaluate(clip_time)
     }
+
+    /// Cut this clip at layer-local time `at` into two clips whose retimes
+    /// exactly partition the original (docs/03-DATA-MODEL.md §5.3, the
+    /// beat-sync covenant: `place` never moves, source positions stay exact).
+    /// None when `at` is not strictly inside the clip, or the retime can't be
+    /// split exactly there ([`Retime::split_at`]).
+    pub fn cut(&self, at: Rational) -> Option<(Clip, Clip)> {
+        let tau_clip = at.checked_sub(self.place_start).ok()?;
+        if tau_clip <= Rational::ZERO || tau_clip >= self.place_duration {
+            return None;
+        }
+        let (left_retime, right_retime) = self.retime.split_at(tau_clip)?;
+        // The shared cut source position — exact, C0 (both retimes agree).
+        let s_cut = left_retime.boundaries.last()?.s;
+        let right_duration = self.place_duration.checked_sub(tau_clip).ok()?;
+        let left = Clip {
+            id: Uuid::now_v7(),
+            source: self.source,
+            source_in: self.source_in,
+            source_out: s_cut,
+            place_start: self.place_start,
+            place_duration: tau_clip,
+            retime: left_retime,
+            interpolation: self.interpolation.clone(),
+            extra: self.extra.clone(),
+        };
+        let right = Clip {
+            id: Uuid::now_v7(),
+            source: self.source,
+            source_in: s_cut,
+            source_out: self.source_out,
+            place_start: at,
+            place_duration: right_duration,
+            retime: right_retime,
+            interpolation: self.interpolation.clone(),
+            extra: self.extra.clone(),
+        };
+        Some((left, right))
+    }
 }
 
 /// The clip active at layer-local time `lt`, or None if `lt` is in a gap
@@ -179,6 +218,63 @@ mod tests {
         assert!(!has_overlap(&[clip(s, 0, 2), clip(s, 5, 2)]));
         // Genuine overlap is caught.
         assert!(has_overlap(&[clip(s, 0, 3), clip(s, 2, 2)]));
+    }
+
+    #[test]
+    fn cutting_partitions_a_clip_without_moving_it() {
+        let src = Uuid::now_v7();
+        // A clip at layer [2,6), source 0→4 at natural rate. Cut at layer 4.
+        let c = clip(src, 2, 4);
+        let (l, r) = c.cut(rat(4, 1)).unwrap();
+        // Places abut exactly and don't move (beat-sync).
+        assert_eq!(l.place_start, rat(2, 1));
+        assert_eq!(l.place_duration, rat(2, 1));
+        assert_eq!(r.place_start, rat(4, 1));
+        assert_eq!(r.place_duration, rat(2, 1));
+        // Source trims partition at the cut (source time 2 at layer time 4).
+        assert_eq!(l.source_out, rat(2, 1));
+        assert_eq!(r.source_in, rat(2, 1));
+        // Each half plays the same source moment as the original did.
+        assert!((l.source_time(3.0) - c.source_time(3.0)).abs() < 1e-9);
+        assert!((r.source_time(5.0) - c.source_time(5.0)).abs() < 1e-9);
+        // A cut outside the clip refuses.
+        assert!(c.cut(rat(2, 1)).is_none());
+        assert!(c.cut(rat(6, 1)).is_none());
+    }
+
+    /// The frame-pinning invariant (Mack's note): a clip's first frame is its
+    /// `source_in`, whatever its speed. So splitting a clip and re-speeding the
+    /// second half (e.g. 200% → 100%) leaves the second clip's *starting*
+    /// frame exactly where it was — the speed change ripples forward only.
+    #[test]
+    fn re_speeding_a_cut_clip_keeps_its_start_frame() {
+        use crate::retime::{Ease, Retime};
+        let src = Uuid::now_v7();
+        // Clip [0,4), source 0→4 natural. Cut at layer 2 → right clip [2,4).
+        let (_left, right) = clip(src, 0, 4).cut(rat(2, 1)).unwrap();
+        let start_frame = right.source_in; // the source moment at the cut
+        assert!((right.source_time(2.0) - start_frame.to_f64()).abs() < 1e-9);
+
+        // Re-speed the right clip: 200% ramping to 100% over its 2 s, pinned at
+        // its own source_in (this is exactly what per-clip speed editing must
+        // build). Its first frame must NOT move.
+        let mut respeed = right.clone();
+        respeed.retime = Retime::single_ramp(
+            respeed.place_duration,
+            respeed.source_in,
+            rat(2, 1),
+            rat(1, 1),
+            Ease::Linear,
+        );
+        // First frame unchanged; only later frames advance faster.
+        assert!((respeed.source_time(2.0) - start_frame.to_f64()).abs() < 1e-9);
+        assert!(respeed.source_time(3.0) > right.source_time(3.0));
+        // And it holds after moving the whole clip later on the layer (the
+        // place shifts, the retime domain is unchanged, so the start frame is
+        // still source_in).
+        let mut moved = respeed.clone();
+        moved.place_start = rat(5, 1);
+        assert!((moved.source_time(5.0) - start_frame.to_f64()).abs() < 1e-9);
     }
 
     #[test]

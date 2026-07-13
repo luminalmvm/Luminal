@@ -3262,6 +3262,7 @@ impl Shell {
                 MenuAction::AddTextLayer => self.app.add_text_layer(),
                 MenuAction::AddCameraLayer => self.app.add_camera_layer(),
                 MenuAction::AddSequenceLayer => self.app.add_sequence_layer(),
+                MenuAction::CutClip => self.app.cut_sequence_at_playhead(),
                 MenuAction::AddMaskRectangle => self.add_mask_to_selected(ShapeKind::Rectangle),
                 MenuAction::AddMaskEllipse => self.add_mask_to_selected(ShapeKind::Ellipse),
                 MenuAction::AddMaskStar => self.add_mask_to_selected(ShapeKind::Star),
@@ -3933,6 +3934,10 @@ impl Shell {
                         self.app.add_sequence_layer();
                         ui.close_menu();
                     }
+                    if ui.button("Cut clip at playhead").clicked() {
+                        self.app.cut_sequence_at_playhead();
+                        ui.close_menu();
+                    }
                     ui.separator();
                     ui.add_enabled_ui(self.app.selected_layer.is_some(), |ui| {
                         ui.menu_button("Add mask", |ui| {
@@ -4036,6 +4041,15 @@ impl Shell {
                     self.app.pen_path.clear();
                 }
             });
+        }
+        // Razor (Cmd/Ctrl+Shift+D). On macOS the native menu's accelerator
+        // handles it, so this keyboard path is the Windows/in-window one.
+        #[cfg(not(target_os = "macos"))]
+        if !ctx.wants_keyboard_input()
+            && ctx
+                .input(|i| i.modifiers.command && i.modifiers.shift && i.key_pressed(egui::Key::D))
+        {
+            self.app.cut_sequence_at_playhead();
         }
 
         egui::TopBottomPanel::bottom("status").show(ctx, |ui| {

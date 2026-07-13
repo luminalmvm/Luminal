@@ -73,6 +73,13 @@ pub enum Op {
         layer: Uuid,
         three_d: bool,
     },
+    /// Replace a Sequence layer's whole clip list (coarse + exactly
+    /// invertible, like SetLayerMasks; cutting/moving produce a new list).
+    SetSequenceClips {
+        comp: Uuid,
+        layer: Uuid,
+        clips: Vec<crate::sequence::Clip>,
+    },
     /// Mute or unmute a layer's audio (the audible switch).
     SetLayerAudible {
         comp: Uuid,
@@ -267,6 +274,23 @@ pub fn apply(doc: &mut Document, op: &Op) -> Result<Op, OpError> {
                 comp: *comp,
                 layer: *layer,
                 masks: previous,
+            })
+        }
+        Op::SetSequenceClips { comp, layer, clips } => {
+            let c = doc.comp_mut(*comp).ok_or(OpError::UnknownComp)?;
+            let l = c
+                .layers
+                .iter_mut()
+                .find(|l| l.id == *layer)
+                .ok_or(OpError::UnknownLayer)?;
+            let crate::model::LayerKind::Sequence { clips: slot } = &mut l.kind else {
+                return Err(OpError::UnknownLayer);
+            };
+            let previous = std::mem::replace(slot, clips.clone());
+            Ok(Op::SetSequenceClips {
+                comp: *comp,
+                layer: *layer,
+                clips: previous,
             })
         }
         Op::SetLayerThreeD {

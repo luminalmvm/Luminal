@@ -146,8 +146,12 @@ Two mechanisms make this safe, and you'll see them by name in the code:
   those clips is now wired: a Sequence layer (Composition → Add sequence layer — it starts
   from the selected footage as one clip) renders whichever clip is under the playhead
   through the same footage decode path as a plain footage layer, so its clips preview,
-  export, and cache like any other source. Cutting a clip, dragging more clips in, and
-  per-clip trimming are the next steps; the resolution and rendering are here first.
+  export, and cache like any other source. You can **cut** a clip at the playhead
+  (Composition → Cut clip, or ⌘⇧D / Ctrl+Shift+D) — it splits into two clips whose
+  speed ramps exactly partition the original, and neither clip moves (the beat-sync
+  covenant). Crucially, a clip's first frame is always its own trim-in whatever its
+  speed, so splitting and re-speeding the second half never shifts where it starts.
+  Dragging more clips in and per-clip trimming are the next steps.
 - `crates/kiriko-core/src/store.rs` — **The document store**: applies ops, publishes
   snapshots, keeps the undo/redo stacks.
 - `crates/kiriko-project/src/lib.rs` — **`.kir` files.** A `.kir` is a zip containing

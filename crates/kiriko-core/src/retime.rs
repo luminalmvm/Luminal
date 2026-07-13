@@ -328,6 +328,78 @@ impl Retime {
         }
     }
 
+    /// Split this retime at local time `t` into two retimes covering [0, t]
+    /// and [t, D], each with its own domain starting at 0 (docs/04-RETIMING.md
+    /// §5.3, §8: cutting a clip partitions its retime exactly). Exact when the
+    /// segment at the cut is a Linear-ease Rate segment — constant speed or a
+    /// linear ramp, which is the montage workflow (cut first, ramp after).
+    /// Returns None for a cut outside (0, D), or one landing in an eased or
+    /// Map segment (those need the §5 conversion, not yet implemented).
+    pub fn split_at(&self, t: Rational) -> Option<(Retime, Retime)> {
+        let d = self.boundaries.last()?.t;
+        if t <= Rational::ZERO || t >= d {
+            return None;
+        }
+        // The segment [t_i, t_{i+1}) containing the cut.
+        let i = (0..self.segments.len())
+            .find(|&i| self.boundaries[i].t <= t && t < self.boundaries[i + 1].t)?;
+        let RetimeSegment::Rate(seg) = &self.segments[i] else {
+            return None;
+        };
+        if seg.ease != Ease::Linear {
+            return None;
+        }
+        let ti = self.boundaries[i].t;
+        let ti1 = self.boundaries[i + 1].t;
+        let seg_d = ti1.checked_sub(ti).ok()?;
+        let d_left = t.checked_sub(ti).ok()?;
+        // Speed at the cut: v0 + (v1−v0)·(d_left / seg_d).
+        let u = d_left.checked_div(seg_d).ok()?;
+        let dv = seg.v1.checked_sub(seg.v0).ok()?;
+        let v_at = seg.v0.checked_add(dv.checked_mul(u).ok()?).ok()?;
+
+        // Left: original boundaries/segments up to i, then a cut boundary and
+        // the left half of segment i (Rate v0→v_at). recompute fills the s.
+        let mut lb = self.boundaries[..=i].to_vec();
+        lb.push(Boundary::new(t, self.boundaries[i].s));
+        let mut ls = self.segments[..i].to_vec();
+        ls.push(RetimeSegment::Rate(RateSegment::new(
+            seg.v0,
+            v_at,
+            Ease::Linear,
+        )));
+        let mut left = Retime {
+            boundaries: lb,
+            segments: ls,
+            allow_reverse: self.allow_reverse,
+            interpolation: self.interpolation.clone(),
+            extra: serde_json::Map::new(),
+        };
+        left.recompute_boundaries().ok()?;
+
+        // Right: a fresh 0 boundary, then the later boundaries shifted by −t;
+        // the right half of segment i (Rate v_at→v1) then the rest.
+        let mut rb = vec![Boundary::new(Rational::ZERO, left.boundaries.last()?.s)];
+        for b in &self.boundaries[i + 1..] {
+            rb.push(Boundary::new(b.t.checked_sub(t).ok()?, b.s));
+        }
+        let mut rs = vec![RetimeSegment::Rate(RateSegment::new(
+            v_at,
+            seg.v1,
+            Ease::Linear,
+        ))];
+        rs.extend(self.segments[i + 1..].iter().cloned());
+        let mut right = Retime {
+            boundaries: rb,
+            segments: rs,
+            allow_reverse: self.allow_reverse,
+            interpolation: self.interpolation.clone(),
+            extra: serde_json::Map::new(),
+        };
+        right.recompute_boundaries().ok()?;
+        Some((left, right))
+    }
+
     /// Structural sanity (docs/04-RETIMING.md §3 invariants): n + 1
     /// boundaries for n segments, first boundary at local time zero,
     /// boundary times strictly increasing.
@@ -666,6 +738,35 @@ mod tests {
         assert!((r.evaluate(4.0) - 4.0).abs() < 1e-9);
         assert!((r.speed_at(1.0) - 0.5).abs() < 1e-9);
         r.validate().unwrap();
+    }
+
+    #[test]
+    fn split_reproduces_the_curve_for_linear_segments() {
+        // Constant 2× from source 5s over [0,4], cut at 1.5.
+        let r = Retime::constant_speed(rat(4, 1), rat(5, 1), rat(2, 1));
+        let (l, rt) = r.split_at(rat(3, 2)).unwrap();
+        // Left [0,1.5] matches the original there.
+        assert!((l.evaluate(0.0) - r.evaluate(0.0)).abs() < 1e-9);
+        assert!((l.evaluate(1.5) - r.evaluate(1.5)).abs() < 1e-9);
+        // Right domain is [0,2.5]; right(x) == original(1.5 + x).
+        assert!((rt.evaluate(0.0) - r.evaluate(1.5)).abs() < 1e-9);
+        assert!((rt.evaluate(1.0) - r.evaluate(2.5)).abs() < 1e-9);
+        assert!((rt.evaluate(2.5) - r.evaluate(4.0)).abs() < 1e-9);
+        // The two halves share the cut's source position exactly (C0).
+        assert_eq!(l.boundaries.last().unwrap().s, rt.boundaries[0].s);
+
+        // A linear ramp splits and stays exact.
+        let ramp = Retime::single_ramp(rat(4, 1), rat(0, 1), rat(1, 1), rat(3, 1), Ease::Linear);
+        let (rl, rr) = ramp.split_at(rat(2, 1)).unwrap();
+        assert!((rl.evaluate(2.0) - ramp.evaluate(2.0)).abs() < 1e-9);
+        assert!((rr.evaluate(0.0) - ramp.evaluate(2.0)).abs() < 1e-9);
+        assert!((rr.evaluate(2.0) - ramp.evaluate(4.0)).abs() < 1e-9);
+
+        // Refuses out-of-range and eased/curved cuts (need §5 conversion).
+        assert!(r.split_at(rat(0, 1)).is_none());
+        assert!(r.split_at(rat(4, 1)).is_none());
+        let eased = Retime::single_ramp(rat(4, 1), rat(0, 1), rat(1, 1), rat(3, 1), Ease::Smooth);
+        assert!(eased.split_at(rat(2, 1)).is_none());
     }
 
     #[test]
