@@ -2513,6 +2513,7 @@ dependencies = [
  "egui-wgpu",
  "egui_dock",
  "kiriko-audio",
+ "kiriko-cache",
  "kiriko-core",
  "kiriko-gpu",
  "kiriko-media",

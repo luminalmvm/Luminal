@@ -95,6 +95,12 @@ pub mod preview {
             let live = generation.clone();
             std::thread::spawn(move || {
                 let mut decoders: HashMap<Uuid, kiriko_media::VideoDecoder> = HashMap::new();
+                // Decoded-frame RAM cache (K-016 tier seed): recently shown
+                // frames re-display instantly instead of re-decoding.
+                let mut frame_cache: kiriko_cache::ByteLru<
+                    (Uuid, usize, Option<u32>),
+                    CachedFrame,
+                > = kiriko_cache::ByteLru::new(512 * 1024 * 1024);
                 loop {
                     // Block for one request, then drain to the newest (latest wins).
                     let mut req = match rx.recv() {
@@ -136,10 +142,33 @@ pub mod preview {
         }
     }
 
+    struct CachedFrame {
+        width: u32,
+        height: u32,
+        rgba: Vec<u8>,
+    }
+
+    impl kiriko_cache::ByteSized for CachedFrame {
+        fn byte_size(&self) -> usize {
+            self.rgba.len() + 16
+        }
+    }
+
     fn decode(
         decoders: &mut HashMap<Uuid, kiriko_media::VideoDecoder>,
+        cache: &mut kiriko_cache::ByteLru<(Uuid, usize, Option<u32>), CachedFrame>,
         req: &Request,
     ) -> Result<FramePixels, String> {
+        let cache_key = (req.item, req.frame, req.target_width);
+        if let Some(hit) = cache.get(&cache_key) {
+            return Ok(FramePixels {
+                width: hit.width,
+                height: hit.height,
+                rgba: hit.rgba.clone(),
+                frame: req.frame,
+                item: req.item,
+            });
+        }
         let dec = match decoders.entry(req.item) {
             std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
             std::collections::hash_map::Entry::Vacant(e) => {
@@ -154,6 +183,14 @@ pub mod preview {
         let out = dec
             .frame_rgba(frame, req.target_width)
             .map_err(|e| e.to_string())?;
+        cache.insert(
+            cache_key,
+            CachedFrame {
+                width: out.width,
+                height: out.height,
+                rgba: out.rgba.clone(),
+            },
+        );
         Ok(FramePixels {
             width: out.width,
             height: out.height,
@@ -190,6 +227,7 @@ pub mod preview {
 
     fn decode_comp(
         decoders: &mut HashMap<Uuid, kiriko_media::VideoDecoder>,
+        cache: &mut kiriko_cache::ByteLru<(Uuid, usize, Option<u32>), CachedFrame>,
         comp: Uuid,
         frame: usize,
         jobs: &[CompJob],
@@ -203,7 +241,7 @@ pub mod preview {
                 frame: job.source_frame,
                 target_width: job.target_width,
             };
-            let px = decode(decoders, &req)?;
+            let px = decode(decoders, cache, &req)?;
             layers.push(CompLayerPixels {
                 layer: job.layer,
                 width: px.width,
