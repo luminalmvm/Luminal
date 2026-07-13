@@ -2139,28 +2139,11 @@ fn viewer_footage(
 /// The graph editor (07-UI-SPEC; value view v1 — the speed view joins with
 /// Retime). Draws the selected layer's animated property as a live curve;
 /// keys drag (one op per release), double-click adds, right-click removes.
+/// Timeline graph mode (K-070): keep the left column (the layer / property
+/// list — Mack) and show the selected property's curve in the track area.
+/// Clicking a property in the left column graphs it.
 fn graph_editor_panel(ui: &mut egui::Ui, theme: &Theme, app: &mut AppState) {
-    use kiriko_core::anim::{Animation, Keyframe, SideInterp};
     use kiriko_core::model::TransformProp;
-
-    let doc = app.store.snapshot();
-    let comp = app
-        .preview_comp
-        .or(app.selected_comp)
-        .and_then(|id| doc.comp(id));
-    let (Some(comp), Some(layer_id)) = (comp, app.selected_layer) else {
-        empty_hint(
-            ui,
-            theme,
-            "Graph editor",
-            "Select a layer in the Timeline to edit its curves.",
-        );
-        return;
-    };
-    let Some(layer) = comp.layers.iter().find(|l| l.id == layer_id) else {
-        empty_hint(ui, theme, "Graph editor", "The selected layer is gone.");
-        return;
-    };
 
     const PROPS: [(TransformProp, &str); 8] = [
         (TransformProp::PositionX, "Position x"),
@@ -2172,72 +2155,183 @@ fn graph_editor_panel(ui: &mut egui::Ui, theme: &Theme, app: &mut AppState) {
         (TransformProp::AnchorX, "Anchor x"),
         (TransformProp::AnchorY, "Anchor y"),
     ];
-    let animated: Vec<(TransformProp, &str)> = PROPS
-        .iter()
-        .copied()
-        .filter(|(p, _)| layer.transform.get(*p).is_animated())
-        .collect();
-    if animated.is_empty() {
+
+    let doc = app.store.snapshot();
+    let comp = app
+        .preview_comp
+        .or(app.selected_comp)
+        .and_then(|id| doc.comp(id));
+    let Some(comp) = comp else {
         empty_hint(
             ui,
             theme,
-            &layer.name,
-            "No animated properties — click a stopwatch in the Timeline first.",
+            "Graph editor",
+            "Open a composition to edit curves.",
         );
         return;
-    }
-    let current = app
-        .graph_prop
-        .filter(|p| animated.iter().any(|(a, _)| a == p))
-        .unwrap_or(animated[0].0);
-    app.graph_prop = Some(current);
+    };
 
-    let mut set_sides: Option<SideInterp> = None;
-    ui.horizontal(|ui| {
-        ui.label(egui::RichText::new(&layer.name).color(theme.text_secondary));
-        let current_name = animated
-            .iter()
-            .find(|(p, _)| *p == current)
-            .map(|(_, n)| *n)
-            .unwrap_or("?");
-        bare_dropdown(ui, current_name, |ui| {
-            for (p, name) in &animated {
-                if ui.selectable_label(*p == current, *name).clicked() {
-                    app.graph_prop = Some(*p);
-                    ui.close_menu();
-                }
-            }
-        });
-        ui.separator();
-        if ui
-            .selectable_label(!app.graph_speed_view, "Value")
+    let area = ui.available_rect_before_wrap();
+    let name_w = app
+        .timeline_name_w
+        .clamp(96.0, (area.width() - 120.0).max(96.0));
+    let left_rect =
+        egui::Rect::from_min_max(area.min, egui::pos2(area.left() + name_w, area.bottom()));
+    let plot_rect =
+        egui::Rect::from_min_max(egui::pos2(area.left() + name_w + 6.0, area.top()), area.max);
+    ui.painter().line_segment(
+        [
+            egui::pos2(area.left() + name_w + 2.0, area.top()),
+            egui::pos2(area.left() + name_w + 2.0, area.bottom()),
+        ],
+        egui::Stroke::new(1.0_f32, theme.hairline),
+    );
+
+    // Left column: every layer, and the selected layer's animated properties.
+    // Deferred so the immutable borrow of the document (comp) and the mutable
+    // selection state don't overlap.
+    let mut picked_layer: Option<uuid::Uuid> = None;
+    let mut picked_prop: Option<TransformProp> = None;
+    let mut left = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(left_rect)
+            .layout(egui::Layout::top_down(egui::Align::Min)),
+    );
+    left.set_clip_rect(left_rect);
+    left.spacing_mut().item_spacing.y = 2.0;
+    for layer in &comp.layers {
+        let selected = app.selected_layer == Some(layer.id);
+        if left
+            .selectable_label(selected, trim_title(&layer.name))
             .clicked()
         {
+            picked_layer = Some(layer.id);
+        }
+        if selected {
+            let mut any = false;
+            for (p, name) in PROPS.iter().copied() {
+                if !layer.transform.get(p).is_animated() {
+                    continue;
+                }
+                any = true;
+                let is_cur = app.graph_prop == Some(p);
+                left.horizontal(|ui| {
+                    ui.add_space(16.0);
+                    if ui.selectable_label(is_cur, name).clicked() {
+                        picked_prop = Some(p);
+                    }
+                });
+            }
+            if !any {
+                left.horizontal(|ui| {
+                    ui.add_space(16.0);
+                    ui.label(
+                        egui::RichText::new("no animated properties")
+                            .small()
+                            .italics()
+                            .color(theme.text_muted),
+                    );
+                });
+            }
+        }
+    }
+    if let Some(l) = picked_layer {
+        app.selected_layer = Some(l);
+    }
+    if let Some(p) = picked_prop {
+        app.graph_prop = Some(p);
+    }
+
+    // Right area: the curve for the selected layer / property.
+    let Some(layer_id) = app.selected_layer else {
+        hint_in_rect(ui, theme, plot_rect, "Select a layer to edit its curves.");
+        return;
+    };
+    let Some(layer) = comp.layers.iter().find(|l| l.id == layer_id) else {
+        hint_in_rect(ui, theme, plot_rect, "The selected layer is gone.");
+        return;
+    };
+    let animated: Vec<TransformProp> = PROPS
+        .iter()
+        .map(|(p, _)| *p)
+        .filter(|p| layer.transform.get(*p).is_animated())
+        .collect();
+    let Some(&first) = animated.first() else {
+        hint_in_rect(
+            ui,
+            theme,
+            plot_rect,
+            "Click a stopwatch in the layer view to animate a property.",
+        );
+        return;
+    };
+    let current = app
+        .graph_prop
+        .filter(|p| animated.contains(p))
+        .unwrap_or(first);
+    app.graph_prop = Some(current);
+    graph_plot(ui, theme, app, comp, layer, current, plot_rect);
+}
+
+/// Centre a muted hint inside `rect` (empty state of a sub-pane).
+fn hint_in_rect(ui: &egui::Ui, theme: &Theme, rect: egui::Rect, msg: &str) {
+    ui.painter().text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        msg,
+        egui::FontId::proportional(12.0),
+        theme.text_muted,
+    );
+}
+
+/// Draw one keyframed property's value/speed curve inside `rect`, with a
+/// compact Value/Speed + Ease/Linear header and draggable keys.
+fn graph_plot(
+    ui: &mut egui::Ui,
+    theme: &Theme,
+    app: &mut AppState,
+    comp: &kiriko_core::model::Composition,
+    layer: &kiriko_core::model::Layer,
+    current: kiriko_core::model::TransformProp,
+    rect: egui::Rect,
+) {
+    use kiriko_core::anim::{Animation, Keyframe, SideInterp};
+    let layer_id = layer.id;
+
+    // Compact header: value/speed lens and blanket ease/linear.
+    let header = egui::Rect::from_min_max(rect.min, egui::pos2(rect.right(), rect.top() + 22.0));
+    let mut set_sides: Option<SideInterp> = None;
+    {
+        let mut h = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(header)
+                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+        );
+        h.set_clip_rect(header);
+        if h.selectable_label(!app.graph_speed_view, "Value").clicked() {
             app.graph_speed_view = false;
         }
-        if ui
-            .selectable_label(app.graph_speed_view, "Speed")
+        if h.selectable_label(app.graph_speed_view, "Speed")
             .on_hover_text("The derivative view — editing here arrives with Retime")
             .clicked()
         {
             app.graph_speed_view = true;
         }
-        ui.separator();
-        if ui
-            .small_button("Ease")
+        h.separator();
+        if h.small_button("Ease")
             .on_hover_text("Easy-ease every key of this curve (AE's F9)")
             .clicked()
         {
             set_sides = Some(kiriko_core::anim::EASY_EASE);
         }
-        if ui
-            .small_button("Linear")
+        if h.small_button("Linear")
             .on_hover_text("Straighten every key of this curve")
             .clicked()
         {
             set_sides = Some(SideInterp::Linear);
         }
-    });
+    }
+    let rect = egui::Rect::from_min_max(egui::pos2(rect.left(), rect.top() + 22.0), rect.max);
 
     let slot = layer.transform.get(current);
     let Animation::Keyframed(keys) = &slot.animation else {
@@ -2245,7 +2339,6 @@ fn graph_editor_panel(ui: &mut egui::Ui, theme: &Theme, app: &mut AppState) {
     };
 
     // ---- plot geometry: x = layer time over the comp span, y = value ----
-    let rect = ui.available_rect_before_wrap();
     ui.painter().rect_filled(rect, 0.0, theme.surface_0);
     let duration = comp.duration.0.to_f64().max(1e-6);
     let (mut vmin, mut vmax) = keys.iter().fold((f64::MAX, f64::MIN), |(lo, hi), k| {
