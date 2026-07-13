@@ -24,7 +24,13 @@ impl KirikoApp {
             None => vec!["GPU: unavailable — software rendering".to_owned()],
         };
         Self {
-            shell: Shell::new(&cc.egui_ctx, restored, boot_notes),
+            shell: Shell::new(
+                &cc.egui_ctx,
+                restored,
+                boot_notes,
+                #[cfg(feature = "media")]
+                cc.wgpu_render_state.clone(),
+            ),
         }
     }
 }

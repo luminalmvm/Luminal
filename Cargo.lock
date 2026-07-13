@@ -2502,9 +2502,11 @@ name = "kiriko-ui"
 version = "0.1.0"
 dependencies = [
  "egui",
+ "egui-wgpu",
  "egui_dock",
  "kiriko-audio",
  "kiriko-core",
+ "kiriko-gpu",
  "kiriko-media",
  "kiriko-project",
  "muda",

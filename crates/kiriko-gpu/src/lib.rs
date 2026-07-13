@@ -29,6 +29,12 @@ pub struct GpuContext {
 }
 
 impl GpuContext {
+    /// Wrap an existing device/queue (eframe's render state — wgpu handles
+    /// are internally reference-counted, so cloning shares the one device).
+    pub fn from_parts(device: wgpu::Device, queue: wgpu::Queue) -> Self {
+        Self { device, queue }
+    }
+
     /// Headless context (tests, future CLI export).
     pub fn headless() -> Result<Self, GpuError> {
         let instance = wgpu::Instance::default();

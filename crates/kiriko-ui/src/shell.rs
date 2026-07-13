@@ -55,7 +55,7 @@ pub fn default_layout() -> DockState<Panel> {
 struct PanelViewer<'a> {
     theme: &'a Theme,
     app: &'a mut AppState,
-    preview_tex: Option<&'a egui::TextureHandle>,
+    preview_display: Option<(egui::TextureId, egui::Vec2)>,
 }
 
 impl egui_dock::TabViewer for PanelViewer<'_> {
@@ -67,7 +67,7 @@ impl egui_dock::TabViewer for PanelViewer<'_> {
 
     fn ui(&mut self, ui: &mut egui::Ui, tab: &mut Panel) {
         match tab {
-            Panel::Viewer => viewer_panel(ui, self.theme, self.app, self.preview_tex),
+            Panel::Viewer => viewer_panel(ui, self.theme, self.app, self.preview_display),
             Panel::Project => project_panel(ui, self.theme, self.app),
             Panel::Timeline => timeline_panel(ui, self.theme, self.app),
             Panel::EffectControls => empty_hint(
@@ -93,7 +93,7 @@ fn viewer_panel(
     ui: &mut egui::Ui,
     theme: &Theme,
     app: &mut AppState,
-    tex: Option<&egui::TextureHandle>,
+    tex: Option<(egui::TextureId, egui::Vec2)>,
 ) {
     let rect = ui.available_rect_before_wrap();
     ui.painter().rect_filled(rect, 0.0, theme.viewer_surround);
@@ -357,7 +357,7 @@ fn viewer_footage(
     ui: &mut egui::Ui,
     theme: &Theme,
     app: &mut AppState,
-    tex: Option<&egui::TextureHandle>,
+    tex: Option<(egui::TextureId, egui::Vec2)>,
     rect: egui::Rect,
 ) {
     use crate::app_state::media::MediaStatus;
@@ -370,15 +370,14 @@ fn viewer_footage(
     let bar_h = 30.0;
     let image_area = egui::Rect::from_min_max(rect.min, egui::pos2(rect.max.x, rect.max.y - bar_h));
 
-    if let Some(tex) = tex {
-        let size = tex.size_vec2();
+    if let Some((id, size)) = tex {
         if size.x > 0.0 && size.y > 0.0 {
             let scale = (image_area.width() / size.x)
                 .min(image_area.height() / size.y)
                 .min(1.0);
             let draw = egui::Rect::from_center_size(image_area.center(), size * scale);
             ui.painter().image(
-                tex.id(),
+                id,
                 draw,
                 egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
                 egui::Color32::WHITE,
@@ -478,6 +477,53 @@ fn empty_hint(ui: &mut egui::Ui, theme: &Theme, title: &str, hint: &str) {
     });
 }
 
+/// GPU display path (slice 5 completion): decoded sRGB bytes → linear fp16
+/// working texture → display texture registered with egui. Falls back to the
+/// CPU/egui-texture path when no wgpu render state exists.
+#[cfg(feature = "media")]
+pub struct GpuViewer {
+    ctx: kiriko_gpu::GpuContext,
+    engine: kiriko_gpu::ColourEngine,
+    render_state: egui_wgpu::RenderState,
+    /// Keep the display texture alive while egui samples it.
+    current: Option<(egui_wgpu::wgpu::Texture, egui::TextureId)>,
+}
+
+#[cfg(feature = "media")]
+impl GpuViewer {
+    pub fn new(render_state: egui_wgpu::RenderState) -> Self {
+        let ctx = kiriko_gpu::GpuContext::from_parts(
+            render_state.device.clone(),
+            render_state.queue.clone(),
+        );
+        let engine = kiriko_gpu::ColourEngine::new(&ctx);
+        Self {
+            ctx,
+            engine,
+            render_state,
+            current: None,
+        }
+    }
+
+    /// Upload a decoded frame through the colour pipeline; returns the egui
+    /// texture id + size to paint.
+    fn present(&mut self, rgba: &[u8], w: u32, h: u32) -> (egui::TextureId, egui::Vec2) {
+        let src = self.engine.upload_srgb8(&self.ctx, rgba, w, h);
+        let linear = self.engine.linearise(&self.ctx, &src);
+        let shown = self.engine.display(&self.ctx, &linear);
+        let view = shown.create_view(&Default::default());
+        let id = self.render_state.renderer.write().register_native_texture(
+            &self.ctx.device,
+            &view,
+            egui_wgpu::wgpu::FilterMode::Linear,
+        );
+        if let Some((_, old)) = self.current.replace((shown, id)) {
+            self.render_state.renderer.write().free_texture(&old);
+        }
+        (id, egui::vec2(w as f32, h as f32))
+    }
+}
+
 /// Persisted UI state (dock layout only; app state is runtime).
 #[derive(Serialize, Deserialize)]
 pub struct Shell {
@@ -493,6 +539,12 @@ pub struct Shell {
     /// background-decoded pixels; a memcpy, not a decode — K-017 holds).
     #[serde(skip, default)]
     preview_tex: Option<egui::TextureHandle>,
+    /// What the Viewer paints: id + pixel size (GPU path or CPU fallback).
+    #[serde(skip, default)]
+    preview_display: Option<(egui::TextureId, egui::Vec2)>,
+    #[cfg(feature = "media")]
+    #[serde(skip, default)]
+    gpu: Option<GpuViewer>,
     /// Native macOS menu bar; None on other platforms (07-UI-SPEC).
     #[cfg(target_os = "macos")]
     #[serde(skip, default)]
@@ -507,6 +559,9 @@ impl Default for Shell {
             app: AppState::default(),
             splash: None,
             preview_tex: None,
+            preview_display: None,
+            #[cfg(feature = "media")]
+            gpu: None,
             #[cfg(target_os = "macos")]
             native_menu: None,
         }
@@ -514,7 +569,12 @@ impl Default for Shell {
 }
 
 impl Shell {
-    pub fn new(ctx: &egui::Context, restored: Option<Self>, boot_notes: Vec<String>) -> Self {
+    pub fn new(
+        ctx: &egui::Context,
+        restored: Option<Self>,
+        boot_notes: Vec<String>,
+        #[cfg(feature = "media")] render_state: Option<egui_wgpu::RenderState>,
+    ) -> Self {
         let workspace_restored = restored.is_some();
         let mut shell = restored.unwrap_or_default();
         shell.theme.apply(ctx);
@@ -537,6 +597,19 @@ impl Shell {
             "Media engine: FFmpeg (libavformat {})",
             kiriko_media::ffmpeg_version()
         )));
+        #[cfg(feature = "media")]
+        match render_state {
+            Some(rs) => {
+                shell.gpu = Some(GpuViewer::new(rs));
+                lines.push(BootLine::ok(
+                    "Colour pipeline: GPU (sRGB → linear fp16 → display)",
+                ));
+            }
+            None => lines.push(BootLine {
+                text: "Colour pipeline: CPU fallback (no wgpu render state)".into(),
+                failed: true,
+            }),
+        }
         lines.push(BootLine::ok(
             "Effects: none registered — suite arrives in phase 3",
         ));
@@ -702,7 +775,7 @@ impl Shell {
             if self.app.media.any_probing() {
                 ctx.request_repaint_after(std::time::Duration::from_millis(150));
             }
-            if self.app.preview_item.is_some() && self.preview_tex.is_none() {
+            if self.app.preview_item.is_some() && self.preview_display.is_none() {
                 // Selection made before probe finished: retry until Ready.
                 self.app.refresh_preview();
             }
@@ -712,12 +785,18 @@ impl Shell {
             }
             match newest {
                 Some(Ok(px)) if Some(px.item) == self.app.preview_item => {
-                    let image = egui::ColorImage::from_rgba_unmultiplied(
-                        [px.width as usize, px.height as usize],
-                        &px.rgba,
-                    );
-                    self.preview_tex =
-                        Some(ctx.load_texture("viewer-frame", image, egui::TextureOptions::LINEAR));
+                    if let Some(gpu) = &mut self.gpu {
+                        self.preview_display = Some(gpu.present(&px.rgba, px.width, px.height));
+                    } else {
+                        let image = egui::ColorImage::from_rgba_unmultiplied(
+                            [px.width as usize, px.height as usize],
+                            &px.rgba,
+                        );
+                        let tex =
+                            ctx.load_texture("viewer-frame", image, egui::TextureOptions::LINEAR);
+                        self.preview_display = Some((tex.id(), tex.size_vec2()));
+                        self.preview_tex = Some(tex);
+                    }
                 }
                 Some(Err(e)) => self.app.error = Some(format!("preview: {e}")),
                 _ => {}
@@ -822,7 +901,7 @@ impl Shell {
             dock,
             theme,
             app,
-            preview_tex,
+            preview_display,
             ..
         } = self;
         DockArea::new(dock).style(style).show(
@@ -830,7 +909,7 @@ impl Shell {
             &mut PanelViewer {
                 theme,
                 app,
-                preview_tex: preview_tex.as_ref(),
+                preview_display: *preview_display,
             },
         );
     }
