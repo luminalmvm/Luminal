@@ -220,6 +220,12 @@ Two mechanisms make this safe, and you'll see them by name in the code:
   click-to-place drawing: each click drops a vertex, clicking the first one (it grows a
   ring once closable) closes the shape into a mask, Escape cancels, right-click on any
   handle removes a vertex. Curved tangent handles are the remaining slice.
+- **The tool strip** — the row of buttons under the menu sets what a Viewer drag does,
+  the way every editor's toolbar does. Select (V) and Hand (H) both pan the view for
+  now (object selection comes with the object tools); Shape (Q) rubber-bands a new mask
+  — right-click the Shape button to choose rectangle, ellipse or star; Pen (G) is the
+  click-to-place mask drawing above. The mode is one value (`ToolMode`) the Viewer reads
+  each frame, so the whole app agrees on what the mouse is doing.
 - **Masks on Precomp layers** — a masked transition can now wipe a whole nested comp,
   the flow staple. Pixel layers (footage, solids, text) get their masks applied on the
   CPU before upload; a Precomp's pixels only ever exist on the GPU, so its mask stack

@@ -378,6 +378,40 @@ fn rat(n: i64, d: i64) -> Rational {
 /// The composition settings dialogue (AE: Composition Settings): used both
 /// for creating a comp (editing = None) and editing one later. Opened with
 /// footage-matched defaults when a drop starts the project's first comp.
+/// The parametric shape the shape tool draws.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum ShapeKind {
+    #[default]
+    Rectangle,
+    Ellipse,
+    Star,
+}
+
+impl ShapeKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            ShapeKind::Rectangle => "Rectangle",
+            ShapeKind::Ellipse => "Ellipse",
+            ShapeKind::Star => "Star",
+        }
+    }
+}
+
+/// What a pointer drag/click does in the Viewer (the toolbar's mouse mode).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum ToolMode {
+    /// Click selects; drag pans (object selection arrives with the object
+    /// tools — for now Select pans like Hand so the view stays navigable).
+    #[default]
+    Select,
+    /// Drag pans the view (the hand).
+    Hand,
+    /// Drag rubber-bands a new mask of the current [`ShapeKind`].
+    Shape,
+    /// Click places mask vertices (pen).
+    Pen,
+}
+
 pub struct CompDialog {
     /// Some = editing an existing comp; None = creating a new one.
     pub editing: Option<Uuid>,
@@ -490,9 +524,12 @@ pub struct AppState {
     /// Mask vertex mid-drag in the Viewer: (mask index, vertex index,
     /// layer-space position). Committed as one SetLayerMasks op on release.
     pub mask_drag: Option<(usize, usize, (f64, f64))>,
-    /// Pen tool armed: Viewer clicks place mask vertices on the selected
-    /// layer instead of panning.
-    pub pen_mode: bool,
+    /// The active pointer tool (toolbar): what a Viewer drag/click does.
+    pub tool: ToolMode,
+    /// The shape the shape tool draws (its last-picked kind).
+    pub shape_kind: ShapeKind,
+    /// Shape-tool rubber-band start in layer space; Some while dragging.
+    pub shape_drag: Option<(f64, f64)>,
     /// The pen's in-progress path (layer space); closes into a mask when the
     /// first vertex is clicked again.
     pub pen_path: Vec<kiriko_core::mask::Vertex>,
@@ -600,7 +637,9 @@ impl Default for AppState {
             comp_counter: 0,
             selected_item: None,
             mask_drag: None,
-            pen_mode: false,
+            tool: ToolMode::default(),
+            shape_kind: ShapeKind::default(),
+            shape_drag: None,
             pen_path: Vec::new(),
             comp_dialog: None,
         }

@@ -3,7 +3,7 @@
 //! Layout per docs/07-UI-SPEC.md (Edit workspace): Project left, Viewer centre,
 //! Effect Controls / Effects & Presets right, Timeline across the bottom.
 
-use crate::app_state::AppState;
+use crate::app_state::{AppState, ShapeKind, ToolMode};
 use crate::splash::{BootLine, Splash};
 use crate::theme::Theme;
 use egui_dock::{DockArea, DockState, NodeIndex, Style as DockStyle};
@@ -1592,6 +1592,100 @@ fn mask_overlay(
 /// Pen tool (slice 2): while armed, Viewer clicks place vertices of a new
 /// mask on the selected layer; clicking the first vertex closes it into a
 /// mask (one undo); Escape cancels.
+/// Shape tool: drag a rubber-band in the Viewer to create a rectangle,
+/// ellipse or star mask (the current [`ShapeKind`]) on the selected layer.
+#[cfg(feature = "media")]
+fn shape_overlay(
+    ui: &mut egui::Ui,
+    theme: &Theme,
+    app: &mut AppState,
+    draw: egui::Rect,
+    scale: f32,
+    view: &egui::Response,
+) {
+    if app.tool != ToolMode::Shape || app.mask_drag.is_some() {
+        return;
+    }
+    if view.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
+    }
+    let Some(comp_id) = app.preview_comp else {
+        return;
+    };
+    let doc = app.store.snapshot();
+    let Some(comp) = doc.comp(comp_id) else {
+        return;
+    };
+    let Some(layer) = app
+        .selected_layer
+        .and_then(|id| comp.layers.iter().find(|l| l.id == id))
+    else {
+        return;
+    };
+    if layer.switches.three_d {
+        return;
+    }
+    let fps = comp.frame_rate.fps().max(1.0);
+    let lt = app.preview_frame as f64 / fps - layer.start_offset.0.to_f64();
+    let map = LayerMap::of(layer, lt, draw, scale);
+
+    if view.drag_started() {
+        if let Some(pos) = view.interact_pointer_pos() {
+            app.shape_drag = Some(map.layer_of(pos));
+        }
+    }
+    if let Some(start) = app.shape_drag {
+        let now = view
+            .interact_pointer_pos()
+            .map(|p| map.layer_of(p))
+            .unwrap_or(start);
+        // Preview outline in clay.
+        let a = map.to_screen(start);
+        let b = map.to_screen(now);
+        ui.painter().rect_stroke(
+            egui::Rect::from_two_pos(a, b),
+            2.0,
+            egui::Stroke::new(1.0_f32, theme.accent),
+            egui::StrokeKind::Inside,
+        );
+        if view.drag_stopped() {
+            app.shape_drag = None;
+            let (x0, x1) = (start.0.min(now.0), start.0.max(now.0));
+            let (y0, y1) = (start.1.min(now.1), start.1.max(now.1));
+            let (w, h) = (x1 - x0, y1 - y0);
+            if w > 2.0 && h > 2.0 {
+                let mask = match app.shape_kind {
+                    ShapeKind::Rectangle => kiriko_core::mask::Mask::rectangle(x0, y0, w, h),
+                    ShapeKind::Ellipse => kiriko_core::mask::Mask::ellipse(
+                        x0 + w * 0.5,
+                        y0 + h * 0.5,
+                        w * 0.5,
+                        h * 0.5,
+                    ),
+                    ShapeKind::Star => {
+                        let outer = w.min(h) * 0.5;
+                        kiriko_core::mask::Mask::star(
+                            x0 + w * 0.5,
+                            y0 + h * 0.5,
+                            outer,
+                            outer * 0.42,
+                            5,
+                        )
+                    }
+                };
+                let mut masks = layer.masks.clone();
+                masks.push(mask);
+                app.commit(kiriko_core::Op::SetLayerMasks {
+                    comp: comp_id,
+                    layer: layer.id,
+                    masks,
+                });
+                app.refresh_preview();
+            }
+        }
+    }
+}
+
 #[cfg(feature = "media")]
 fn pen_overlay(
     ui: &mut egui::Ui,
@@ -1601,11 +1695,11 @@ fn pen_overlay(
     scale: f32,
     view: &egui::Response,
 ) {
-    if !app.pen_mode {
+    if app.tool != ToolMode::Pen {
         return;
     }
     if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-        app.pen_mode = false;
+        app.tool = ToolMode::Select;
         app.pen_path.clear();
         return;
     }
@@ -1672,7 +1766,7 @@ fn pen_overlay(
                     opacity: 100.0,
                     extra: serde_json::Map::new(),
                 });
-                app.pen_mode = false;
+                app.tool = ToolMode::Select;
                 app.commit(kiriko_core::Op::SetLayerMasks {
                     comp: comp_id,
                     layer: layer.id,
@@ -1758,8 +1852,12 @@ fn viewer_footage(
                     }
                 }
             }
-            if view.dragged() {
+            // Drag pans in Select/Hand; Shape and Pen intercept it below.
+            if view.dragged() && matches!(app.tool, ToolMode::Select | ToolMode::Hand) {
                 app.view_pan += view.drag_delta();
+            }
+            if matches!(app.tool, ToolMode::Hand) && view.hovered() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
             }
             if view.double_clicked() {
                 app.view_zoom = 1.0;
@@ -1786,6 +1884,8 @@ fn viewer_footage(
             mask_overlay(ui, theme, app, draw, scale);
             #[cfg(feature = "media")]
             pen_overlay(ui, theme, app, draw, scale, &view);
+            #[cfg(feature = "media")]
+            shape_overlay(ui, theme, app, draw, scale, &view);
         }
     } else {
         ui.painter().text(
@@ -1843,21 +1943,6 @@ fn viewer_footage(
                             .small()
                             .color(theme.text_muted),
                     );
-                    if app.preview_comp.is_some() {
-                        let armed = app.pen_mode;
-                        if ui
-                            .selectable_label(armed, "Pen")
-                            .on_hover_text(if armed {
-                                "Click to place vertices; click the first one to close; Esc cancels"
-                            } else {
-                                "Draw a mask on the selected layer"
-                            })
-                            .clicked()
-                        {
-                            app.pen_mode = !armed;
-                            app.pen_path.clear();
-                        }
-                    }
                     if frames > 1 {
                         let mut frame = app.preview_frame;
                         let slider = egui::Slider::new(&mut frame, 0..=frames - 1)
@@ -3564,6 +3649,81 @@ impl Shell {
                 });
             });
         });
+
+        // Tool strip: the pointer's mode (docs/07-UI-SPEC toolbar). Object
+        // tools join as they land; today: navigation and mask drawing.
+        egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                let tool = self.app.tool;
+                if ui
+                    .selectable_label(tool == ToolMode::Select, "Select")
+                    .on_hover_text("Select / move the view (V)")
+                    .clicked()
+                {
+                    self.app.tool = ToolMode::Select;
+                }
+                if ui
+                    .selectable_label(tool == ToolMode::Hand, "Hand")
+                    .on_hover_text("Drag to pan the view (H)")
+                    .clicked()
+                {
+                    self.app.tool = ToolMode::Hand;
+                }
+                let shape_resp = ui
+                    .selectable_label(
+                        tool == ToolMode::Shape,
+                        format!("Shape · {}", self.app.shape_kind.label()),
+                    )
+                    .on_hover_text(
+                        "Drag in the Viewer to draw a mask — right-click to pick a shape (Q)",
+                    );
+                if shape_resp.clicked() {
+                    self.app.tool = ToolMode::Shape;
+                }
+                shape_resp.context_menu(|ui| {
+                    for kind in [ShapeKind::Rectangle, ShapeKind::Ellipse, ShapeKind::Star] {
+                        if ui
+                            .selectable_label(self.app.shape_kind == kind, kind.label())
+                            .clicked()
+                        {
+                            self.app.shape_kind = kind;
+                            self.app.tool = ToolMode::Shape;
+                            ui.close_menu();
+                        }
+                    }
+                });
+                if ui
+                    .selectable_label(tool == ToolMode::Pen, "Pen")
+                    .on_hover_text("Click points to draw a mask; click the first to close (G)")
+                    .clicked()
+                {
+                    self.app.tool = if tool == ToolMode::Pen {
+                        ToolMode::Select
+                    } else {
+                        ToolMode::Pen
+                    };
+                    self.app.pen_path.clear();
+                }
+            });
+        });
+        // Single-key tool shortcuts, ignored while a text field has focus.
+        if !ctx.wants_keyboard_input() {
+            ctx.input(|i| {
+                if i.key_pressed(egui::Key::V) {
+                    self.app.tool = ToolMode::Select;
+                }
+                if i.key_pressed(egui::Key::H) {
+                    self.app.tool = ToolMode::Hand;
+                }
+                if i.key_pressed(egui::Key::Q) {
+                    self.app.tool = ToolMode::Shape;
+                }
+                if i.key_pressed(egui::Key::G) {
+                    self.app.tool = ToolMode::Pen;
+                    self.app.pen_path.clear();
+                }
+            });
+        }
 
         egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
             ui.horizontal(|ui| {
