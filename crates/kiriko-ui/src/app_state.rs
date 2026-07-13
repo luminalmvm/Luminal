@@ -392,6 +392,12 @@ pub struct AppState {
     pub prop_edit: Option<(Uuid, kiriko_core::model::TransformProp, f64)>,
     /// In-flight bar-edge trim: (layer, trimming_out_edge, provisional seconds).
     pub trim_edit: Option<(Uuid, bool, f64)>,
+    /// Layer whose properties the graph editor shows (clicked in the Timeline).
+    pub selected_layer: Option<Uuid>,
+    /// Property shown in the graph editor.
+    pub graph_prop: Option<kiriko_core::model::TransformProp>,
+    /// In-flight keyframe drag: (key index, provisional layer-time, value).
+    pub graph_edit: Option<(usize, f64, f64)>,
     /// Comp shown in the Viewer (takes precedence over preview_item).
     pub preview_comp: Option<Uuid>,
     /// Wall-clock comp playback v0 (the frame scheduler replaces this):
@@ -436,6 +442,9 @@ impl Default for AppState {
             audio_tx,
             prop_edit: None,
             trim_edit: None,
+            selected_layer: None,
+            graph_prop: None,
+            graph_edit: None,
             preview_comp: None,
             comp_playback: None,
             preview_item: None,

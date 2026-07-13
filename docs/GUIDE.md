@@ -170,6 +170,11 @@ Two mechanisms make this safe, and you'll see them by name in the code:
   played *is* the playback clock: video asks "what time is it?" every frame and shows
   whatever frame matches. One clock, owned by the audio hardware — that's why picture and
   sound can't drift apart, and it's the same design the full engine keeps forever.
+- The **graph editor** (tabbed with the Timeline) — click a layer, and its animated
+  properties draw as live curves: drag the square keyframes (value and time together, one
+  undo per drag), double-click the background to add a key, right-click to remove one.
+  The curve you see is sampled from the same evaluator that renders the comp, so what the
+  graph shows is exactly what plays.
 - `crates/kiriko-ui/src/theme.rs` — **the Aizome tokens.** The only file allowed to contain
   colour values. Change a colour here, it changes everywhere.
 - `crates/kiriko-ui/src/shell.rs` + `app_state.rs` — **the window**: panels, menus,

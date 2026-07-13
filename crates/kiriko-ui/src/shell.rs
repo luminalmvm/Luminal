@@ -19,6 +19,7 @@ pub enum Panel {
     EffectControls,
     EffectsAndPresets,
     Scopes,
+    GraphEditor,
 }
 
 impl Panel {
@@ -30,6 +31,7 @@ impl Panel {
             Panel::EffectControls => "Effect controls",
             Panel::EffectsAndPresets => "Effects & presets",
             Panel::Scopes => "Scopes",
+            Panel::GraphEditor => "Graph editor",
         }
     }
 }
@@ -38,7 +40,11 @@ impl Panel {
 pub fn default_layout() -> DockState<Panel> {
     let mut state = DockState::new(vec![Panel::Viewer]);
     let surface = state.main_surface_mut();
-    let [centre, _timeline] = surface.split_below(NodeIndex::root(), 0.65, vec![Panel::Timeline]);
+    let [centre, _timeline] = surface.split_below(
+        NodeIndex::root(),
+        0.65,
+        vec![Panel::Timeline, Panel::GraphEditor],
+    );
     let [centre, _project] = surface.split_left(centre, 0.22, vec![Panel::Project]);
     let [_centre, _right] = surface.split_right(
         centre,
@@ -77,6 +83,7 @@ impl egui_dock::TabViewer for PanelViewer<'_> {
                 "Select a layer to see its effect stack.",
             ),
             Panel::EffectsAndPresets => effects_panel(ui, self.theme),
+            Panel::GraphEditor => graph_editor_panel(ui, self.theme, self.app),
             Panel::Scopes => empty_hint(
                 ui,
                 self.theme,
@@ -408,8 +415,21 @@ fn timeline_panel(ui: &mut egui::Ui, theme: &Theme, app: &mut AppState) {
     let rows_top = ui.cursor().top();
 
     for layer in &comp.layers {
-        let (row_rect, _row_resp) =
-            ui.allocate_exact_size(egui::vec2(ui.available_width(), 20.0), egui::Sense::hover());
+        let (row_rect, row_resp) =
+            ui.allocate_exact_size(egui::vec2(ui.available_width(), 20.0), egui::Sense::click());
+        if row_resp.clicked() {
+            app.selected_layer = Some(layer.id);
+        }
+        if app.selected_layer == Some(layer.id) {
+            ui.painter().rect_filled(
+                egui::Rect::from_min_max(
+                    row_rect.min,
+                    egui::pos2(row_rect.left() + name_w - 4.0, row_rect.bottom()),
+                ),
+                3.0,
+                theme.surface_2,
+            );
+        }
         let seconds_of = |x: f32| ((x - track_left) / track_w).clamp(0.0, 1.0) as f64 * duration;
         ui.painter().text(
             egui::pos2(row_rect.left() + 4.0, row_rect.center().y),
@@ -782,6 +802,222 @@ fn viewer_footage(
                 });
             });
     });
+}
+
+/// The graph editor (07-UI-SPEC; value view v1 — the speed view joins with
+/// Retime). Draws the selected layer's animated property as a live curve;
+/// keys drag (one op per release), double-click adds, right-click removes.
+fn graph_editor_panel(ui: &mut egui::Ui, theme: &Theme, app: &mut AppState) {
+    use kiriko_core::anim::{Animation, Keyframe, SideInterp};
+    use kiriko_core::model::TransformProp;
+
+    let doc = app.store.snapshot();
+    let comp = app
+        .preview_comp
+        .or(app.selected_comp)
+        .and_then(|id| doc.comp(id));
+    let (Some(comp), Some(layer_id)) = (comp, app.selected_layer) else {
+        empty_hint(
+            ui,
+            theme,
+            "Graph editor",
+            "Select a layer in the Timeline to edit its curves.",
+        );
+        return;
+    };
+    let Some(layer) = comp.layers.iter().find(|l| l.id == layer_id) else {
+        empty_hint(ui, theme, "Graph editor", "The selected layer is gone.");
+        return;
+    };
+
+    const PROPS: [(TransformProp, &str); 8] = [
+        (TransformProp::PositionX, "Position x"),
+        (TransformProp::PositionY, "Position y"),
+        (TransformProp::ScaleX, "Scale x"),
+        (TransformProp::ScaleY, "Scale y"),
+        (TransformProp::Rotation, "Rotation"),
+        (TransformProp::Opacity, "Opacity"),
+        (TransformProp::AnchorX, "Anchor x"),
+        (TransformProp::AnchorY, "Anchor y"),
+    ];
+    let animated: Vec<(TransformProp, &str)> = PROPS
+        .iter()
+        .copied()
+        .filter(|(p, _)| layer.transform.get(*p).is_animated())
+        .collect();
+    if animated.is_empty() {
+        empty_hint(
+            ui,
+            theme,
+            &layer.name,
+            "No animated properties — click a stopwatch in the Timeline first.",
+        );
+        return;
+    }
+    let current = app
+        .graph_prop
+        .filter(|p| animated.iter().any(|(a, _)| a == p))
+        .unwrap_or(animated[0].0);
+    app.graph_prop = Some(current);
+
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new(&layer.name).color(theme.text_secondary));
+        egui::ComboBox::from_id_salt("graph-prop")
+            .selected_text(
+                animated
+                    .iter()
+                    .find(|(p, _)| *p == current)
+                    .map(|(_, n)| *n)
+                    .unwrap_or("?"),
+            )
+            .show_ui(ui, |ui| {
+                for (p, name) in &animated {
+                    if ui.selectable_label(*p == current, *name).clicked() {
+                        app.graph_prop = Some(*p);
+                    }
+                }
+            });
+    });
+
+    let slot = layer.transform.get(current);
+    let Animation::Keyframed(keys) = &slot.animation else {
+        return;
+    };
+
+    // ---- plot geometry: x = layer time over the comp span, y = value ----
+    let rect = ui.available_rect_before_wrap();
+    ui.painter().rect_filled(rect, 0.0, theme.surface_0);
+    let duration = comp.duration.0.to_f64().max(1e-6);
+    let (mut vmin, mut vmax) = keys.iter().fold((f64::MAX, f64::MIN), |(lo, hi), k| {
+        (lo.min(k.value), hi.max(k.value))
+    });
+    if let Some((_, _, v)) = app.graph_edit {
+        vmin = vmin.min(v);
+        vmax = vmax.max(v);
+    }
+    let pad = ((vmax - vmin).abs().max(1.0)) * 0.15;
+    let (vmin, vmax) = (vmin - pad, vmax + pad);
+    let x_of = |t: f64| rect.left() + ((t / duration) as f32) * rect.width();
+    let y_of = |v: f64| rect.bottom() - (((v - vmin) / (vmax - vmin)) as f32) * rect.height();
+    let t_of = |x: f32| ((x - rect.left()) / rect.width()).clamp(0.0, 1.0) as f64 * duration;
+    let v_of = |y: f32| {
+        vmin + ((rect.bottom() - y) / rect.height()).clamp(0.0, 1.0) as f64 * (vmax - vmin)
+    };
+
+    // Provisional keys during a drag (visual only until release).
+    let mut shown: Vec<Keyframe> = keys.clone();
+    if let Some((idx, kt, kv)) = app.graph_edit {
+        if let Some(k) = shown.get_mut(idx) {
+            k.time = rational_at(kt);
+            k.value = kv;
+        }
+        shown.sort_by_key(|k| k.time);
+    }
+
+    // Curve polyline.
+    let samples = (rect.width() as usize / 2).max(16);
+    let points: Vec<egui::Pos2> = (0..=samples)
+        .map(|i| {
+            let t = duration * i as f64 / samples as f64;
+            let v = kiriko_core::anim::evaluate(&shown, t).unwrap_or(0.0);
+            egui::pos2(x_of(t), y_of(v))
+        })
+        .collect();
+    ui.painter().add(egui::Shape::line(
+        points,
+        egui::Stroke::new(1.5_f32, theme.curve[0]),
+    ));
+
+    // Playhead (layer time).
+    if app.preview_comp == Some(comp.id) {
+        let lt = app.preview_frame as f64 / comp.frame_rate.fps().max(1.0)
+            - layer.start_offset.0.to_f64();
+        let x = x_of(lt);
+        ui.painter().line_segment(
+            [egui::pos2(x, rect.top()), egui::pos2(x, rect.bottom())],
+            egui::Stroke::new(1.0_f32, theme.accent),
+        );
+    }
+
+    // Keys: draggable squares; right-click removes; double-click adds.
+    let mut pending: Option<Vec<Keyframe>> = None;
+    for (idx, key) in keys.iter().enumerate() {
+        let (kt, kv) = match app.graph_edit {
+            Some((i, t, v)) if i == idx => (t, v),
+            _ => (key.time.to_f64(), key.value),
+        };
+        let pos = egui::pos2(x_of(kt), y_of(kv));
+        let hit = egui::Rect::from_center_size(pos, egui::vec2(12.0, 12.0));
+        let resp = ui.interact(
+            hit,
+            ui.id().with(("gkey", layer_id, idx)),
+            egui::Sense::click_and_drag(),
+        );
+        let colour = if resp.hovered() || app.graph_edit.is_some_and(|(i, ..)| i == idx) {
+            theme.accent
+        } else {
+            theme.text_secondary
+        };
+        ui.painter().rect_filled(
+            egui::Rect::from_center_size(pos, egui::vec2(7.0, 7.0)),
+            1.0,
+            colour,
+        );
+        if resp.dragged() {
+            if let Some(p) = resp.interact_pointer_pos() {
+                app.graph_edit = Some((idx, t_of(p.x), v_of(p.y)));
+            }
+        }
+        if resp.drag_stopped() {
+            if let Some((i, kt, kv)) = app.graph_edit.take() {
+                if i == idx {
+                    let mut new_keys = keys.clone();
+                    new_keys[i].time = rational_at(kt.max(0.0));
+                    new_keys[i].value = kv;
+                    new_keys.sort_by_key(|k| k.time);
+                    new_keys.dedup_by(|a, b| a.time == b.time);
+                    pending = Some(new_keys);
+                }
+            }
+        }
+        if resp.secondary_clicked() {
+            let mut new_keys = keys.clone();
+            new_keys.remove(idx);
+            pending = Some(new_keys);
+        }
+    }
+    let bg = ui.interact(
+        rect,
+        ui.id().with(("graph-bg", layer_id)),
+        egui::Sense::click(),
+    );
+    if bg.double_clicked() {
+        if let Some(p) = bg.interact_pointer_pos() {
+            let mut new_keys = keys.clone();
+            new_keys.push(Keyframe {
+                time: rational_at(t_of(p.x)),
+                value: v_of(p.y),
+                interp_in: SideInterp::Linear,
+                interp_out: SideInterp::Linear,
+            });
+            new_keys.sort_by_key(|k| k.time);
+            pending = Some(new_keys);
+        }
+    }
+
+    if let Some(new_keys) = pending {
+        let animation = if new_keys.is_empty() {
+            Animation::Static(slot.value_at(0.0))
+        } else {
+            Animation::Keyframed(new_keys)
+        };
+        app.commit(kiriko_core::Op::SetTransformProperty {
+            comp: comp.id,
+            layer: layer_id,
+            prop: current,
+            animation,
+        });
+    }
 }
 
 /// Layer time → rational on the flick grid (the only f64→rational route).

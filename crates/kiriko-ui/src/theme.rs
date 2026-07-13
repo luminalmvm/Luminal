@@ -35,6 +35,8 @@ pub struct Theme {
     pub success: Color32,
     pub warning: Color32,
     pub error: Color32,
+    /// Graph-editor curve strokes (15-DESIGN §graph: the viz ramp).
+    pub curve: [Color32; 4],
 }
 
 impl Theme {
@@ -61,6 +63,12 @@ impl Theme {
             success: Color32::from_rgb(0x5f, 0xcf, 0xae),
             warning: Color32::from_rgb(0xdd, 0x9a, 0x82),
             error: Color32::from_rgb(0xd1, 0x72, 0x9c),
+            curve: [
+                Color32::from_rgb(0x8e, 0xe3, 0xef),
+                Color32::from_rgb(0xae, 0xf3, 0xe7),
+                Color32::from_rgb(0xe8, 0xa7, 0xb4),
+                Color32::from_rgb(0xd8, 0xcb, 0xa0),
+            ],
         }
     }
 
