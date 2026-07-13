@@ -115,6 +115,13 @@ Two mechanisms make this safe, and you'll see them by name in the code:
   written to a temp file, flushed to disk, then renamed over the old file, so a crash
   mid-save can never destroy the previous save. The **journal** logs every edit to a side
   file the instant it happens; after a crash, replaying it restores your work.
+- `crates/kiriko-media/` — **reading media files** (via FFmpeg, the industry-standard
+  media library). Two jobs so far: the *probe* (a file's vital statistics — resolution,
+  frame rate, duration — shown under each item in the Project panel) and the *frame
+  index* — a scan of the whole file that records where every frame and keyframe sits, so
+  scrubbing can land on exactly the right frame. Indexing runs on a background thread
+  (the UI never waits) and the result is cached on disk, keyed by a *fingerprint* of the
+  file's content — change the file and the stale index is ignored automatically.
 - `crates/kiriko-ui/src/theme.rs` — **the Aizome tokens.** The only file allowed to contain
   colour values. Change a colour here, it changes everywhere.
 - `crates/kiriko-ui/src/shell.rs` + `app_state.rs` — **the window**: panels, menus,

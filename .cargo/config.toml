@@ -1,0 +1,4 @@
+# ffmpeg@7 is keg-only (deliberately not linked); builds resolve it explicitly.
+# CI installs the same formula, so this path is machine-portable across macOS.
+[env]
+FFMPEG_PKG_CONFIG_PATH = "/opt/homebrew/opt/ffmpeg@7/lib/pkgconfig"

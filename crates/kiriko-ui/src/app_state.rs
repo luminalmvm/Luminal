@@ -13,6 +13,103 @@ use uuid::Uuid;
 pub const AUTOSAVE_INTERVAL_SECS: u64 = 300;
 pub const AUTOSAVE_KEEP: usize = 5;
 
+/// Probe/index results for footage items, filled by background threads.
+#[cfg(feature = "media")]
+pub mod media {
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+    use std::sync::mpsc::{channel, Receiver, Sender};
+    use uuid::Uuid;
+
+    pub enum MediaStatus {
+        Probing,
+        Ready {
+            probe: kiriko_media::MediaProbe,
+            frames: usize,
+            vfr: bool,
+        },
+        Failed(String),
+    }
+
+    pub struct MediaRegistry {
+        pub map: HashMap<Uuid, MediaStatus>,
+        tx: Sender<(Uuid, MediaStatus)>,
+        rx: Receiver<(Uuid, MediaStatus)>,
+    }
+
+    impl Default for MediaRegistry {
+        fn default() -> Self {
+            let (tx, rx) = channel();
+            Self {
+                map: HashMap::new(),
+                tx,
+                rx,
+            }
+        }
+    }
+
+    impl MediaRegistry {
+        /// Drain background results into the map. Called once per UI frame.
+        pub fn poll(&mut self) {
+            while let Ok((id, status)) = self.rx.try_recv() {
+                self.map.insert(id, status);
+            }
+        }
+
+        pub fn any_probing(&self) -> bool {
+            self.map.values().any(|s| matches!(s, MediaStatus::Probing))
+        }
+
+        /// Probe + build/load the frame index on a background thread
+        /// (docs/impl/media-io.md §2 — never on the UI thread, K-017).
+        pub fn spawn_probe(&mut self, id: Uuid, path: PathBuf) {
+            self.map.insert(id, MediaStatus::Probing);
+            let tx = self.tx.clone();
+            std::thread::spawn(move || {
+                let status = probe_and_index(&path);
+                let _ = tx.send((id, status));
+            });
+        }
+    }
+
+    fn probe_and_index(path: &std::path::Path) -> MediaStatus {
+        let probe = match kiriko_media::probe::probe(path) {
+            Ok(p) => p,
+            Err(e) => return MediaStatus::Failed(e.to_string()),
+        };
+        // Audio-only items need no frame index.
+        if probe.video.is_none() {
+            return MediaStatus::Ready {
+                probe,
+                frames: 0,
+                vfr: false,
+            };
+        }
+        let cache_dir = kiriko_project::media_index_dir();
+        let cached = match (&cache_dir, kiriko_media::Fingerprint::of(path)) {
+            (Some(dir), Ok(fp)) => kiriko_media::FrameIndex::load_cached(dir, &fp),
+            _ => None,
+        };
+        let index = match cached {
+            Some(index) => index,
+            None => match kiriko_media::index::build_frame_index(path) {
+                Ok(index) => {
+                    if let Some(dir) = &cache_dir {
+                        let _ = index.save_to(dir);
+                    }
+                    index
+                }
+                Err(e) => return MediaStatus::Failed(e.to_string()),
+            },
+        };
+        MediaStatus::Ready {
+            probe,
+            frames: index.frame_count(),
+            vfr: index.vfr,
+        }
+    }
+}
+
 /// Infallible constructor for small literal rationals.
 fn rat(n: i64, d: i64) -> Rational {
     Rational::new(n, d).unwrap_or(Rational::ZERO)
@@ -33,6 +130,8 @@ pub struct AppState {
     pub selected_comp: Option<Uuid>,
     pub pending_recovery: Option<PendingRecovery>,
     pub error: Option<String>,
+    #[cfg(feature = "media")]
+    pub media: media::MediaRegistry,
     last_autosave: Instant,
     comp_counter: usize,
 }
@@ -49,6 +148,8 @@ impl Default for AppState {
             selected_comp: None,
             pending_recovery: None,
             error: None,
+            #[cfg(feature = "media")]
+            media: media::MediaRegistry::default(),
             last_autosave: Instant::now(),
             comp_counter: 0,
         }
@@ -98,6 +199,13 @@ impl AppState {
     }
 
     fn install(&mut self, doc: Document, path: Option<PathBuf>, dirty: bool) {
+        #[cfg(feature = "media")]
+        for item in &doc.items {
+            if let ProjectItem::Footage(f) = item {
+                self.media
+                    .spawn_probe(f.id, PathBuf::from(&f.media.absolute_path));
+            }
+        }
         self.journal = JournalFile::for_document(doc.id);
         self.selected_comp = doc.items.iter().find_map(|i| match i {
             ProjectItem::Composition(c) => Some(c.id),
@@ -232,10 +340,14 @@ impl AppState {
                     extra: serde_json::Map::new(),
                 },
             };
+            #[cfg(feature = "media")]
+            let probe_target = (item.id, file.clone());
             self.commit(Op::AddItem {
                 index: base + i,
                 item: Box::new(ProjectItem::Footage(item)),
             });
+            #[cfg(feature = "media")]
+            self.media.spawn_probe(probe_target.0, probe_target.1);
         }
     }
 

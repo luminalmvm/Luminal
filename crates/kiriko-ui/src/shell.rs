@@ -215,6 +215,59 @@ fn project_panel(ui: &mut egui::Ui, theme: &Theme, app: &mut AppState) {
                 select = Some(item.id());
             }
         }
+        #[cfg(feature = "media")]
+        if let ProjectItem::Footage(_) = item {
+            use crate::app_state::media::MediaStatus;
+            ui.indent(item.id(), |ui| match app.media.map.get(&item.id()) {
+                Some(MediaStatus::Probing) => {
+                    ui.label(
+                        egui::RichText::new("probing…")
+                            .small()
+                            .color(theme.text_disabled),
+                    );
+                }
+                Some(MediaStatus::Ready { probe, frames, vfr }) => {
+                    let mut line = String::new();
+                    if let Some(v) = &probe.video {
+                        line.push_str(&format!(
+                            "{}×{} · {:.2} fps · {} frames",
+                            v.width,
+                            v.height,
+                            v.fps(),
+                            frames
+                        ));
+                    } else if let Some(a) = &probe.audio {
+                        line.push_str(&format!("{} Hz · {} ch", a.sample_rate, a.channels));
+                    }
+                    line.push_str(&format!(" · {:.1} s", probe.duration_seconds));
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new(line)
+                                .monospace()
+                                .small()
+                                .color(theme.text_muted),
+                        );
+                        if *vfr {
+                            ui.label(
+                                egui::RichText::new("VFR")
+                                    .monospace()
+                                    .small()
+                                    .color(theme.warning),
+                            )
+                            .on_hover_text("Variable frame rate: conformed to the median rate");
+                        }
+                    });
+                }
+                Some(MediaStatus::Failed(e)) => {
+                    ui.label(
+                        egui::RichText::new(format!("unreadable: {e}"))
+                            .small()
+                            .color(theme.warning),
+                    );
+                }
+                None => {}
+            });
+        }
     }
     if let Some(id) = select {
         app.selected_comp = Some(id);
@@ -349,6 +402,11 @@ impl Shell {
             BootLine::ok("Recovery journal: clean"),
         ];
         lines.extend(boot_notes.into_iter().map(BootLine::ok));
+        #[cfg(feature = "media")]
+        lines.push(BootLine::ok(format!(
+            "Media engine: FFmpeg (libavformat {})",
+            kiriko_media::ffmpeg_version()
+        )));
         lines.push(BootLine::ok(
             "Effects: none registered — suite arrives in phase 3",
         ));
@@ -458,6 +516,13 @@ impl Shell {
             return;
         }
         self.app.autosave_tick();
+        #[cfg(feature = "media")]
+        {
+            self.app.media.poll();
+            if self.app.media.any_probing() {
+                ctx.request_repaint_after(std::time::Duration::from_millis(150));
+            }
+        }
         #[cfg(target_os = "macos")]
         self.native_menu_frame();
         #[cfg(not(target_os = "macos"))]

@@ -168,6 +168,13 @@ pub fn journal_path(doc_id: Uuid) -> Option<PathBuf> {
     )
 }
 
+/// Media frame-index cache directory (docs/10-FILE-FORMAT.md §3) — global,
+/// keyed by content fingerprint, so shared across projects and machines-safe.
+pub fn media_index_dir() -> Option<PathBuf> {
+    let dirs = directories::ProjectDirs::from("dev", "Kiriko", "Kiriko")?;
+    Some(dirs.cache_dir().join("media-index"))
+}
+
 /// Append-only op log between saves; truncated on successful save.
 pub struct JournalFile {
     path: PathBuf,

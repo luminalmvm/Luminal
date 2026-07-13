@@ -69,6 +69,12 @@ rsmpeg wiring, the packet-scan frame index with VFR conform policy
 thumbnails. Import via dialogue and drag-drop. **Exit test**: index for an hour-long
 ShadowPlay VFR capture builds in seconds, survives sidecar deletion, badge shows on VFR.
 
+**Slice 4 status note (2026-07-13):** implemented on macOS against keg-only Homebrew
+`ffmpeg@7` (`.cargo/config.toml` sets `FFMPEG_PKG_CONFIG_PATH`; the system ffmpeg 5 stays
+untouched for its dependents). Windows CI builds `--no-default-features` (no media) until
+FFmpeg dev libs are set up there — the route is a BtbN shared build plus
+`FFMPEG_LIBS_DIR`/`FFMPEG_INCLUDE_DIR`, first task of desktop-dev setup.
+
 ## Slice 5 — decode → Viewer (runs: you can SEE footage)
 
 `kiriko-gpu` device + pool + NV12→linear shader + display-transform blit
