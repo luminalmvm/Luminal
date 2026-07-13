@@ -230,7 +230,10 @@ fn project_panel(ui: &mut egui::Ui, theme: &Theme, app: &mut AppState) {
                     app.preview_item = Some(item.id());
                     app.preview_frame = 0;
                     #[cfg(feature = "media")]
-                    app.refresh_preview();
+                    {
+                        app.refresh_preview();
+                        app.request_preview_audio();
+                    }
                 }
                 _ => {}
             }
@@ -645,6 +648,22 @@ impl Shell {
         self.app.autosave_tick();
         #[cfg(feature = "media")]
         {
+            self.app.poll_audio();
+            if self.app.preview_item.is_some() && ctx.input(|i| i.key_pressed(egui::Key::Space)) {
+                self.app.toggle_play();
+            }
+            if self.app.is_playing() {
+                if let (Some(clock), Some(fps)) =
+                    (self.app.playback_clock(), self.app.preview_fps())
+                {
+                    let frame = (clock * fps) as usize;
+                    if frame != self.app.preview_frame {
+                        self.app.preview_frame = frame;
+                        self.app.refresh_preview();
+                    }
+                }
+                ctx.request_repaint_after(std::time::Duration::from_millis(16));
+            }
             self.app.media.poll();
             if self.app.media.any_probing() {
                 ctx.request_repaint_after(std::time::Duration::from_millis(150));

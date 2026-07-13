@@ -122,6 +122,12 @@ Two mechanisms make this safe, and you'll see them by name in the code:
   scrubbing can land on exactly the right frame. Indexing runs on a background thread
   (the UI never waits) and the result is cached on disk, keyed by a *fingerprint* of the
   file's content — change the file and the stale index is ignored automatically.
+- `crates/kiriko-audio/` — **playback and the clock.** The sound card asks for samples on
+  its own strict schedule through a "realtime callback" — a tiny function that must never
+  wait for anything (if it's ever late, you hear a glitch). The count of samples it has
+  played *is* the playback clock: video asks "what time is it?" every frame and shows
+  whatever frame matches. One clock, owned by the audio hardware — that's why picture and
+  sound can't drift apart, and it's the same design the full engine keeps forever.
 - `crates/kiriko-ui/src/theme.rs` — **the Aizome tokens.** The only file allowed to contain
   colour values. Change a colour here, it changes everywhere.
 - `crates/kiriko-ui/src/shell.rs` + `app_state.rs` — **the window**: panels, menus,

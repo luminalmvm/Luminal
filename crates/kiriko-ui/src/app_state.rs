@@ -248,6 +248,16 @@ pub struct AppState {
     pub media: media::MediaRegistry,
     #[cfg(feature = "media")]
     pub preview_engine: preview::PreviewEngine,
+    #[cfg(feature = "media")]
+    audio_engine: Option<kiriko_audio::AudioEngine>,
+    #[cfg(feature = "media")]
+    audio_cache: std::collections::HashMap<Uuid, std::sync::Arc<kiriko_media::AudioBuffer>>,
+    #[cfg(feature = "media")]
+    audio_loaded: Option<Uuid>,
+    #[cfg(feature = "media")]
+    audio_rx: std::sync::mpsc::Receiver<(Uuid, Result<kiriko_media::AudioBuffer, String>)>,
+    #[cfg(feature = "media")]
+    audio_tx: std::sync::mpsc::Sender<(Uuid, Result<kiriko_media::AudioBuffer, String>)>,
     /// Footage item currently shown in the Viewer, and the scrub position.
     pub preview_item: Option<Uuid>,
     pub preview_frame: usize,
@@ -261,6 +271,8 @@ impl Default for AppState {
     fn default() -> Self {
         let doc = Document::new();
         let journal = JournalFile::for_document(doc.id);
+        #[cfg(feature = "media")]
+        let (audio_tx, audio_rx) = std::sync::mpsc::channel();
         Self {
             store: DocumentStore::new(doc),
             path: None,
@@ -273,6 +285,16 @@ impl Default for AppState {
             media: media::MediaRegistry::default(),
             #[cfg(feature = "media")]
             preview_engine: preview::PreviewEngine::default(),
+            #[cfg(feature = "media")]
+            audio_engine: None,
+            #[cfg(feature = "media")]
+            audio_cache: std::collections::HashMap::new(),
+            #[cfg(feature = "media")]
+            audio_loaded: None,
+            #[cfg(feature = "media")]
+            audio_rx,
+            #[cfg(feature = "media")]
+            audio_tx,
             preview_item: None,
             preview_frame: 0,
             preview_divisor: 1,
@@ -527,6 +549,119 @@ impl AppState {
             self.preview_frame,
             target,
         );
+    }
+
+    /// Frames-per-second of the current preview item, once probed.
+    #[cfg(feature = "media")]
+    pub fn preview_fps(&self) -> Option<f64> {
+        let id = self.preview_item?;
+        match self.media.map.get(&id) {
+            Some(media::MediaStatus::Ready { probe, .. }) => {
+                probe.video.as_ref().map(|v| v.fps()).filter(|f| *f > 0.0)
+            }
+            _ => None,
+        }
+    }
+
+    /// Kick off background audio decode for the preview item (idempotent).
+    #[cfg(feature = "media")]
+    pub fn request_preview_audio(&mut self) {
+        let Some(id) = self.preview_item else { return };
+        if self.audio_cache.contains_key(&id) {
+            return;
+        }
+        let has_audio = matches!(
+            self.media.map.get(&id),
+            Some(media::MediaStatus::Ready { probe, .. }) if probe.audio.is_some()
+        );
+        if !has_audio {
+            return;
+        }
+        let doc = self.store.snapshot();
+        let Some(ProjectItem::Footage(f)) = doc.item(id) else {
+            return;
+        };
+        let path = PathBuf::from(&f.media.absolute_path);
+        let rate = self
+            .ensure_audio_engine()
+            .map(|e| e.device_rate())
+            .unwrap_or(48_000);
+        let tx = self.audio_tx.clone();
+        std::thread::spawn(move || {
+            let result = kiriko_media::audio::decode_all(&path, rate).map_err(|e| e.to_string());
+            let _ = tx.send((id, result));
+        });
+    }
+
+    #[cfg(feature = "media")]
+    fn ensure_audio_engine(&mut self) -> Option<&kiriko_audio::AudioEngine> {
+        if self.audio_engine.is_none() {
+            match kiriko_audio::AudioEngine::new() {
+                Ok(engine) => self.audio_engine = Some(engine),
+                Err(e) => {
+                    self.error = Some(format!("audio: {e}"));
+                    return None;
+                }
+            }
+        }
+        self.audio_engine.as_ref()
+    }
+
+    /// Drain finished audio decodes; auto-load the current preview item's.
+    #[cfg(feature = "media")]
+    pub fn poll_audio(&mut self) {
+        while let Ok((id, result)) = self.audio_rx.try_recv() {
+            match result {
+                Ok(buffer) => {
+                    self.audio_cache.insert(id, std::sync::Arc::new(buffer));
+                }
+                Err(e) => self.error = Some(format!("audio decode: {e}")),
+            }
+        }
+    }
+
+    #[cfg(feature = "media")]
+    pub fn is_playing(&self) -> bool {
+        self.audio_engine.as_ref().is_some_and(|e| e.is_playing())
+    }
+
+    #[cfg(feature = "media")]
+    pub fn playback_clock(&self) -> Option<f64> {
+        self.audio_engine.as_ref().map(|e| e.clock_seconds())
+    }
+
+    /// Space: play/pause the previewed footage from the current frame.
+    #[cfg(feature = "media")]
+    pub fn toggle_play(&mut self) {
+        let Some(id) = self.preview_item else { return };
+        let Some(fps) = self.preview_fps() else {
+            return;
+        };
+        if self.is_playing() {
+            if let Some(engine) = &self.audio_engine {
+                engine.pause();
+            }
+            return;
+        }
+        let Some(buffer) = self.audio_cache.get(&id).cloned() else {
+            self.request_preview_audio(); // will be ready on a later press
+            return;
+        };
+        let start = self.preview_frame as f64 / fps;
+        if self.ensure_audio_engine().is_none() {
+            return;
+        }
+        let needs_load = self.audio_loaded != Some(id);
+        if needs_load {
+            self.audio_loaded = Some(id);
+        }
+        if let Some(engine) = &self.audio_engine {
+            if needs_load {
+                engine.load(buffer);
+            }
+            engine.seek_seconds(start);
+            engine.play();
+        }
     }
 
     pub fn project_title(&self) -> String {
