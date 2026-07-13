@@ -50,6 +50,11 @@ pub mod preview {
         pub path: PathBuf,
         pub source_frame: usize,
         pub target_width: Option<u32>,
+        /// The source's native pixel size, independent of the decode width.
+        /// Transforms act in comp pixels, so this — not the decoded size —
+        /// sizes the layer (auto res must not scale geometry with zoom).
+        pub natural_w: u32,
+        pub natural_h: u32,
     }
 
     pub struct CompLayerPixels {
@@ -57,6 +62,9 @@ pub mod preview {
         pub width: u32,
         pub height: u32,
         pub rgba: Vec<u8>,
+        /// Native source size (see [`CompJob::natural_w`]); drives geometry.
+        pub natural_w: u32,
+        pub natural_h: u32,
     }
 
     pub struct CompFrame {
@@ -246,6 +254,8 @@ pub mod preview {
                 width: px.width,
                 height: px.height,
                 rgba: px.rgba,
+                natural_w: job.natural_w,
+                natural_h: job.natural_h,
             });
         }
         Ok(CompFrame {
@@ -2051,6 +2061,8 @@ impl AppState {
                                     path: PathBuf::from(&f.media.absolute_path),
                                     source_frame,
                                     target_width: self.target_width_for(video.width),
+                                    natural_w: video.width,
+                                    natural_h: video.height,
                                 });
                             }
                         }
@@ -2091,6 +2103,8 @@ impl AppState {
                         path: PathBuf::from(&f.media.absolute_path),
                         source_frame,
                         target_width: self.target_width_for(video.width),
+                        natural_w: video.width,
+                        natural_h: video.height,
                     });
                 }
             }

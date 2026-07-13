@@ -2441,11 +2441,15 @@ fn build_comp_draws(
             // the layer id (collect_comp_jobs pushes one job per layer/frame).
             LayerKind::Footage { .. } | LayerKind::Sequence { .. } => {
                 pixels_by_layer.get(&layer.id).map(|lp| {
+                    // Geometry uses the native source size, never the decoded
+                    // size: under auto res the decode shrinks and grows with
+                    // viewport zoom, and sizing the layer by that made it
+                    // scale with zoom (a small layer ballooned when zoomed in).
                     (
                         lp.rgba.clone(),
                         lp.width,
                         lp.height,
-                        (lp.width as f32, lp.height as f32),
+                        (lp.natural_w as f32, lp.natural_h as f32),
                     )
                 })
             }
@@ -4326,5 +4330,76 @@ impl Shell {
                     preview_display: *preview_display,
                 },
             );
+    }
+}
+
+#[cfg(all(test, feature = "media"))]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod geometry_tests {
+    use super::*;
+    use crate::app_state::preview::CompLayerPixels;
+    use kiriko_core::model::{
+        Composition, Document, Layer, LayerKind, LinearColour, Switches, TransformGroup,
+    };
+    use kiriko_core::time::{CompTime, Duration, FrameRate, Rational};
+    use std::collections::HashMap;
+    use uuid::Uuid;
+
+    // Regression: under auto res a footage layer decodes at a reduced size that
+    // changes with viewport zoom. Its comp-space geometry must use the *native*
+    // source size, not the decoded size — otherwise a small layer balloons as
+    // you zoom in (the auto-res bug Mack reported, 2026-07-13).
+    #[test]
+    fn footage_geometry_uses_native_size_not_decoded_size() {
+        let item = Uuid::now_v7();
+        let layer = Layer {
+            id: Uuid::now_v7(),
+            name: "clip".into(),
+            kind: LayerKind::Footage { item, retime: None },
+            in_point: CompTime(Rational::ZERO),
+            out_point: CompTime(Rational::new(10, 1).unwrap()),
+            start_offset: CompTime(Rational::ZERO),
+            transform: TransformGroup::default(),
+            matte: None,
+            blend: Default::default(),
+            masks: Vec::new(),
+            switches: Switches::default(),
+            extra: serde_json::Map::new(),
+        };
+        let comp = Composition {
+            id: Uuid::now_v7(),
+            name: "Comp".into(),
+            width: 1920,
+            height: 1080,
+            frame_rate: FrameRate::new(60, 1).unwrap(),
+            duration: Duration(Rational::new(10, 1).unwrap()),
+            background: LinearColour::BLACK,
+            work_area: None,
+            layers: vec![layer.clone()],
+            extra: serde_json::Map::new(),
+        };
+        // Native 1920x1080, decoded 480x270 (zoomed out, quarter res).
+        let lp = CompLayerPixels {
+            layer: layer.id,
+            width: 480,
+            height: 270,
+            rgba: vec![0u8; 480 * 270 * 4],
+            natural_w: 1920,
+            natural_h: 1080,
+        };
+        let mut map: HashMap<Uuid, &CompLayerPixels> = HashMap::new();
+        map.insert(layer.id, &lp);
+        let doc = Document::new();
+        let mut visited = vec![comp.id];
+        let draws = build_comp_draws(&doc, &comp, 0.0, &map, &mut visited);
+
+        assert_eq!(draws.len(), 1);
+        // Geometry uses native size (zoom-independent), not the 480x270 decode.
+        assert_eq!(draws[0].natural_size, (1920.0, 1080.0));
+        // The texture still carries the decoded dimensions.
+        match &draws[0].source {
+            DrawSource::Pixels { tex_w, tex_h, .. } => assert_eq!((*tex_w, *tex_h), (480, 270)),
+            _ => panic!("expected a pixel source for a footage layer"),
+        }
     }
 }

@@ -265,6 +265,13 @@ Two mechanisms make this safe, and you'll see them by name in the code:
   sustained cheap stretch — quick to worsen, slow to improve, so the picture never
   flickers between qualities. None of the real machinery (threads, the audio clock, the
   GPU) lives here yet; this is the referee, and the players arrive later.
+- **Preview resolution never changes where things are.** To keep the picture responsive,
+  Kiriko can decode footage smaller than its true size — and "Auto" resolution decodes at
+  exactly the size the layer is shown on screen, so it gets sharper as you zoom in. That is
+  purely a quality choice: a layer's *position and size in the composition* are always
+  worked out from the footage's real pixel dimensions, not the shrunk-down preview copy. If
+  they were ever worked out from the preview copy, a layer would appear to grow as you
+  zoomed in — which is exactly the bug this rule exists to prevent.
 - **Mask editing in the Viewer** — select a layer with masks and its outlines draw
   over the picture in clay, with a square handle on every vertex. Drag a handle and
   the outline follows your cursor live; let go and the pixels update — one undo step
