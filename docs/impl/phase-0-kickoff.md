@@ -87,10 +87,12 @@ frame seek exactness on the test corpus; scrub feels immediate at Half on 4K.
 **Slice 5 status note (2026-07-13, overnight session):** 5a (exact-frame decoder with
 index-guided seeking, hash-proven seek==sequential) and 5b (footage in the Viewer: fit
 display, scrub slider, resolution picker as decode-time downsampling, latest-wins
-background preview engine with end-to-end tests) are in. Remaining for slice-5 completion:
-the proper wgpu path — NV12/plane upload + linear conversion + display-transform blit per
-[gpu-foundation.md](gpu-foundation.md) — replacing the interim CPU-swscale-RGBA + egui
-texture hand-off, plus the colour round-trip golden.
+background preview engine with end-to-end tests) are in. Remaining for slice-5 completion —
+updated 04:00: **kiriko-gpu now exists** with the linearise/display pipeline pair and the
+§7 colour round-trip golden passing on Metal (every byte value within 1 LSB; formats do
+the gamma, shaders contain none). Still to do: route the Viewer through it (register the
+display texture with egui via eframe's render state — an app-layer change) and the NV12
+plane path once decode stops pre-converting via swscale.
 
 ## Slice 6 — playback + audio (runs: Gate 0 demo)
 

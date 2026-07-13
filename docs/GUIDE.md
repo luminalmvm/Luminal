@@ -122,6 +122,15 @@ Two mechanisms make this safe, and you'll see them by name in the code:
   scrubbing can land on exactly the right frame. Indexing runs on a background thread
   (the UI never waits) and the result is cached on disk, keyed by a *fingerprint* of the
   file's content — change the file and the stale index is ignored automatically.
+- `crates/kiriko-gpu/` — **the colour foundation.** All engine maths happens on
+  "light-linear" values (where adding two lights behaves like real light); files and
+  screens use sRGB encoding. This crate owns the only two crossings between those worlds
+  — decode-side linearise and display-side encode — and a "golden" test proves every
+  possible 8-bit value survives the round trip within one step. That test is what makes
+  the washed-out/too-dark "double gamma" class of bug impossible to reintroduce, and it's
+  the bedrock of the preview-equals-export promise (K-031). The clever part: the shader
+  contains no gamma maths at all — the GPU's texture formats do the conversions in
+  hardware, so decode and encode can never drift apart.
 - `crates/kiriko-audio/` — **playback and the clock.** The sound card asks for samples on
   its own strict schedule through a "realtime callback" — a tiny function that must never
   wait for anything (if it's ever late, you hear a glitch). The count of samples it has
