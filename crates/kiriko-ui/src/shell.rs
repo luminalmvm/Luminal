@@ -1052,7 +1052,10 @@ impl Shell {
                     self.app.refresh_preview();
                 }
             }
-            if self.app.is_playing() {
+            if self.app.comp_playback_tick() {
+                ctx.request_repaint_after(std::time::Duration::from_millis(16));
+            }
+            if self.app.is_playing() && self.app.preview_comp.is_none() {
                 if let (Some(clock), Some(fps)) =
                     (self.app.playback_clock(), self.app.preview_fps())
                 {

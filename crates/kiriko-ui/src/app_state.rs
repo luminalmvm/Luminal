@@ -355,6 +355,9 @@ pub struct AppState {
     pub prop_edit: Option<(Uuid, kiriko_core::model::TransformProp, f64)>,
     /// Comp shown in the Viewer (takes precedence over preview_item).
     pub preview_comp: Option<Uuid>,
+    /// Wall-clock comp playback v0 (the frame scheduler replaces this):
+    /// (started, frame at start).
+    pub comp_playback: Option<(Instant, usize)>,
     /// Footage item currently shown in the Viewer, and the scrub position.
     pub preview_item: Option<Uuid>,
     pub preview_frame: usize,
@@ -394,6 +397,7 @@ impl Default for AppState {
             audio_tx,
             prop_edit: None,
             preview_comp: None,
+            comp_playback: None,
             preview_item: None,
             preview_frame: 0,
             preview_divisor: 1,
@@ -864,7 +868,38 @@ impl AppState {
 
     #[cfg(feature = "media")]
     pub fn is_playing(&self) -> bool {
-        self.audio_engine.as_ref().is_some_and(|e| e.is_playing())
+        self.comp_playback.is_some() || self.audio_engine.as_ref().is_some_and(|e| e.is_playing())
+    }
+
+    /// Advance v0 comp playback; returns true while playing (UI keeps repainting).
+    #[cfg(feature = "media")]
+    pub fn comp_playback_tick(&mut self) -> bool {
+        let Some((started, start_frame)) = self.comp_playback else {
+            return false;
+        };
+        let Some(comp_id) = self.preview_comp else {
+            self.comp_playback = None;
+            return false;
+        };
+        let doc = self.store.snapshot();
+        let Some(comp) = doc.comp(comp_id) else {
+            self.comp_playback = None;
+            return false;
+        };
+        let frames = self.comp_frame_count(comp);
+        let fps = comp.frame_rate.fps();
+        let frame = start_frame + (started.elapsed().as_secs_f64() * fps) as usize;
+        if frame >= frames {
+            self.preview_frame = frames.saturating_sub(1);
+            self.comp_playback = None;
+            self.refresh_preview();
+            return false;
+        }
+        if frame != self.preview_frame {
+            self.preview_frame = frame;
+            self.refresh_preview();
+        }
+        true
     }
 
     #[cfg(feature = "media")]
