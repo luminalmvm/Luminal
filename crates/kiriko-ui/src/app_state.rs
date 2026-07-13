@@ -486,6 +486,12 @@ pub struct AppState {
     /// Mask vertex mid-drag in the Viewer: (mask index, vertex index,
     /// layer-space position). Committed as one SetLayerMasks op on release.
     pub mask_drag: Option<(usize, usize, (f64, f64))>,
+    /// Pen tool armed: Viewer clicks place mask vertices on the selected
+    /// layer instead of panning.
+    pub pen_mode: bool,
+    /// The pen's in-progress path (layer space); closes into a mask when the
+    /// first vertex is clicked again.
+    pub pen_path: Vec<kiriko_core::mask::Vertex>,
     /// Property shown in the graph editor.
     pub graph_prop: Option<kiriko_core::model::TransformProp>,
     /// In-flight keyframe drag: (key index, provisional layer-time, value).
@@ -590,6 +596,8 @@ impl Default for AppState {
             comp_counter: 0,
             selected_item: None,
             mask_drag: None,
+            pen_mode: false,
+            pen_path: Vec::new(),
             comp_dialog: None,
         }
     }

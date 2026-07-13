@@ -210,8 +210,10 @@ Two mechanisms make this safe, and you'll see them by name in the code:
   the outline follows your cursor live; let go and the pixels update — one undo step
   per drag, like every other edit. The maths mirrors the layer's transform both ways
   (screen position → layer space and back), so handles stay glued to the picture at
-  any zoom, pan, scale or rotation. Placing brand-new vertices with pen clicks is the
-  next slice of this tool.
+  any zoom, pan, scale or rotation. The Pen button in the Viewer bar arms
+  click-to-place drawing: each click drops a vertex, clicking the first one (it grows a
+  ring once closable) closes the shape into a mask, Escape cancels, right-click on any
+  handle removes a vertex. Curved tangent handles are the remaining slice.
 - **Masks on Precomp layers** — a masked transition can now wipe a whole nested comp,
   the flow staple. Pixel layers (footage, solids, text) get their masks applied on the
   CPU before upload; a Precomp's pixels only ever exist on the GPU, so its mask stack

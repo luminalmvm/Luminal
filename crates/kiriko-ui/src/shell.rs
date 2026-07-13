@@ -1206,6 +1206,61 @@ fn timeline_panel(ui: &mut egui::Ui, theme: &Theme, app: &mut AppState) {
 
 /// Footage preview: the frame fit to the surround, scrub bar, resolution picker.
 #[cfg(feature = "media")]
+/// The layer↔screen mapping the Viewer overlays share: the layer's evaluated
+/// 2D transform at the playhead, then the view placement.
+#[cfg(feature = "media")]
+struct LayerMap {
+    px: f64,
+    py: f64,
+    ax: f64,
+    ay: f64,
+    sx: f64,
+    sy: f64,
+    sin: f64,
+    cos: f64,
+    origin: egui::Pos2,
+    view_scale: f32,
+}
+
+#[cfg(feature = "media")]
+impl LayerMap {
+    fn of(layer: &kiriko_core::model::Layer, lt: f64, draw: egui::Rect, scale: f32) -> Self {
+        let tr = &layer.transform;
+        let rot = tr.rotation.value_at(lt).to_radians();
+        let (sin, cos) = rot.sin_cos();
+        Self {
+            px: tr.position_x.value_at(lt),
+            py: tr.position_y.value_at(lt),
+            ax: tr.anchor_x.value_at(lt),
+            ay: tr.anchor_y.value_at(lt),
+            sx: (tr.scale_x.value_at(lt) / 100.0).max(1e-6),
+            sy: (tr.scale_y.value_at(lt) / 100.0).max(1e-6),
+            sin,
+            cos,
+            origin: draw.min,
+            view_scale: scale,
+        }
+    }
+
+    /// Layer space → screen.
+    fn to_screen(&self, p: (f64, f64)) -> egui::Pos2 {
+        let (dx, dy) = ((p.0 - self.ax) * self.sx, (p.1 - self.ay) * self.sy);
+        let (rx, ry) = (dx * self.cos - dy * self.sin, dx * self.sin + dy * self.cos);
+        self.origin + egui::vec2((self.px + rx) as f32, (self.py + ry) as f32) * self.view_scale
+    }
+
+    /// Screen → layer space (drag and pen positions come back through this).
+    fn layer_of(&self, pos: egui::Pos2) -> (f64, f64) {
+        let c = (pos - self.origin) / self.view_scale;
+        let (dx, dy) = (f64::from(c.x) - self.px, f64::from(c.y) - self.py);
+        let (rx, ry) = (
+            dx * self.cos + dy * self.sin,
+            -dx * self.sin + dy * self.cos,
+        );
+        (rx / self.sx + self.ax, ry / self.sy + self.ay)
+    }
+}
+
 /// Mask outlines and draggable vertices over the previewed comp — the seed
 /// of the pen tool (07-UI-SPEC §Viewer tools). Outline follows the cursor
 /// mid-drag; pixels update on release (one SetLayerMasks per drag, one undo).
@@ -1235,29 +1290,9 @@ fn mask_overlay(
     }
     let fps = comp.frame_rate.fps().max(1.0);
     let lt = app.preview_frame as f64 / fps - layer.start_offset.0.to_f64();
-    let tr = &layer.transform;
-    let (px, py) = (tr.position_x.value_at(lt), tr.position_y.value_at(lt));
-    let (ax, ay) = (tr.anchor_x.value_at(lt), tr.anchor_y.value_at(lt));
-    let (sx, sy) = (
-        (tr.scale_x.value_at(lt) / 100.0).max(1e-6),
-        (tr.scale_y.value_at(lt) / 100.0).max(1e-6),
-    );
-    let rot = tr.rotation.value_at(lt).to_radians();
-    let (sin, cos) = rot.sin_cos();
-    // Layer space → screen (2D transform chain, then the view placement).
-    let to_screen = |p: (f64, f64)| -> egui::Pos2 {
-        let (dx, dy) = ((p.0 - ax) * sx, (p.1 - ay) * sy);
-        let (rx, ry) = (dx * cos - dy * sin, dx * sin + dy * cos);
-        let (cx, cy) = (px + rx, py + ry);
-        draw.min + egui::vec2(cx as f32, cy as f32) * scale
-    };
-    // Screen → layer space (drag positions come back through this).
-    let from_screen = |pos: egui::Pos2| -> (f64, f64) {
-        let c = (pos - draw.min) / scale;
-        let (dx, dy) = (f64::from(c.x) - px, f64::from(c.y) - py);
-        let (rx, ry) = (dx * cos + dy * sin, -dx * sin + dy * cos);
-        (rx / sx + ax, ry / sy + ay)
-    };
+    let map = LayerMap::of(layer, lt, draw, scale);
+    let to_screen = |p: (f64, f64)| map.to_screen(p);
+    let from_screen = |pos: egui::Pos2| map.layer_of(pos);
 
     let stroke = egui::Stroke::new(1.0_f32, theme.accent);
     let mut committed: Option<Vec<kiriko_core::mask::Mask>> = None;
@@ -1334,6 +1369,16 @@ fn mask_overlay(
                     }
                 }
             }
+            // Right-click removes the vertex (a closed path keeps ≥ 3).
+            if resp.secondary_clicked() && path.vertices.len() > 3 {
+                let mut masks = layer.masks.clone();
+                if let Some(m) = masks.get_mut(mi) {
+                    if vi < m.path.vertices.len() {
+                        m.path.vertices.remove(vi);
+                        committed = Some(masks);
+                    }
+                }
+            }
         }
     }
     if let Some(masks) = committed {
@@ -1343,6 +1388,107 @@ fn mask_overlay(
             masks,
         });
         app.refresh_preview();
+    }
+}
+
+/// Pen tool (slice 2): while armed, Viewer clicks place vertices of a new
+/// mask on the selected layer; clicking the first vertex closes it into a
+/// mask (one undo); Escape cancels.
+#[cfg(feature = "media")]
+fn pen_overlay(
+    ui: &mut egui::Ui,
+    theme: &Theme,
+    app: &mut AppState,
+    draw: egui::Rect,
+    scale: f32,
+    view: &egui::Response,
+) {
+    if !app.pen_mode {
+        return;
+    }
+    if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+        app.pen_mode = false;
+        app.pen_path.clear();
+        return;
+    }
+    if view.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
+    }
+    let Some(comp_id) = app.preview_comp else {
+        return;
+    };
+    let doc = app.store.snapshot();
+    let Some(comp) = doc.comp(comp_id) else {
+        return;
+    };
+    let Some(layer) = app
+        .selected_layer
+        .and_then(|id| comp.layers.iter().find(|l| l.id == id))
+    else {
+        return;
+    };
+    if layer.switches.three_d {
+        return;
+    }
+    let fps = comp.frame_rate.fps().max(1.0);
+    let lt = app.preview_frame as f64 / fps - layer.start_offset.0.to_f64();
+    let map = LayerMap::of(layer, lt, draw, scale);
+
+    // The in-progress path: open polyline plus handles, first vertex ringed.
+    let stroke = egui::Stroke::new(1.0_f32, theme.accent);
+    let screen_pts: Vec<egui::Pos2> = app.pen_path.iter().map(|v| map.to_screen(v.pos)).collect();
+    if screen_pts.len() >= 2 {
+        ui.painter()
+            .add(egui::Shape::line(screen_pts.clone(), stroke));
+    }
+    for (i, pt) in screen_pts.iter().enumerate() {
+        let r = egui::Rect::from_center_size(*pt, egui::vec2(8.0, 8.0));
+        if i == 0 && screen_pts.len() >= 3 {
+            ui.painter().rect_stroke(
+                r,
+                1.0,
+                egui::Stroke::new(1.5_f32, theme.accent),
+                egui::StrokeKind::Inside,
+            );
+        } else {
+            ui.painter().rect_filled(r.shrink(2.0), 1.0, theme.accent);
+        }
+    }
+
+    if view.clicked() {
+        if let Some(pos) = view.interact_pointer_pos() {
+            let close_hit = screen_pts
+                .first()
+                .is_some_and(|f| (*f - pos).length() <= 8.0)
+                && app.pen_path.len() >= 3;
+            if close_hit {
+                let mut masks = layer.masks.clone();
+                masks.push(kiriko_core::mask::Mask {
+                    id: uuid::Uuid::now_v7(),
+                    name: format!("Path {}", masks.len() + 1),
+                    path: kiriko_core::mask::BezierPath {
+                        vertices: std::mem::take(&mut app.pen_path),
+                        closed: true,
+                    },
+                    inverted: false,
+                    opacity: 100.0,
+                    extra: serde_json::Map::new(),
+                });
+                app.pen_mode = false;
+                app.commit(kiriko_core::Op::SetLayerMasks {
+                    comp: comp_id,
+                    layer: layer.id,
+                    masks,
+                });
+                app.refresh_preview();
+            } else {
+                app.pen_path.push(kiriko_core::mask::Vertex {
+                    pos: map.layer_of(pos),
+                    tan_in: (0.0, 0.0),
+                    tan_out: (0.0, 0.0),
+                });
+            }
+        }
     }
 }
 
@@ -1440,6 +1586,8 @@ fn viewer_footage(
             );
             #[cfg(feature = "media")]
             mask_overlay(ui, theme, app, draw, scale);
+            #[cfg(feature = "media")]
+            pen_overlay(ui, theme, app, draw, scale, &view);
         }
     } else {
         ui.painter().text(
@@ -1498,6 +1646,21 @@ fn viewer_footage(
                             .small()
                             .color(theme.text_muted),
                     );
+                    if app.preview_comp.is_some() {
+                        let armed = app.pen_mode;
+                        if ui
+                            .selectable_label(armed, "Pen")
+                            .on_hover_text(if armed {
+                                "Click to place vertices; click the first one to close; Esc cancels"
+                            } else {
+                                "Draw a mask on the selected layer"
+                            })
+                            .clicked()
+                        {
+                            app.pen_mode = !armed;
+                            app.pen_path.clear();
+                        }
+                    }
                     if frames > 1 {
                         let mut frame = app.preview_frame;
                         let slider = egui::Slider::new(&mut frame, 0..=frames - 1)
