@@ -279,6 +279,12 @@ Two mechanisms make this safe, and you'll see them by name in the code:
   resolution you've chosen (Full, Half, Auto…). The quick draft frames are shown but never
   saved into the frame cache, so the cache only ever holds full-quality frames, and the
   background pre-rendering pauses while you scrub so it doesn't compete for the disc and CPU.
+- **Dragging a transform value updates the picture live.** When you drag a value like Position
+  or Scale, the viewport follows your drag immediately, before the edit is written down. It can
+  do this cheaply because moving or scaling a layer doesn't change *which* frame of the footage
+  is shown — only where it sits — so Kiriko keeps the last decoded frame and simply re-arranges
+  it with your in-progress value each tick, no re-decoding. The moment you let go, the edit is
+  committed as a single undo step and the frame re-renders normally.
 - **Mask editing in the Viewer** — select a layer with masks and its outlines draw
   over the picture in clay, with a square handle on every vertex. Drag a handle and
   the outline follows your cursor live; let go and the pixels update — one undo step

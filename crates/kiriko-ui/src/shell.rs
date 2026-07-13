@@ -2433,6 +2433,24 @@ fn graph_editor_panel(ui: &mut egui::Ui, theme: &Theme, app: &mut AppState) {
     }
 }
 
+/// A copy of `comp` with one layer's transform property overridden to a fixed
+/// `value` — the live value-drag preview renders this so the provisional value
+/// shows before the edit is committed. Only the previewed frame is rendered, so
+/// pinning the property to a constant is exactly its value at that instant.
+#[cfg(feature = "media")]
+fn patch_layer_prop(
+    comp: &kiriko_core::model::Composition,
+    layer: uuid::Uuid,
+    prop: kiriko_core::model::TransformProp,
+    value: f64,
+) -> kiriko_core::model::Composition {
+    let mut patched = comp.clone();
+    if let Some(l) = patched.layers.iter_mut().find(|l| l.id == layer) {
+        *l.transform.get_mut(prop) = kiriko_core::anim::Property::fixed(value);
+    }
+    patched
+}
+
 /// Build a comp's draw list recursively (preview side of Precomp layers).
 /// Bottom-up order; matte sources come from decoded pixels (precomp mattes
 /// await the GPU mask pass, mirroring export).
@@ -3349,6 +3367,13 @@ pub struct Shell {
     #[cfg(feature = "media")]
     #[serde(skip, default)]
     gpu: Option<GpuViewer>,
+    /// The last presented comp frame (its decoded per-layer pixels), retained
+    /// so a value drag can re-composite live from it with the provisional
+    /// value patched in — transform edits change geometry only, never which
+    /// footage frame each layer shows, so no re-decode is needed.
+    #[cfg(feature = "media")]
+    #[serde(skip, default)]
+    last_comp: Option<crate::app_state::preview::CompFrame>,
     #[serde(skip, default)]
     last_doc_ptr: usize,
     #[cfg(feature = "media")]
@@ -3374,6 +3399,8 @@ impl Default for Shell {
             preview_display: None,
             #[cfg(feature = "media")]
             gpu: None,
+            #[cfg(feature = "media")]
+            last_comp: None,
             last_doc_ptr: 0,
             #[cfg(feature = "media")]
             export: None,
@@ -4058,6 +4085,11 @@ impl Shell {
                             }
                         }
                     }
+                    // Retain the presented frame's decoded pixels so a value
+                    // drag can re-composite from them without re-decoding.
+                    if !is_fill {
+                        self.last_comp = Some(cf);
+                    }
                 }
                 Some(Ok(PreviewResult::Footage(px)))
                     if Some(px.item) == self.app.preview_item
@@ -4086,6 +4118,50 @@ impl Shell {
                 self.app.refresh_preview();
             } else {
                 self.last_doc_ptr = doc_ptr;
+            }
+
+            // Live value-drag preview: while a transform value is being dragged,
+            // re-composite the retained frame with the provisional value patched
+            // in for this frame only — instant feedback with no re-decode, since
+            // a transform change never alters which footage frame a layer shows.
+            if let (Some((edit_layer, prop, value)), Some(comp_id)) =
+                (self.app.prop_edit, self.app.preview_comp)
+            {
+                if let (Some(gpu), Some(cf)) = (&mut self.gpu, &self.last_comp) {
+                    if cf.comp == comp_id && cf.frame == self.app.preview_frame {
+                        let doc = self.app.store.snapshot();
+                        if let Some(comp) = doc.comp(comp_id) {
+                            let patched = patch_layer_prop(comp, edit_layer, prop, value);
+                            let t_comp = cf.frame as f64 / comp.frame_rate.fps().max(1.0);
+                            let pixels_by_layer: std::collections::HashMap<_, _> =
+                                cf.layers.iter().map(|lp| (lp.layer, lp)).collect();
+                            let mut visited = vec![comp_id];
+                            let draws = build_comp_draws(
+                                &doc,
+                                &patched,
+                                t_comp,
+                                &pixels_by_layer,
+                                &mut visited,
+                            );
+                            let bg = comp.background.0;
+                            let background = [
+                                f64::from(bg[0]),
+                                f64::from(bg[1]),
+                                f64::from(bg[2]),
+                                f64::from(bg[3]),
+                            ];
+                            let pose = patched.camera_pose(t_comp);
+                            self.preview_display = Some(gpu.present_comp(
+                                pose,
+                                comp.width,
+                                comp.height,
+                                background,
+                                &draws,
+                            ));
+                            ctx.request_repaint();
+                        }
+                    }
+                }
             }
         }
         #[cfg(target_os = "macos")]
@@ -4422,5 +4498,60 @@ mod geometry_tests {
             DrawSource::Pixels { tex_w, tex_h, .. } => assert_eq!((*tex_w, *tex_h), (480, 270)),
             _ => panic!("expected a pixel source for a footage layer"),
         }
+    }
+
+    // The live value-drag preview renders a comp patched with the provisional
+    // value. Patching a layer's Position X to 500 must show through as the
+    // draw's position, without touching the committed document.
+    #[test]
+    fn patch_layer_prop_overrides_the_previewed_value() {
+        use kiriko_core::model::TransformProp;
+        let item = Uuid::now_v7();
+        let layer = Layer {
+            id: Uuid::now_v7(),
+            name: "clip".into(),
+            kind: LayerKind::Footage { item, retime: None },
+            in_point: CompTime(Rational::ZERO),
+            out_point: CompTime(Rational::new(10, 1).unwrap()),
+            start_offset: CompTime(Rational::ZERO),
+            transform: TransformGroup::default(),
+            matte: None,
+            blend: Default::default(),
+            masks: Vec::new(),
+            switches: Switches::default(),
+            extra: serde_json::Map::new(),
+        };
+        let comp = Composition {
+            id: Uuid::now_v7(),
+            name: "Comp".into(),
+            width: 1920,
+            height: 1080,
+            frame_rate: FrameRate::new(60, 1).unwrap(),
+            duration: Duration(Rational::new(10, 1).unwrap()),
+            background: LinearColour::BLACK,
+            work_area: None,
+            layers: vec![layer.clone()],
+            extra: serde_json::Map::new(),
+        };
+
+        let patched = patch_layer_prop(&comp, layer.id, TransformProp::PositionX, 500.0);
+        // The committed comp is untouched (default position 0).
+        assert_eq!(comp.layers[0].transform.position_x.value_at(0.0), 0.0);
+
+        let lp = CompLayerPixels {
+            layer: layer.id,
+            width: 1920,
+            height: 1080,
+            rgba: vec![0u8; 16],
+            natural_w: 1920,
+            natural_h: 1080,
+        };
+        let mut map: HashMap<Uuid, &CompLayerPixels> = HashMap::new();
+        map.insert(layer.id, &lp);
+        let doc = Document::new();
+        let mut visited = vec![patched.id];
+        let draws = build_comp_draws(&doc, &patched, 0.0, &map, &mut visited);
+        assert_eq!(draws.len(), 1);
+        assert_eq!(draws[0].position.0, 500.0);
     }
 }
