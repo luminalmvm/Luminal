@@ -363,3 +363,22 @@ own timeline tab.** Refines the Sequence layer (K-020) per Mack (2026-07-13):
   (`sequence::is_source_ordered`), gaps allowed, and the K-070 frame-pinning rule per clip.
 - Note: the inline razor shipped this session operates on the general model in the main
   timeline; the dedicated-tab editing surface is the intended home and supersedes it.
+
+**K-072 · DECIDED · Transform property rows: keyframable speed and linked scale.** Detail
+for the property-row timeline restructure (07-UI-SPEC §5, K-070), from Mack (2026-07-13):
+
+- **Speed is a keyframable property like any other**, in the regular (layer) timeline view
+  as well as the graph view. The Speed row gets a stopwatch; keyframing it builds the
+  retime's speed lens (Rate segments between speed keyframes), and its keyframes show as
+  glyphs on its own row. A single un-keyframed value stays the constant-speed case.
+- **Scale x / y share one row by default, with a ratio lock (default on)** — like the
+  composition Size field. Linked: one Scale control edits both, preserving the x:y ratio.
+  Unlocking lets you edit x and y separately and **splits them onto two rows**; a relink
+  button stays available. **Relinking collapses to a single row and keeps one axis, losing
+  the other's independent changes — unless one axis was never changed**, in which case the
+  two merge losslessly and keep the ratio.
+- Both land with the property-row restructure (each animatable property as its own timeline
+  row: left column stopwatch + name + value, track shows its keyframes; clicking a row
+  graphs that property). Keyframe-interpolation glyphs (bezier/linear/hold) on each key are
+  a later refinement; the near-term requirement is that keyframes are *shown where set*, on
+  the property's row rather than the layer bar.
