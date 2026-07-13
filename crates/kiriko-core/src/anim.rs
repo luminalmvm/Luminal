@@ -170,6 +170,46 @@ impl CubicSpan {
     }
 }
 
+/// An animatable scalar slot (docs/03-DATA-MODEL.md §6.1; the expression slot
+/// joins in Phase 4). Phase 1 starts with separated scalar dimensions —
+/// coupled Vec2 spatial paths and roving keyframes arrive with the
+/// motion-path work (status-noted in the data model doc).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum Animation {
+    Static(f64),
+    /// Sorted by time, unique times (enforced by the editing ops).
+    Keyframed(Vec<Keyframe>),
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Property {
+    pub animation: Animation,
+    /// Unknown fields from newer Kiriko versions (docs/10-FILE-FORMAT.md §1.1).
+    #[serde(flatten, default, skip_serializing_if = "serde_json::Map::is_empty")]
+    pub extra: serde_json::Map<String, serde_json::Value>,
+}
+
+impl Property {
+    pub fn fixed(value: f64) -> Self {
+        Self {
+            animation: Animation::Static(value),
+            extra: serde_json::Map::new(),
+        }
+    }
+
+    /// Evaluate at a time in the owner's timebase (seconds).
+    pub fn value_at(&self, t: f64) -> f64 {
+        match &self.animation {
+            Animation::Static(v) => *v,
+            Animation::Keyframed(keys) => evaluate(keys, t).unwrap_or(0.0),
+        }
+    }
+
+    pub fn is_animated(&self) -> bool {
+        matches!(&self.animation, Animation::Keyframed(keys) if !keys.is_empty())
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {

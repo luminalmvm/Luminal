@@ -145,6 +145,7 @@ mod tests {
             in_point: t(0, 1),
             out_point: t(10, 1),
             start_offset: t(0, 1),
+            transform: TransformGroup::default(),
             switches: Switches::default(),
             extra: serde_json::Map::new(),
         }
@@ -268,6 +269,86 @@ mod tests {
             })
             .unwrap();
         assert!(!store.can_redo(), "new edit invalidates the redo branch");
+    }
+
+    #[test]
+    fn transform_property_op_round_trips_through_undo() {
+        use crate::anim::{Animation, Keyframe, SideInterp, EASY_EASE};
+        use crate::model::TransformProp;
+        let store = DocumentStore::new(Document::new());
+        let (ops, comp_id) = scripted_ops(&store.snapshot());
+        let mut layer_id = None;
+        for op in &ops {
+            if let Op::AddLayer { layer, .. } = op {
+                layer_id = Some(layer.id);
+            }
+        }
+        for op in ops {
+            store.commit(op).unwrap();
+        }
+        let layer_id = layer_id.unwrap();
+
+        let keys = vec![
+            Keyframe {
+                time: Rational::new(0, 1).unwrap(),
+                value: 0.0,
+                interp_in: SideInterp::Linear,
+                interp_out: EASY_EASE,
+            },
+            Keyframe {
+                time: Rational::new(2, 1).unwrap(),
+                value: 100.0,
+                interp_in: EASY_EASE,
+                interp_out: SideInterp::Linear,
+            },
+        ];
+        store
+            .commit(Op::SetTransformProperty {
+                comp: comp_id,
+                layer: layer_id,
+                prop: TransformProp::Opacity,
+                animation: Animation::Keyframed(keys),
+            })
+            .unwrap();
+
+        let doc = store.snapshot();
+        let comp = doc.comp(comp_id).unwrap();
+        let layer = comp.layers.iter().find(|l| l.id == layer_id).unwrap();
+        assert!(layer.transform.opacity.is_animated());
+        let mid = layer.transform.opacity.value_at(1.0);
+        assert!((mid - 50.0).abs() < 1e-9, "eased midpoint {mid}");
+        assert_eq!(layer.transform.opacity.value_at(-1.0), 0.0);
+        assert_eq!(layer.transform.opacity.value_at(99.0), 100.0);
+
+        // Undo restores the static default exactly.
+        store.undo().unwrap();
+        let doc = store.snapshot();
+        let layer = doc
+            .comp(comp_id)
+            .unwrap()
+            .layers
+            .iter()
+            .find(|l| l.id == layer_id)
+            .unwrap();
+        assert!(!layer.transform.opacity.is_animated());
+        assert_eq!(layer.transform.opacity.value_at(1.0), 100.0);
+    }
+
+    #[test]
+    fn layers_saved_before_transforms_existed_still_load() {
+        // A pre-transform Layer JSON (as slice-3 Kiriko wrote it).
+        let old = r#"{
+            "id": "018f0e9a-0000-7000-8000-000000000001",
+            "name": "clip.mp4",
+            "kind": { "Footage": { "item": "018f0e9a-0000-7000-8000-000000000002" } },
+            "in_point": [0, 1],
+            "out_point": [10, 1],
+            "start_offset": [0, 1],
+            "switches": { "visible": true, "audible": true, "locked": false }
+        }"#;
+        let layer: crate::model::Layer = serde_json::from_str(old).unwrap();
+        assert_eq!(layer.transform.opacity.value_at(0.0), 100.0);
+        assert_eq!(layer.transform.scale_x.value_at(0.0), 100.0);
     }
 
     #[test]

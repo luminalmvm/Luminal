@@ -4,6 +4,7 @@
 //! layers with spans — no properties/keyframes yet (slice arrives in Phase 1).
 //! All mutation goes through operations (ops.rs); this module is data + queries.
 
+use crate::anim::Property;
 use crate::time::{CompTime, Duration, FrameRate};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -67,6 +68,84 @@ pub struct Composition {
     pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
+/// Layer transform (docs/03-DATA-MODEL.md §6; 2.5D fields join with the
+/// camera work — all maths is 4x4 from day one at the evaluator level).
+/// Dimensions are separated scalars in Phase 1 (AE's separated-dimensions
+/// mode); coupled spatial paths arrive with the motion-path unit.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TransformGroup {
+    pub anchor_x: Property,
+    pub anchor_y: Property,
+    pub position_x: Property,
+    pub position_y: Property,
+    /// Percent, 100 = natural size.
+    pub scale_x: Property,
+    pub scale_y: Property,
+    /// Degrees.
+    pub rotation: Property,
+    /// Percent, 0..100.
+    pub opacity: Property,
+    #[serde(flatten, default, skip_serializing_if = "serde_json::Map::is_empty")]
+    pub extra: serde_json::Map<String, serde_json::Value>,
+}
+
+impl Default for TransformGroup {
+    fn default() -> Self {
+        Self {
+            anchor_x: Property::fixed(0.0),
+            anchor_y: Property::fixed(0.0),
+            position_x: Property::fixed(0.0),
+            position_y: Property::fixed(0.0),
+            scale_x: Property::fixed(100.0),
+            scale_y: Property::fixed(100.0),
+            rotation: Property::fixed(0.0),
+            opacity: Property::fixed(100.0),
+            extra: serde_json::Map::new(),
+        }
+    }
+}
+
+/// Which transform property an op addresses (stable, serialisable path).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TransformProp {
+    AnchorX,
+    AnchorY,
+    PositionX,
+    PositionY,
+    ScaleX,
+    ScaleY,
+    Rotation,
+    Opacity,
+}
+
+impl TransformGroup {
+    pub fn get(&self, prop: TransformProp) -> &Property {
+        match prop {
+            TransformProp::AnchorX => &self.anchor_x,
+            TransformProp::AnchorY => &self.anchor_y,
+            TransformProp::PositionX => &self.position_x,
+            TransformProp::PositionY => &self.position_y,
+            TransformProp::ScaleX => &self.scale_x,
+            TransformProp::ScaleY => &self.scale_y,
+            TransformProp::Rotation => &self.rotation,
+            TransformProp::Opacity => &self.opacity,
+        }
+    }
+
+    pub fn get_mut(&mut self, prop: TransformProp) -> &mut Property {
+        match prop {
+            TransformProp::AnchorX => &mut self.anchor_x,
+            TransformProp::AnchorY => &mut self.anchor_y,
+            TransformProp::PositionX => &mut self.position_x,
+            TransformProp::PositionY => &mut self.position_y,
+            TransformProp::ScaleX => &mut self.scale_x,
+            TransformProp::ScaleY => &mut self.scale_y,
+            TransformProp::Rotation => &mut self.rotation,
+            TransformProp::Opacity => &mut self.opacity,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Switches {
     pub visible: bool,
@@ -99,6 +178,9 @@ pub struct Layer {
     pub out_point: CompTime,
     /// Where layer time 0 sits on the comp timeline.
     pub start_offset: CompTime,
+    /// Defaulted for projects saved before transforms existed (forward compat).
+    #[serde(default)]
+    pub transform: TransformGroup,
     pub switches: Switches,
     /// Unknown fields from newer Kiriko versions, preserved on load/save
     /// (docs/10-FILE-FORMAT.md §1.1 — mandatory forward compatibility).

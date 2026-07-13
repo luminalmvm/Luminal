@@ -2,7 +2,8 @@
 //! (docs/03-DATA-MODEL.md §10). Applying an op yields its inverse; the journal
 //! of (op, inverse) pairs is the undo/redo stack and the crash-recovery log.
 
-use crate::model::{Document, Layer, ProjectItem};
+use crate::anim::Animation;
+use crate::model::{Document, Layer, ProjectItem, TransformProp};
 use crate::time::CompTime;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -57,6 +58,15 @@ pub enum Op {
         comp: Uuid,
         layer: Uuid,
         name: String,
+    },
+    /// Replace one transform property's whole animation (static or keyframed).
+    /// Coarse-grained on purpose: trivially invertible; per-keyframe ops
+    /// arrive with the graph editor.
+    SetTransformProperty {
+        comp: Uuid,
+        layer: Uuid,
+        prop: TransformProp,
+        animation: Animation,
     },
 }
 
@@ -146,6 +156,27 @@ pub fn apply(doc: &mut Document, op: &Op) -> Result<Op, OpError> {
             l.out_point = *out_point;
             l.start_offset = *start_offset;
             Ok(inverse)
+        }
+        Op::SetTransformProperty {
+            comp,
+            layer,
+            prop,
+            animation,
+        } => {
+            let c = doc.comp_mut(*comp).ok_or(OpError::UnknownComp)?;
+            let l = c
+                .layers
+                .iter_mut()
+                .find(|l| l.id == *layer)
+                .ok_or(OpError::UnknownLayer)?;
+            let slot = l.transform.get_mut(*prop);
+            let previous = std::mem::replace(&mut slot.animation, animation.clone());
+            Ok(Op::SetTransformProperty {
+                comp: *comp,
+                layer: *layer,
+                prop: *prop,
+                animation: previous,
+            })
         }
         Op::RenameLayer { comp, layer, name } => {
             let c = doc.comp_mut(*comp).ok_or(OpError::UnknownComp)?;
