@@ -37,7 +37,9 @@ jobs:
       # dev setup lands, Windows builds without the media feature — tracked in
       # docs/impl/phase-0-kickoff.md slice 4 notes.
       - run: cargo test -p kiriko-core -p kiriko-project
-      - run: cargo test -p kiriko-ui --no-default-features
+      # check (not test): kiriko-ui's dev-deps include the media fixtures,
+      # and dev-deps ignore feature flags; ui tests run on the macOS job.
+      - run: cargo check -p kiriko-ui --no-default-features
       - run: cargo check -p kiriko-app --no-default-features
 
   coverage:
