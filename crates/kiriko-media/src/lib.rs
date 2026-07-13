@@ -9,6 +9,7 @@
 
 pub mod audio;
 pub mod decode;
+pub mod encode;
 pub mod index;
 pub mod probe;
 
@@ -16,6 +17,7 @@ use std::path::Path;
 
 pub use audio::AudioBuffer;
 pub use decode::{DecodedFrame, VideoDecoder};
+pub use encode::Encoder;
 pub use index::{FrameIndex, IndexEntry};
 pub use probe::{AudioInfo, MediaProbe, VideoInfo};
 
