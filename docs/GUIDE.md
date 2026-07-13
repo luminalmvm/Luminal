@@ -108,6 +108,14 @@ Two mechanisms make this safe, and you'll see them by name in the code:
 - `crates/kiriko-core/src/ops.rs` — **Every possible edit, as data.** An edit is an `Op`
   (AddLayer, SetLayerSpan…). Applying an op returns its exact inverse — that pair is what
   makes undo *provably* correct instead of hopefully correct.
+- `crates/kiriko-core/src/anim.rs` — **the keyframe engine.** Between two keyframes the
+  value follows a bezier curve shaped by AE-style *speed* (units per second) and
+  *influence* (how far each handle reaches). The subtle part: the curve is parametric, so
+  "value at time t" first requires solving "where on the curve is x = t?" — done with a
+  solver that combines Newton's speed with a bracket it mathematically cannot escape.
+  That solver quality is exactly what makes handles feel right in a graph editor at the
+  extremes (AE's 100% influence "spike" case is a test here). Property tests fire
+  thousands of random curves at it per CI run.
 - `crates/kiriko-core/src/store.rs` — **The document store**: applies ops, publishes
   snapshots, keeps the undo/redo stacks.
 - `crates/kiriko-project/src/lib.rs` — **`.kir` files.** A `.kir` is a zip containing

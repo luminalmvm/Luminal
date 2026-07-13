@@ -2,6 +2,7 @@
 //! snapshot store. Engine root — depends on nothing above it
 //! (docs/05-ARCHITECTURE.md dependency rules).
 
+pub mod anim;
 pub mod model;
 pub mod ops;
 pub mod store;
