@@ -8,16 +8,17 @@
 struct LayerUniform {
     // comp pixel space → NDC, including the layer's transform.
     matrix: mat4x4<f32>,
-    // 0..1; premultiplies colour and alpha in the fragment stage.
-    opacity: f32,
-    _pad0: f32,
-    _pad1: f32,
-    _pad2: f32,
+    // x: opacity 0..1 · y: use_matte · z: matte luma (else alpha) · w: invert
+    params: vec4<f32>,
+    // xy: comp target size in pixels (normalises frag position to matte uv)
+    target_size: vec4<f32>,
 };
 
 @group(0) @binding(0) var src: texture_2d<f32>;
 @group(0) @binding(1) var samp: sampler;
 @group(0) @binding(2) var<uniform> layer: LayerUniform;
+// Comp-space matte (a rendered layer); 1×1 white when unused.
+@group(0) @binding(3) var matte: texture_2d<f32>;
 
 struct VsOut {
     @builtin(position) pos: vec4<f32>,
@@ -42,6 +43,20 @@ fn vs_layer(@builtin(vertex_index) i: u32) -> VsOut {
 fn fs_layer(in: VsOut) -> @location(0) vec4<f32> {
     let texel = textureSample(src, samp, in.uv);
     // Straight-alpha source → premultiplied output, opacity folded in.
-    let a = texel.a * layer.opacity;
+    var a = texel.a * layer.params.x;
+    if (layer.params.y > 0.5) {
+        // Matte lives in comp space: sample at this fragment's comp position.
+        let comp_uv = in.pos.xy / layer.target_size.xy;
+        let m = textureSample(matte, samp, comp_uv);
+        var strength = m.a;
+        if (layer.params.z > 0.5) {
+            // Luma matte (v0: luma of the premultiplied composite).
+            strength = dot(m.rgb, vec3<f32>(0.2126, 0.7152, 0.0722));
+        }
+        if (layer.params.w > 0.5) {
+            strength = 1.0 - strength;
+        }
+        a = a * clamp(strength, 0.0, 1.0);
+    }
     return vec4<f32>(texel.rgb * a, a);
 }

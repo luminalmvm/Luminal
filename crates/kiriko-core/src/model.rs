@@ -146,6 +146,21 @@ impl TransformGroup {
     }
 }
 
+/// Using another layer's alpha or luma to gate this layer
+/// (docs/01-GLOSSARY.md §6: matte — any layer, one matte may serve many).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MatteRef {
+    pub layer: Uuid,
+    pub channel: MatteChannel,
+    pub inverted: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MatteChannel {
+    Alpha,
+    Luma,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Switches {
     pub visible: bool,
@@ -181,6 +196,10 @@ pub struct Layer {
     /// Defaulted for projects saved before transforms existed (forward compat).
     #[serde(default)]
     pub transform: TransformGroup,
+    /// Matte reference; a missing/deleted target degrades to "no matte"
+    /// (docs/03-DATA-MODEL.md §5.1 invariants), never an error.
+    #[serde(default)]
+    pub matte: Option<MatteRef>,
     pub switches: Switches,
     /// Unknown fields from newer Kiriko versions, preserved on load/save
     /// (docs/10-FILE-FORMAT.md §1.1 — mandatory forward compatibility).

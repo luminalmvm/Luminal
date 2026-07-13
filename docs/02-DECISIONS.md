@@ -149,6 +149,16 @@ workflows (Mac editors' mezzanine norm), the Metal branch of the OFX 1.5 GPU ren
 ([12-PLUGINS.md](12-PLUGINS.md) §2.4), and a notarised universal binary. Nothing in the
 engine may assume DX12-only. Added 2026-07-13 at Mack's request.
 
+**K-035 · DECIDED · Every effect gets a built-in strength matte.** Any effect instance can
+select a per-pixel strength source — the layer's own masks or any other layer (same
+dropdown model as layer mattes) — scaling the effect's influence at each pixel. The host
+implements it once, uniformly: for colour-type effects as a per-pixel mix between input
+and effected image; for warp/distort-type effects by scaling the displacement field where
+the effect declares vector output (falling back to output-mix otherwise). No effect
+author writes masking code; it composes with everything. AE needs per-effect "composite
+on original"/precomp workarounds for this. Lands with the effect suite (phase 3). Added
+2026-07-13 at Mack's request. Spec: [08-EFFECTS.md](08-EFFECTS.md) §effect model.
+
 **K-034 · DECIDED · Perceptual colour operations happen in Oklab.** Two colour domains,
 each doing the job it is correct for: **linear RGB** remains the compositing/working space
 (light adds physically there — blending, exposure, glow are correct and stay put), while

@@ -14,8 +14,19 @@ use glam::Mat4;
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct LayerUniform {
     matrix: [[f32; 4]; 4],
-    opacity: f32,
-    _pad: [f32; 3],
+    /// opacity, use_matte, matte_luma, matte_inverted
+    params: [f32; 4],
+    /// comp target size (xy) + padding
+    target: [f32; 4],
+}
+
+/// A comp-space matte gating a layer (docs/06-RENDER-PIPELINE.md mattes).
+pub struct MatteInput<'a> {
+    /// The matte layer rendered alone at comp size (linear fp16).
+    pub texture: &'a wgpu::Texture,
+    /// Luma matte (else alpha).
+    pub luma: bool,
+    pub inverted: bool,
 }
 
 /// One layer to draw: a linear texture plus its placement in comp space.
@@ -32,6 +43,7 @@ pub struct CompositeLayer<'a> {
     pub rotation_deg: f32,
     /// 0..100 (UI percent; folded to 0..1 in the uniform).
     pub opacity: f32,
+    pub matte: Option<MatteInput<'a>>,
 }
 
 impl CompositeLayer<'_> {
@@ -50,10 +62,22 @@ impl CompositeLayer<'_> {
     }
 }
 
+/// f32 → IEEE half bits (enough for writing the constant white texel).
+fn half_bits(v: f32) -> u16 {
+    // 1.0 and 0.0 are the only values we write; exact per IEEE 754.
+    if v >= 1.0 {
+        0x3C00
+    } else {
+        0
+    }
+}
+
 pub struct Compositor {
     pipeline: wgpu::RenderPipeline,
     layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
+    /// Bound at binding 3 when a layer has no matte.
+    white: wgpu::Texture,
 }
 
 impl Compositor {
@@ -89,6 +113,16 @@ impl Compositor {
                             ty: wgpu::BufferBindingType::Uniform,
                             has_dynamic_offset: false,
                             min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 3,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
                         },
                         count: None,
                     },
@@ -147,10 +181,40 @@ impl Compositor {
             min_filter: wgpu::FilterMode::Linear,
             ..Default::default()
         });
+        let white = ctx.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("matte-none"),
+            size: wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: crate::WORKING_FORMAT,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let ones = [1.0f32; 4].map(half_bits);
+        ctx.queue.write_texture(
+            white.as_image_copy(),
+            bytemuck::cast_slice(&ones),
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(8),
+                rows_per_image: Some(1),
+            },
+            wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+        );
         Self {
             pipeline,
             layout,
             sampler,
+            white,
         }
     }
 
@@ -186,8 +250,13 @@ impl Compositor {
             .map(|layer| {
                 let uniform = LayerUniform {
                     matrix: layer.matrix(width as f32, height as f32).to_cols_array_2d(),
-                    opacity: (layer.opacity / 100.0).clamp(0.0, 1.0),
-                    _pad: [0.0; 3],
+                    params: [
+                        (layer.opacity / 100.0).clamp(0.0, 1.0),
+                        f32::from(layer.matte.is_some()),
+                        f32::from(layer.matte.as_ref().is_some_and(|m| m.luma)),
+                        f32::from(layer.matte.as_ref().is_some_and(|m| m.inverted)),
+                    ],
+                    target: [width as f32, height as f32, 0.0, 0.0],
                 };
                 let buffer = wgpu::util::DeviceExt::create_buffer_init(
                     &ctx.device,
@@ -214,6 +283,17 @@ impl Compositor {
                         wgpu::BindGroupEntry {
                             binding: 2,
                             resource: buffer.as_entire_binding(),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 3,
+                            resource: wgpu::BindingResource::TextureView(
+                                &layer
+                                    .matte
+                                    .as_ref()
+                                    .map(|m| m.texture)
+                                    .unwrap_or(&self.white)
+                                    .create_view(&Default::default()),
+                            ),
                         },
                     ],
                 })
@@ -323,6 +403,7 @@ mod tests {
             scale: (100.0, 100.0),
             rotation_deg: 0.0,
             opacity: 50.0,
+            matte: None,
         };
         // Background: linear green = sRGB 0,255,0 decoded.
         let g_lin = srgb_decode(1.0);
@@ -348,6 +429,88 @@ mod tests {
         assert!((r - 128).abs() > 10, "blend looks gamma-naive: r {r}");
     }
 
+    /// One matte layer gates a consumer without duplication or precomping
+    /// (the K-020-era matte model): alpha matte passes the covered half,
+    /// inverted flips it — verified per pixel.
+    #[test]
+    fn matte_gates_a_layer_per_pixel() {
+        let Ok(ctx) = GpuContext::headless() else {
+            eprintln!("skipping: no GPU adapter");
+            return;
+        };
+        let colour = ColourEngine::new(&ctx);
+        let compositor = Compositor::new(&ctx);
+
+        // The matte: a quad covering the LEFT half of the 8×8 comp,
+        // rendered alone into comp space (transparent background).
+        let white = solid_linear(&ctx, &colour, [255, 255, 255, 255], 4, 8);
+        let matte_tex = compositor.composite(
+            &ctx,
+            8,
+            8,
+            [0.0, 0.0, 0.0, 0.0],
+            &[CompositeLayer {
+                texture: &white,
+                size: (4.0, 8.0),
+                position: (0.0, 0.0),
+                anchor: (0.0, 0.0),
+                scale: (100.0, 100.0),
+                rotation_deg: 0.0,
+                opacity: 100.0,
+                matte: None,
+            }],
+        );
+
+        // The consumer: full-comp red, gated by the matte's alpha.
+        let red = solid_linear(&ctx, &colour, [255, 0, 0, 255], 8, 8);
+        let consumer = |inverted: bool| CompositeLayer {
+            texture: &red,
+            size: (8.0, 8.0),
+            position: (0.0, 0.0),
+            anchor: (0.0, 0.0),
+            scale: (100.0, 100.0),
+            rotation_deg: 0.0,
+            opacity: 100.0,
+            matte: Some(MatteInput {
+                texture: &matte_tex,
+                luma: false,
+                inverted,
+            }),
+        };
+
+        let shown = render_for_display(
+            &ctx,
+            &colour,
+            &compositor,
+            8,
+            8,
+            [0.0, 0.0, 0.0, 1.0],
+            &[consumer(false)],
+        );
+        let back = colour.readback8(&ctx, &shown).unwrap();
+        let red_at = |x: usize, y: usize| back[(y * 8 + x) * 4];
+        assert!(red_at(1, 4) > 250, "left (matted-in) {}", red_at(1, 4));
+        assert!(red_at(6, 4) < 5, "right (matted-out) {}", red_at(6, 4));
+
+        let shown_inv = render_for_display(
+            &ctx,
+            &colour,
+            &compositor,
+            8,
+            8,
+            [0.0, 0.0, 0.0, 1.0],
+            &[consumer(true)],
+        );
+        let back = colour.readback8(&ctx, &shown_inv).unwrap();
+        let red_at = |x: usize, y: usize| back[(y * 8 + x) * 4];
+        assert!(red_at(1, 4) < 5, "inverted: left now out {}", red_at(1, 4));
+        assert!(
+            red_at(6, 4) > 250,
+            "inverted: right now in {}",
+            red_at(6, 4)
+        );
+    }
+
     /// A quarter-size quad placed at the centre covers exactly the centre
     /// quarter: transforms map comp pixels correctly (and the rest of the
     /// frame keeps the background).
@@ -368,6 +531,7 @@ mod tests {
             scale: (50.0, 50.0),  // 8px quad → 4px
             rotation_deg: 0.0,
             opacity: 100.0,
+            matte: None,
         };
         let shown = render_for_display(
             &ctx,

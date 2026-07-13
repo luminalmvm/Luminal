@@ -146,6 +146,7 @@ mod tests {
             out_point: t(10, 1),
             start_offset: t(0, 1),
             transform: TransformGroup::default(),
+            matte: None,
             switches: Switches::default(),
             extra: serde_json::Map::new(),
         }
@@ -332,6 +333,66 @@ mod tests {
             .unwrap();
         assert!(!layer.transform.opacity.is_animated());
         assert_eq!(layer.transform.opacity.value_at(1.0), 100.0);
+    }
+
+    #[test]
+    fn matte_op_round_trips_and_targets_any_layer() {
+        use crate::model::{MatteChannel, MatteRef};
+        let store = DocumentStore::new(Document::new());
+        let (ops, comp_id) = scripted_ops(&store.snapshot());
+        let mut layer_id = None;
+        for op in &ops {
+            if let Op::AddLayer { layer, .. } = op {
+                layer_id = Some(layer.id);
+            }
+        }
+        for op in ops {
+            store.commit(op).unwrap();
+        }
+        let layer_id = layer_id.unwrap();
+        // A second layer to serve as the matte source.
+        let matte_layer = test_layer(Uuid::now_v7());
+        let matte_id = matte_layer.id;
+        store
+            .commit(Op::AddLayer {
+                comp: comp_id,
+                index: 0,
+                layer: Box::new(matte_layer),
+            })
+            .unwrap();
+
+        let matte = MatteRef {
+            layer: matte_id,
+            channel: MatteChannel::Luma,
+            inverted: true,
+        };
+        store
+            .commit(Op::SetLayerMatte {
+                comp: comp_id,
+                layer: layer_id,
+                matte: Some(matte),
+            })
+            .unwrap();
+        let doc = store.snapshot();
+        let l = doc
+            .comp(comp_id)
+            .unwrap()
+            .layers
+            .iter()
+            .find(|l| l.id == layer_id)
+            .unwrap();
+        assert_eq!(l.matte, Some(matte));
+
+        store.undo().unwrap();
+        let doc = store.snapshot();
+        let l = doc
+            .comp(comp_id)
+            .unwrap()
+            .layers
+            .iter()
+            .find(|l| l.id == layer_id)
+            .unwrap();
+        assert_eq!(l.matte, None, "undo clears the matte exactly");
     }
 
     #[test]

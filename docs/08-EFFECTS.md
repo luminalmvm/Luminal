@@ -474,6 +474,24 @@ suite stays small.
 
 ---
 
+## The universal strength matte (K-035)
+
+Every effect instance carries a host-provided **strength matte** slot: none (default), the
+layer's own mask set, or any layer in the comp (the matte dropdown model). The host
+samples the matte in layer space, yielding per-pixel strength s ∈ [0,1] (with gain/invert
+controls), and applies it uniformly:
+
+- **Colour-type effects** (declared trait): `out = mix(input, effected, s)` — exact, cheap,
+  works for every such effect with zero author effort.
+- **Warp-type effects** that declare a displacement-vector output: the host scales the
+  displacement field by s before resampling, so the *geometry* of the warp fades per
+  pixel — the behaviour users actually want from a masked warp. Effects without vector
+  output fall back to output-mix with a documented note in their reference entry.
+
+The strength matte is a full property (animatable, expression-visible) and participates in
+content hashing like any input. This replaces AE's per-effect workarounds (compound-effect
+mask parameters, "composite on original", effect-only precomps).
+
 ## Open questions
 
 1. **Flow algorithm choice.** Variational/patch-match hybrid is specced; a learned flow

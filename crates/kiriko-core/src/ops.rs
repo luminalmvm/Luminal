@@ -3,7 +3,7 @@
 //! of (op, inverse) pairs is the undo/redo stack and the crash-recovery log.
 
 use crate::anim::Animation;
-use crate::model::{Document, Layer, ProjectItem, TransformProp};
+use crate::model::{Document, Layer, MatteRef, ProjectItem, TransformProp};
 use crate::time::CompTime;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -58,6 +58,12 @@ pub enum Op {
         comp: Uuid,
         layer: Uuid,
         name: String,
+    },
+    /// Point a layer at another layer as its matte (or clear it).
+    SetLayerMatte {
+        comp: Uuid,
+        layer: Uuid,
+        matte: Option<MatteRef>,
     },
     /// Replace one transform property's whole animation (static or keyframed).
     /// Coarse-grained on purpose: trivially invertible; per-keyframe ops
@@ -156,6 +162,20 @@ pub fn apply(doc: &mut Document, op: &Op) -> Result<Op, OpError> {
             l.out_point = *out_point;
             l.start_offset = *start_offset;
             Ok(inverse)
+        }
+        Op::SetLayerMatte { comp, layer, matte } => {
+            let c = doc.comp_mut(*comp).ok_or(OpError::UnknownComp)?;
+            let l = c
+                .layers
+                .iter_mut()
+                .find(|l| l.id == *layer)
+                .ok_or(OpError::UnknownLayer)?;
+            let previous = std::mem::replace(&mut l.matte, *matte);
+            Ok(Op::SetLayerMatte {
+                comp: *comp,
+                layer: *layer,
+                matte: previous,
+            })
         }
         Op::SetTransformProperty {
             comp,
