@@ -173,6 +173,21 @@ opt-in per comp** for accumulation-sensitive work. All compositing, filtering, r
 motion-blur accumulation happen here. Effects that accumulate heavily (large iterative blurs,
 scopes accumulation) SHOULD use fp32 internally regardless of comp depth.
 
+Two clarifications (2026-07-13, after review with Mack):
+
+- **fp16 here is floating point, not AE's integer 16bpc.** It carries values above 1.0
+  (superwhites, glow overshoot — up to 65504) and negatives, in linear light. The
+  headroom and grading accuracy people switch AE to 32bpc for are the *default* in
+  Kiriko; fp32 buys extra mantissa (deep shadow gradients under extreme exposure pushes,
+  very long accumulation chains), not the ability to exceed 1.0.
+- **Where the depth choice lives**: the working depth default is a *project setting*
+  with a per-comp override — never an application setting. Always-fp32 was considered
+  and declined as the default: RGBA fp32 is 16 bytes/px (double the bandwidth on a
+  bandwidth-bound compositor, half the frames per cache byte, ~2× the VRAM per 4K
+  frame), while the precision-sensitive interiors already run fp32 accumulators
+  regardless of comp depth. Switch a comp (or the project default) to fp32 when the
+  work needs it; the cache keys the depth so both coexist.
+
 ### 3.2 Input: decode and linearise
 
 Every footage item carries a **colour-space tag** in its interpretation settings. Defaults:

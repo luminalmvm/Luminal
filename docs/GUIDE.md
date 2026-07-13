@@ -205,6 +205,13 @@ Two mechanisms make this safe, and you'll see them by name in the code:
   folder (Kiriko remembers the folder itself, not its name). Compositions do the same
   with a Compositions folder. Multi-step creations like that land as a single undo
   step — a batch operation whose inverse is just the reversed inverses of its members.
+- **Colour depth, in one paragraph.** Kiriko's frames are "half float" (fp16) in linear
+  light. Unlike AE's 16bpc — which is integer maths that clips at 1.0 — half float
+  keeps brightness above 1.0 (a glow can genuinely overshoot) and negatives, which is
+  what people switch AE to 32bpc for. Full float (fp32) doubles every frame's memory
+  and roughly halves compositing throughput, so it's an opt-in per project/comp for
+  the rare cases that need the extra precision (extreme exposure pushes on deep
+  shadows); the heavy maths inside effects runs at full float anyway.
 - `crates/kiriko-ui/src/theme.rs` — **the Aizome tokens.** The only file allowed to contain
   colour values. Change a colour here, it changes everywhere.
 - `crates/kiriko-ui/src/shell.rs` + `app_state.rs` — **the window**: panels, menus,
