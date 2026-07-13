@@ -1857,6 +1857,23 @@ fn build_comp_draws(
             three_d: layer.switches.three_d,
             matte,
             blend: blend_of(layer.blend),
+            mask_cov: match &layer.kind {
+                LayerKind::Precomp { .. } if !layer.masks.is_empty() => {
+                    let (w, h) = (natural.0 as u32, natural.1 as u32);
+                    Some((
+                        crate::export::mask_rgba(&kiriko_core::mask::combined_coverage(
+                            &layer.masks,
+                            w,
+                            h,
+                            f64::from(w),
+                            f64::from(h),
+                        )),
+                        w,
+                        h,
+                    ))
+                }
+                _ => None,
+            },
         });
     }
     draws
@@ -1875,8 +1892,13 @@ fn mask_space(
             .solid(*def)
             .map(|sd| (f64::from(sd.width), f64::from(sd.height)))
             .unwrap_or((f64::from(comp.width), f64::from(comp.height))),
-        kiriko_core::model::LayerKind::Precomp { .. }
-        | kiriko_core::model::LayerKind::Camera { .. }
+        kiriko_core::model::LayerKind::Precomp { comp: nested } => app
+            .store
+            .snapshot()
+            .comp(*nested)
+            .map(|n| (f64::from(n.width), f64::from(n.height)))
+            .unwrap_or((f64::from(comp.width), f64::from(comp.height))),
+        kiriko_core::model::LayerKind::Camera { .. }
         | kiriko_core::model::LayerKind::Text { .. } => {
             (f64::from(comp.width), f64::from(comp.height))
         }
@@ -2035,6 +2057,9 @@ pub struct CompLayerDraw {
     pub three_d: bool,
     pub matte: Option<MatteDraw>,
     pub blend: kiriko_gpu::Blend,
+    /// Layer-space mask coverage (white RGBA, alpha = coverage) for
+    /// GPU-sourced layers — Precomps, whose pixels never exist CPU-side.
+    pub mask_cov: Option<(Vec<u8>, u32, u32)>,
 }
 
 /// GPU display path (slice 5 completion): decoded sRGB bytes → linear fp16
@@ -2101,6 +2126,15 @@ impl GpuViewer {
             })
             .collect();
         let cam_mat = camera.map(|pose| crate::export::camera_mat(width, height, pose));
+        // Layer-space mask textures (Precomp masks — GPU mask pass).
+        let mask_textures: Vec<Option<egui_wgpu::wgpu::Texture>> = layers
+            .iter()
+            .map(|l| {
+                l.mask_cov
+                    .as_ref()
+                    .map(|(rgba, w, h)| self.engine.upload_srgb8(&self.ctx, rgba, *w, *h))
+            })
+            .collect();
         // Matte layers render alone into comp space (one texture per consumer;
         // the shared-matte cache optimisation arrives with the evaluator).
         let matte_textures: Vec<Option<egui_wgpu::wgpu::Texture>> = layers
@@ -2130,6 +2164,7 @@ impl GpuViewer {
                             rotation_x_deg: m.rotation_x_deg,
                             rotation_y_deg: m.rotation_y_deg,
                             three_d: m.three_d,
+                            layer_mask: None,
                         }],
                         cam_mat,
                     )
@@ -2140,25 +2175,29 @@ impl GpuViewer {
             .iter()
             .zip(layers)
             .zip(&matte_textures)
-            .map(|((texture, l), matte_tex)| kiriko_gpu::CompositeLayer {
-                texture,
-                size: l.natural_size,
-                position: l.position,
-                anchor: l.anchor,
-                scale: l.scale,
-                rotation_deg: l.rotation_deg,
-                opacity: l.opacity,
-                z: l.z,
-                rotation_x_deg: l.rotation_x_deg,
-                rotation_y_deg: l.rotation_y_deg,
-                three_d: l.three_d,
-                matte: matte_tex.as_ref().map(|mt| kiriko_gpu::MatteInput {
-                    texture: mt,
-                    luma: l.matte.as_ref().is_some_and(|m| m.luma),
-                    inverted: l.matte.as_ref().is_some_and(|m| m.inverted),
-                }),
-                blend: l.blend,
-            })
+            .zip(&mask_textures)
+            .map(
+                |(((texture, l), matte_tex), mask_tex)| kiriko_gpu::CompositeLayer {
+                    texture,
+                    size: l.natural_size,
+                    position: l.position,
+                    anchor: l.anchor,
+                    scale: l.scale,
+                    rotation_deg: l.rotation_deg,
+                    opacity: l.opacity,
+                    z: l.z,
+                    rotation_x_deg: l.rotation_x_deg,
+                    rotation_y_deg: l.rotation_y_deg,
+                    three_d: l.three_d,
+                    matte: matte_tex.as_ref().map(|mt| kiriko_gpu::MatteInput {
+                        texture: mt,
+                        luma: l.matte.as_ref().is_some_and(|m| m.luma),
+                        inverted: l.matte.as_ref().is_some_and(|m| m.inverted),
+                    }),
+                    blend: l.blend,
+                    layer_mask: mask_tex.as_ref(),
+                },
+            )
             .collect();
         self.compositor.composite_with_camera(
             &self.ctx,

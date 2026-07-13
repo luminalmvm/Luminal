@@ -182,6 +182,23 @@ pub fn apply_masks(
     if masks.is_empty() {
         return;
     }
+    let total = combined_coverage(masks, w, h, natural_w, natural_h);
+    for (px, t) in rgba.chunks_exact_mut(4).zip(total) {
+        px[3] = ((u16::from(px[3]) * u16::from(t)) / 255) as u8;
+    }
+}
+
+/// The combined 0..255 coverage of a mask stack at `w`×`h` (path coordinates
+/// in `natural` space) — the same Add-mode maths [`apply_masks`] uses, exposed
+/// so GPU-sourced layers (Precomps) can upload it as a texture instead of
+/// editing pixels they don't have.
+pub fn combined_coverage(
+    masks: &[Mask],
+    w: u32,
+    h: u32,
+    natural_w: f64,
+    natural_h: f64,
+) -> Vec<u8> {
     let sx = f64::from(w) / natural_w.max(1.0);
     let sy = f64::from(h) / natural_h.max(1.0);
     let mut total = vec![0u16; (w * h) as usize];
@@ -197,9 +214,7 @@ pub fn apply_masks(
             *t = (*t + c * op / 255).min(255);
         }
     }
-    for (px, t) in rgba.chunks_exact_mut(4).zip(total) {
-        px[3] = ((u16::from(px[3]) * t) / 255) as u8;
-    }
+    total.into_iter().map(|t| t as u8).collect()
 }
 
 #[cfg(test)]

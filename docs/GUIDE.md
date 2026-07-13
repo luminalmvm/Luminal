@@ -205,6 +205,12 @@ Two mechanisms make this safe, and you'll see them by name in the code:
   folder (Kiriko remembers the folder itself, not its name). Compositions do the same
   with a Compositions folder. Multi-step creations like that land as a single undo
   step — a batch operation whose inverse is just the reversed inverses of its members.
+- **Masks on Precomp layers** — a masked transition can now wipe a whole nested comp,
+  the flow staple. Pixel layers (footage, solids, text) get their masks applied on the
+  CPU before upload; a Precomp's pixels only ever exist on the GPU, so its mask stack
+  is rasterised into a little coverage texture instead and the compositor multiplies
+  it in per-fragment. Same maths, two routes — a GPU test pins the texture route to
+  the CPU one.
 - **Blend modes** — the full everyday set: Normal, Add, Multiply, Screen, Overlay,
   Soft light, Hard light, Lighten, Darken. Two families under the hood: Add and
   Multiply are physical light maths and run in linear; Screen, Overlay and the lights

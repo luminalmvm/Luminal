@@ -89,6 +89,9 @@ pub struct CompositeLayer<'a> {
     pub rotation_x_deg: f32,
     pub rotation_y_deg: f32,
     pub three_d: bool,
+    /// Layer-space mask coverage (alpha channel), for GPU-sourced layers
+    /// whose masks cannot be applied CPU-side. None = fully visible.
+    pub layer_mask: Option<&'a wgpu::Texture>,
 }
 
 impl CompositeLayer<'_> {
@@ -217,6 +220,16 @@ impl Compositor {
                     },
                     wgpu::BindGroupLayoutEntry {
                         binding: 4,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 5,
                         visibility: wgpu::ShaderStages::FRAGMENT,
                         ty: wgpu::BindingType::Texture {
                             sample_type: wgpu::TextureSampleType::Float { filterable: true },
@@ -503,6 +516,15 @@ impl Compositor {
                             ),
                         },
                         wgpu::BindGroupEntry {
+                            binding: 5,
+                            resource: wgpu::BindingResource::TextureView(
+                                &layer
+                                    .layer_mask
+                                    .unwrap_or(&self.white)
+                                    .create_view(&Default::default()),
+                            ),
+                        },
+                        wgpu::BindGroupEntry {
                             binding: 4,
                             resource: wgpu::BindingResource::TextureView(
                                 &if layer.blend.uses_snapshot() {
@@ -695,6 +717,7 @@ mod tests {
             rotation_x_deg: 0.0,
             rotation_y_deg: 0.0,
             three_d: false,
+            layer_mask: None,
         };
         // Background: linear green = sRGB 0,255,0 decoded.
         let g_lin = srgb_decode(1.0);
@@ -754,6 +777,7 @@ mod tests {
                 rotation_x_deg: 0.0,
                 rotation_y_deg: 0.0,
                 three_d: false,
+                layer_mask: None,
             }],
         );
 
@@ -777,6 +801,7 @@ mod tests {
             rotation_x_deg: 0.0,
             rotation_y_deg: 0.0,
             three_d: false,
+            layer_mask: None,
         };
 
         let shown = render_for_display(
@@ -838,6 +863,7 @@ mod tests {
             rotation_x_deg: 0.0,
             rotation_y_deg: 0.0,
             three_d: true,
+            layer_mask: None,
         };
         let count_white = |z: f32| {
             let linear = compositor.composite_with_camera(
@@ -895,6 +921,7 @@ mod tests {
                 rotation_x_deg: 0.0,
                 rotation_y_deg: 0.0,
                 three_d: false,
+                layer_mask: None,
             }],
         );
         let out = colour.readback8(&ctx, &shown).unwrap()[0];
@@ -905,6 +932,52 @@ mod tests {
             (i16::from(out) - expect).abs() <= 2,
             "screen {out} vs {expect}"
         );
+    }
+
+    /// The layer-space mask binding gates alpha: a white layer with a
+    /// left-half mask texture shows exactly its left half (GPU mask pass for
+    /// Precomp layers, whose pixels never exist CPU-side).
+    #[test]
+    fn layer_mask_texture_gates_alpha() {
+        let Ok(ctx) = GpuContext::headless() else {
+            eprintln!("skipping: no GPU adapter");
+            return;
+        };
+        let colour = ColourEngine::new(&ctx);
+        let compositor = Compositor::new(&ctx);
+        let white = solid_linear(&ctx, &colour, [255, 255, 255, 255], 8, 8);
+        // White RGBA whose alpha is the coverage: left half on, right off.
+        let mask_rgba: Vec<u8> = (0..8u32 * 8)
+            .flat_map(|i| [255, 255, 255, if i % 8 < 4 { 255 } else { 0 }])
+            .collect();
+        let mask = colour.upload_srgb8(&ctx, &mask_rgba, 8, 8);
+        let linear = compositor.composite(
+            &ctx,
+            8,
+            8,
+            [0.0, 0.0, 0.0, 1.0],
+            &[CompositeLayer {
+                texture: &white,
+                size: (8.0, 8.0),
+                position: (0.0, 0.0),
+                anchor: (0.0, 0.0),
+                scale: (100.0, 100.0),
+                rotation_deg: 0.0,
+                opacity: 100.0,
+                matte: None,
+                blend: Blend::Normal,
+                z: 0.0,
+                rotation_x_deg: 0.0,
+                rotation_y_deg: 0.0,
+                three_d: false,
+                layer_mask: Some(&mask),
+            }],
+        );
+        let shown = colour.display(&ctx, &linear);
+        let back = colour.readback8(&ctx, &shown).unwrap();
+        let px = |x: usize, y: usize| back[(y * 8 + x) * 4];
+        assert!(px(1, 4) > 240, "inside mask stays white: {}", px(1, 4));
+        assert!(px(6, 4) < 15, "outside mask goes black: {}", px(6, 4));
     }
 
     /// Every snapshot blend matches its CPU oracle: Overlay/Soft/Hard light
@@ -944,6 +1017,7 @@ mod tests {
                     rotation_x_deg: 0.0,
                     rotation_y_deg: 0.0,
                     three_d: false,
+                    layer_mask: None,
                 }],
             );
             colour.readback8(&ctx, &shown).unwrap()[0]
@@ -1016,6 +1090,7 @@ mod tests {
             rotation_x_deg: 0.0,
             rotation_y_deg: 0.0,
             three_d: false,
+            layer_mask: None,
         };
         let g_lin = srgb_decode(128.0 / 255.0);
         let bg = [g_lin, g_lin, g_lin, 1.0];
@@ -1061,6 +1136,7 @@ mod tests {
             rotation_x_deg: 0.0,
             rotation_y_deg: 0.0,
             three_d: false,
+            layer_mask: None,
         };
         let shown = render_for_display(
             &ctx,

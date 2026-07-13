@@ -89,6 +89,9 @@ struct Renderer<'a> {
 struct Prepared {
     tex: Tex,
     natural: (f32, f32),
+    /// Layer-space mask coverage texture (Precomp layers — GPU-sourced
+    /// pixels get their masks as a texture, docs/06 render order).
+    mask: Option<Tex>,
 }
 
 impl Renderer<'_> {
@@ -136,6 +139,7 @@ impl Renderer<'_> {
                 Ok(Some(Prepared {
                     tex: self.colour.linearise(self.gpu, &src),
                     natural: (px.width as f32, px.height as f32),
+                    mask: None,
                 }))
             }
             LayerKind::Solid { def } => {
@@ -162,6 +166,7 @@ impl Renderer<'_> {
                 Ok(Some(Prepared {
                     tex: self.colour.linearise(self.gpu, &src),
                     natural: (sd.width as f32, sd.height as f32),
+                    mask: None,
                 }))
             }
             LayerKind::Text { document } => {
@@ -184,6 +189,7 @@ impl Renderer<'_> {
                 Ok(Some(Prepared {
                     tex: self.colour.linearise(self.gpu, &src),
                     natural: (r.width as f32, r.height as f32),
+                    mask: None,
                 }))
             }
             LayerKind::Precomp { comp } => {
@@ -196,9 +202,21 @@ impl Renderer<'_> {
                 visited.push(*comp);
                 let tex = self.render_comp_linear(nested, lt, visited)?;
                 visited.pop();
+                let mask = (!layer.masks.is_empty()).then(|| {
+                    let rgba = mask_rgba(&kiriko_core::mask::combined_coverage(
+                        &layer.masks,
+                        nested.width,
+                        nested.height,
+                        f64::from(nested.width),
+                        f64::from(nested.height),
+                    ));
+                    self.colour
+                        .upload_srgb8(self.gpu, &rgba, nested.width, nested.height)
+                });
                 Ok(Some(Prepared {
                     tex,
                     natural: (nested.width as f32, nested.height as f32),
+                    mask,
                 }))
             }
             // Cameras shape the view; they never draw pixels themselves.
@@ -269,6 +287,7 @@ impl Renderer<'_> {
                             rotation_x_deg: mtr.rotation_x.value_at(mlt) as f32,
                             rotation_y_deg: mtr.rotation_y.value_at(mlt) as f32,
                             three_d: src_layer.switches.three_d,
+                            layer_mask: mp.mask.as_ref(),
                         }],
                         camera,
                     );
@@ -316,6 +335,7 @@ impl Renderer<'_> {
                     })
                 }),
                 blend: blend_of(l.blend),
+                layer_mask: p.mask.as_ref(),
             });
         }
 
@@ -399,6 +419,12 @@ fn run(
     }
     encoder.finish().map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// Coverage bytes → white RGBA whose alpha is the coverage (the layer-mask
+/// texture format the compositor samples).
+pub fn mask_rgba(coverage: &[u8]) -> Vec<u8> {
+    coverage.iter().flat_map(|c| [255, 255, 255, *c]).collect()
 }
 
 /// Model blend → GPU blend (export copy of the preview mapping; both paths

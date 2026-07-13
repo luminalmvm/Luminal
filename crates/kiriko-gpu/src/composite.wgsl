@@ -24,6 +24,9 @@ struct LayerUniform {
 // Snapshot of the accumulated comp so far (shader-computed blends read the
 // destination themselves and write with blending off); 1×1 black when unused.
 @group(0) @binding(4) var dst_snapshot: texture_2d<f32>;
+// Layer-space mask coverage in the alpha channel (GPU-sourced layers such as
+// Precomps, whose pixels never exist CPU-side); 1×1 white when unused.
+@group(0) @binding(5) var layer_mask: texture_2d<f32>;
 
 struct VsOut {
     @builtin(position) pos: vec4<f32>,
@@ -87,7 +90,7 @@ fn blend_encoded(mode: f32, s: vec3<f32>, d: vec3<f32>) -> vec3<f32> {
 @fragment
 fn fs_layer_snapshot(in: VsOut) -> @location(0) vec4<f32> {
     let texel = textureSample(src, samp, in.uv);
-    var a = texel.a * layer.params.x;
+    var a = texel.a * layer.params.x * textureSample(layer_mask, samp, in.uv).a;
     let comp_uv = in.pos.xy / layer.target_size.xy;
     if (layer.params.y > 0.5) {
         let m = textureSample(matte, samp, comp_uv);
@@ -121,7 +124,7 @@ fn fs_layer_snapshot(in: VsOut) -> @location(0) vec4<f32> {
 fn fs_layer(in: VsOut) -> @location(0) vec4<f32> {
     let texel = textureSample(src, samp, in.uv);
     // Straight-alpha source → premultiplied output, opacity folded in.
-    var a = texel.a * layer.params.x;
+    var a = texel.a * layer.params.x * textureSample(layer_mask, samp, in.uv).a;
     if (layer.params.y > 0.5) {
         // Matte lives in comp space: sample at this fragment's comp position.
         let comp_uv = in.pos.xy / layer.target_size.xy;
