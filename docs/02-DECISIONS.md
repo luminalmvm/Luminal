@@ -308,3 +308,31 @@ where the algorithm needs it, but node inputs/outputs never do. Depth remains pa
 the cache key's quality field. Implementation lands with the depth-aware pipeline work
 in the effects phase; until then 16 bpc float is the only rendering depth. Decided
 2026-07-13 at Mack's request. Spec: [06-RENDER-PIPELINE.md](06-RENDER-PIPELINE.md) §3.1.
+
+**K-070 · DECIDED · The graph editor is a general derivative-lens editor, in the
+Timeline.** Three points from Mack (2026-07-13):
+
+1. **Derivative lenses for every animatable property.** The value/speed views of §5.1
+   generalise: any property (transform, effect parameter, mask, retime) can be viewed and
+   edited as its **value**, its **speed** (first derivative), or its **acceleration**
+   (second derivative) — the distance/velocity/acceleration analogy. Acceleration joins
+   value and speed as a first-class lens (extends [07-UI-SPEC.md](07-UI-SPEC.md) §5.1). All
+   three are views of the one keyframe/segment store; editing any of them round-trips
+   losslessly. The lens-switch controls are **glyphs in the bottom-right of the graph
+   editor** (alongside the ease-preset footer of §5.3). Retime's value/speed lenses (§5.2,
+   [04-RETIMING.md](04-RETIMING.md) §9) are the retime-specific instance of this system.
+
+2. **The graph editor lives in the Timeline area, not a separate panel** — a mode of the
+   Timeline lane area with a header toggle, exactly as [07-UI-SPEC.md](07-UI-SPEC.md) §5
+   already specifies. Kiriko's current implementation as a standalone dock tab
+   (`Panel::GraphEditor`) is a temporary divergence to be corrected when the lens work
+   lands.
+
+3. **Frame-pinning invariant for Vegas-style speed edits (binding).** Changing a segment's
+   speed pins the source position at the segment's **start** and ripples the change
+   **downstream only** (the §4.1 boundary-consistency recompute already encodes this: sᵢ is
+   fixed, sᵢ₊₁… are recomputed). Consequently a clip's first frame is always its own
+   trim-in whatever its speed, so splitting a clip and re-speeding the second half never
+   moves where it starts — and this holds after the layer's start/in-point is later
+   adjusted, because `place` is layer-time and the retime domain is unchanged. Locked by
+   `kiriko-core::sequence` tests (`re_speeding_a_cut_clip_keeps_its_start_frame`).

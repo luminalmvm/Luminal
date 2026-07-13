@@ -348,9 +348,15 @@ outline stays; each property gains an *include in graph* toggle.
 - **Speed graph**: the first derivative against time; handle height edits speed, horizontal
   handle reach edits influence. Value and speed are views of the same data (glossary §3) —
   editing either MUST round-trip losslessly.
+- **Acceleration graph**: the second derivative against time (K-070) — the
+  distance/velocity/acceleration analogy taken to its third view. Editing it shapes how
+  speed itself ramps; like the others it is a view of the one keyframe/segment store and
+  round-trips losslessly. Available for every animatable property, not only motion.
 - **Auto view** picks the value graph for scalar properties and the speed graph for spatial
-  ones; a per-property override menu offers value / speed / both stacked, with the inactive
-  graph optionally ghosted as a reference.
+  ones; a per-property override menu offers value / speed / acceleration / stacked, with the
+  inactive graphs optionally ghosted as a reference.
+- **Lens switch**: value / speed / acceleration are selected by glyph buttons in the
+  **bottom-right of the graph editor** (K-070), beside the ease-preset footer (§5.3).
 
 ### 5.2 Retime's two lenses
 
