@@ -1599,10 +1599,19 @@ fn mask_overlay(
 /// Pen tool (slice 2): while armed, Viewer clicks place vertices of a new
 /// mask on the selected layer; clicking the first vertex closes it into a
 /// mask (one undo); Escape cancels.
-/// Draw the selected 2D layer's origin (anchor point) as a small crosshair,
-/// so the pivot for scale/rotation is visible (AE shows the same target).
+/// Draw the selected 2D layer's origin (anchor point) as a crosshair, and let
+/// it be dragged — AE's pan-behind: moving the origin keeps the layer visually
+/// fixed (position compensates), committed as one undo step.
 #[cfg(feature = "media")]
-fn anchor_overlay(ui: &mut egui::Ui, theme: &Theme, app: &AppState, draw: egui::Rect, scale: f32) {
+fn anchor_overlay(
+    ui: &mut egui::Ui,
+    theme: &Theme,
+    app: &mut AppState,
+    draw: egui::Rect,
+    scale: f32,
+) {
+    use kiriko_core::anim::Animation;
+    use kiriko_core::model::TransformProp;
     let Some(comp_id) = app.preview_comp else {
         return;
     };
@@ -1614,6 +1623,7 @@ fn anchor_overlay(ui: &mut egui::Ui, theme: &Theme, app: &AppState, draw: egui::
         .selected_layer
         .and_then(|id| comp.layers.iter().find(|l| l.id == id))
     else {
+        app.origin_drag = None;
         return;
     };
     if layer.switches.three_d || matches!(layer.kind, kiriko_core::model::LayerKind::Camera { .. })
@@ -1624,7 +1634,63 @@ fn anchor_overlay(ui: &mut egui::Ui, theme: &Theme, app: &AppState, draw: egui::
     let lt = app.preview_frame as f64 / fps - layer.start_offset.0.to_f64();
     let map = LayerMap::of(layer, lt, draw, scale);
     let tr = &layer.transform;
-    let c = map.to_screen((tr.anchor_x.value_at(lt), tr.anchor_y.value_at(lt)));
+    let anchor = (tr.anchor_x.value_at(lt), tr.anchor_y.value_at(lt));
+
+    // The crosshair sits at the live anchor (or the dragged one).
+    let shown_anchor = app.origin_drag.unwrap_or(anchor);
+    let c = map.to_screen(shown_anchor);
+    let handle = egui::Rect::from_center_size(c, egui::vec2(18.0, 18.0));
+    let resp = ui.interact(
+        handle,
+        ui.id().with(("origin", layer.id)),
+        egui::Sense::click_and_drag(),
+    );
+    if resp.hovered() || resp.dragged() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Move);
+    }
+    if resp.dragged() {
+        if let Some(pos) = resp.interact_pointer_pos() {
+            app.origin_drag = Some(map.layer_of(pos));
+        }
+    }
+    if resp.drag_stopped() {
+        if let Some(new_anchor) = app.origin_drag.take() {
+            let position = (tr.position_x.value_at(lt), tr.position_y.value_at(lt));
+            let scale_pct = (tr.scale_x.value_at(lt), tr.scale_y.value_at(lt));
+            let new_pos = crate::app_state::pan_behind_position(
+                anchor,
+                new_anchor,
+                position,
+                scale_pct,
+                tr.rotation.value_at(lt),
+            );
+            // One op per touched property; if the property is animated, write a
+            // key at the playhead, else move the static value.
+            let mk = |prop: TransformProp, value: f64| {
+                let slot = tr.get(prop);
+                let animation = if slot.is_animated() {
+                    Animation::Keyframed(upsert_key(slot, lt, value))
+                } else {
+                    Animation::Static(value)
+                };
+                kiriko_core::Op::SetTransformProperty {
+                    comp: comp_id,
+                    layer: layer.id,
+                    prop,
+                    animation,
+                }
+            };
+            let ops = vec![
+                mk(TransformProp::AnchorX, new_anchor.0),
+                mk(TransformProp::AnchorY, new_anchor.1),
+                mk(TransformProp::PositionX, new_pos.0),
+                mk(TransformProp::PositionY, new_pos.1),
+            ];
+            app.commit(kiriko_core::Op::Batch { ops });
+            app.refresh_preview();
+        }
+    }
+
     let stroke = egui::Stroke::new(1.5_f32, theme.accent);
     let r = 6.0;
     ui.painter().circle_stroke(c, r, stroke);

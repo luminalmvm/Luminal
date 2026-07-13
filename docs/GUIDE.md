@@ -225,7 +225,9 @@ Two mechanisms make this safe, and you'll see them by name in the code:
   comp. New layers default it to the centre of their content and sit centred in the comp
   (the After Effects default), so a fresh clip spins about its middle rather than its
   top-left corner. The selected layer shows its origin as a small clay crosshair in the
-  Viewer.
+  Viewer, and you can **drag that crosshair to move the origin** — the layer stays put
+  while its pivot shifts (After Effects' "pan behind", position compensates automatically),
+  committed as one undo step.
 - **The tool strip** — the row of buttons under the menu sets what a Viewer drag does,
   the way every editor's toolbar does. Select (V) and Hand (H) both pan the view for
   now (object selection comes with the object tools); Shape (Q) rubber-bands a new mask

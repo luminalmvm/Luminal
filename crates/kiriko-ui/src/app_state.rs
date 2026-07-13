@@ -371,6 +371,26 @@ fn decode_target_width(
     }
 }
 
+/// Pan-behind: the position that keeps a layer visually fixed when its origin
+/// (anchor) moves from `anchor` to `new_anchor`. Position places the anchor in
+/// comp space, so shifting the anchor by Δ in layer space must shift position
+/// by the layer's scale·rotation applied to Δ (docs/01-GLOSSARY.md anchor).
+pub fn pan_behind_position(
+    anchor: (f64, f64),
+    new_anchor: (f64, f64),
+    position: (f64, f64),
+    scale_pct: (f64, f64),
+    rotation_deg: f64,
+) -> (f64, f64) {
+    let vx = (new_anchor.0 - anchor.0) * scale_pct.0 / 100.0;
+    let vy = (new_anchor.1 - anchor.1) * scale_pct.1 / 100.0;
+    let (sin, cos) = rotation_deg.to_radians().sin_cos();
+    (
+        position.0 + vx * cos - vy * sin,
+        position.1 + vx * sin + vy * cos,
+    )
+}
+
 /// A transform whose origin (anchor) is the centre of a `nat_w`×`nat_h`
 /// object, placed at the centre of a `comp_w`×`comp_h` composition — the AE
 /// default so a new layer appears centred and pivots about its middle.
@@ -549,6 +569,9 @@ pub struct AppState {
     pub shape_kind: ShapeKind,
     /// Shape-tool rubber-band start in layer space; Some while dragging.
     pub shape_drag: Option<(f64, f64)>,
+    /// Origin (anchor) mid-drag in the Viewer: the new anchor in layer space.
+    /// Committed as one Batch (anchor + pan-behind position) on release.
+    pub origin_drag: Option<(f64, f64)>,
     /// The pen's in-progress path (layer space); closes into a mask when the
     /// first vertex is clicked again.
     pub pen_path: Vec<kiriko_core::mask::Vertex>,
@@ -659,6 +682,7 @@ impl Default for AppState {
             tool: ToolMode::default(),
             shape_kind: ShapeKind::default(),
             shape_drag: None,
+            origin_drag: None,
             pen_path: Vec::new(),
             comp_dialog: None,
         }
@@ -2018,6 +2042,25 @@ mod tests {
     /// K-068: solids are assets auto-filed into a "Solids" folder that is
     /// followed by id (rename it, it still collects); comps auto-file into
     /// "Compositions"; each creation is one undo step.
+    #[test]
+    fn pan_behind_keeps_the_layer_fixed() {
+        // No rotation, 100% scale: position tracks the anchor 1:1.
+        let p = pan_behind_position(
+            (50.0, 50.0),
+            (60.0, 50.0),
+            (100.0, 100.0),
+            (100.0, 100.0),
+            0.0,
+        );
+        assert!((p.0 - 110.0).abs() < 1e-9 && (p.1 - 100.0).abs() < 1e-9);
+        // 200% scale doubles the position shift for the same anchor move.
+        let p = pan_behind_position((0.0, 0.0), (10.0, 0.0), (0.0, 0.0), (200.0, 200.0), 0.0);
+        assert!((p.0 - 20.0).abs() < 1e-9 && p.1.abs() < 1e-9);
+        // 90° rotation sends an x-move of the anchor into +y of position.
+        let p = pan_behind_position((0.0, 0.0), (10.0, 0.0), (0.0, 0.0), (100.0, 100.0), 90.0);
+        assert!(p.0.abs() < 1e-9 && (p.1 - 10.0).abs() < 1e-9);
+    }
+
     #[test]
     fn centred_transform_puts_origin_at_object_centre() {
         // A 1920×1080 object in a 1280×720 comp: anchor at the object's
