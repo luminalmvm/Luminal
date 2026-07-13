@@ -380,3 +380,6 @@ mod tests {
         }
     }
 }
+
+pub mod composite;
+pub use composite::{CompositeLayer, Compositor};

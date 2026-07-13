@@ -139,6 +139,13 @@ Two mechanisms make this safe, and you'll see them by name in the code:
   the bedrock of the preview-equals-export promise (K-031). The clever part: the shader
   contains no gamma maths at all — the GPU's texture formats do the conversions in
   hardware, so decode and encode can never drift apart.
+- `crates/kiriko-gpu/src/composite.rs` — **the compositor seed.** Each layer is a picture
+  on glass; the compositor stacks the glass on the GPU. Position/scale/rotation move each
+  sheet (already as full 4×4 matrices, so 3D later needs no rewrite), opacity fades it,
+  and stacking happens in linear light where combining images behaves like combining real
+  light — a test proves the result differs from the naive approach by exactly the amount
+  physics predicts. This is the beginning of the evaluator: the thing that will one day
+  render whole comps with effects.
 - `crates/kiriko-audio/` — **playback and the clock.** The sound card asks for samples on
   its own strict schedule through a "realtime callback" — a tiny function that must never
   wait for anything (if it's ever late, you hear a glitch). The count of samples it has
