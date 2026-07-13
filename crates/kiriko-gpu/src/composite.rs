@@ -186,7 +186,7 @@ impl Compositor {
             .map(|layer| {
                 let uniform = LayerUniform {
                     matrix: layer.matrix(width as f32, height as f32).to_cols_array_2d(),
-                    opacity: (layer.opacity / 100.0).clamp(0.0, 1.0) as f32,
+                    opacity: (layer.opacity / 100.0).clamp(0.0, 1.0),
                     _pad: [0.0; 3],
                 };
                 let buffer = wgpu::util::DeviceExt::create_buffer_init(
@@ -280,8 +280,7 @@ mod tests {
         w: u32,
         h: u32,
     ) -> wgpu::Texture {
-        let px: Vec<u8> = std::iter::repeat(rgba8)
-            .take((w * h) as usize)
+        let px: Vec<u8> = std::iter::repeat_n(rgba8, (w * h) as usize)
             .flatten()
             .collect();
         let src = colour.upload_srgb8(ctx, &px, w, h);
