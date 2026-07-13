@@ -19,9 +19,10 @@ the interface is truly the user's.
 
 > **v1 status (K-074):** the shell is a tiling dock (egui_tiles). Every panel except the
 > Viewer carries a title tab and can be dragged to re-arrange the workspace; the Viewer is a
-> bare pane with no tab bar. This delivers most of the section below — tabs, drag-to-dock,
-> re-arrangeable layouts — with one part still outstanding: popping a panel out into its own
-> **OS window** (the drop-zones and floating-window rules below) is a later phase.
+> bare pane with no tab bar. A tab's ⇱ button pops the panel out into its own OS window and
+> closing it docks the panel back. This delivers the substance of the section below — tabs,
+> drag-to-dock, re-arrangeable layouts, pop-out — though the exact five-drop-zone visuals and
+> in-window frame trees described below are still approximated by egui_tiles' own affordances.
 
 ### 1.1 Frames, groups, tabs
 

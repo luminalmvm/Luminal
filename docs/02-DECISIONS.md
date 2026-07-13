@@ -405,7 +405,7 @@ bare *and* the other panels fully dockable. Mechanism: the Viewer is inserted as
 child of a linear container (never a tab group) with `all_panes_must_have_tabs = false`;
 `prune_single_child_tabs = false` keeps single panels (Timeline, Scopes) showing their tab.
 Default layout: Project/effect-controls/effects-&-presets tab group (left), Viewer over a
-Timeline tab group (centre), Scopes (right). Still outstanding, tracked not done: pop-out of
-any panel into its **own OS window** (egui multi-viewport) — a follow-up phase; the tiling
-tree gives drag-rearrange today but not detached OS windows. Supersedes the v1-status note in
-[07-UI-SPEC.md](07-UI-SPEC.md) §1; keeps the UI layer swappable (K-012).
+Timeline tab group (centre), Scopes (right). Pop-out into a panel's **own OS window** is
+implemented: a tab's ⇱ button hides its tile in the dock (`Tiles::set_visible`) and renders
+it in an egui immediate viewport; closing that window docks it back. Supersedes the v1-status
+note in [07-UI-SPEC.md](07-UI-SPEC.md) §1; keeps the UI layer swappable (K-012).

@@ -244,9 +244,10 @@ Two mechanisms make this safe, and you'll see them by name in the code:
   little title tab you can grab: Project and the effect panels on the left, scopes on the
   right, the Timeline along the bottom. Drag a panel's tab to move it somewhere else — beside
   another panel, stacked as tabs, above or below — so you can build the layout that suits you;
-  drag the edge between two panels to resize. The Viewer is the one panel with no tab, so it
-  always stays put as the bare picture. (Still to come: tearing a panel right out into its own
-  separate window.) Under the bonnet this uses a "tiling" layout engine that, unlike the
+  drag the edge between two panels to resize. Each tabbed panel also has a small pop-out
+  button (⇱) that lifts it out into its own separate window; close that window and the panel
+  drops back where it was. The Viewer is the one panel with no tab, so it always stays put as
+  the bare picture. Under the bonnet this uses a "tiling" layout engine that, unlike the
   docking library we tried first, is happy to leave the Viewer without a tab bar.
 - The **Project panel** — AE-shaped (K-068): the selected item's details up top, the
   folder tree below, and drag-and-drop everywhere. Drag footage onto the Timeline or

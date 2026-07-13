@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 /// the only pane kept out of any tab container, so it shows no tab bar (K-074,
 /// Mack: the viewport must have no top bit); every other panel carries a tab
 /// and can be dragged to re-arrange the workspace.
-#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub enum Panel {
     Project,
     Viewer,
@@ -69,11 +69,52 @@ pub fn default_layout() -> egui_tiles::Tree<Panel> {
     egui_tiles::Tree::new("kiriko-dock", root, tiles)
 }
 
+/// Render one panel's body. Shared by the docked panes and the pop-out windows
+/// so a panel looks the same wherever it lives. Only the Viewer needs the live
+/// preview texture; it never pops out, so floating windows pass `None`.
+fn render_panel(
+    ui: &mut egui::Ui,
+    theme: &Theme,
+    app: &mut AppState,
+    preview_display: Option<(egui::TextureId, egui::Vec2)>,
+    panel: Panel,
+) {
+    match panel {
+        Panel::Viewer => viewer_panel(ui, theme, app, preview_display),
+        Panel::Project => project_panel(ui, theme, app),
+        Panel::Timeline => timeline_panel(ui, theme, app),
+        Panel::EffectControls => empty_hint(
+            ui,
+            theme,
+            "No layer selected",
+            "Select a layer to see its effect stack.",
+        ),
+        Panel::EffectsAndPresets => effects_panel(ui, theme),
+        Panel::Scopes => empty_hint(
+            ui,
+            theme,
+            "Scopes",
+            "Waveform, vectorscope and histogram arrive with the render pipeline.",
+        ),
+    }
+}
+
+/// The tile holding `panel`, if it is in the tree (each panel appears once).
+fn tile_id_of(tree: &egui_tiles::Tree<Panel>, panel: Panel) -> Option<egui_tiles::TileId> {
+    tree.tiles.iter().find_map(|(id, tile)| match tile {
+        egui_tiles::Tile::Pane(p) if *p == panel => Some(*id),
+        _ => None,
+    })
+}
+
 /// Bridges the tiling tree to Kiriko's panels and house styling.
 struct DockBehavior<'a> {
     theme: &'a Theme,
     app: &'a mut AppState,
     preview_display: Option<(egui::TextureId, egui::Vec2)>,
+    /// Set when the user clicks a tab group's pop-out button; applied after the
+    /// tree is drawn (the panel is hidden here and shown in its own window).
+    pop_out: Option<Panel>,
 }
 
 impl egui_tiles::Behavior<Panel> for DockBehavior<'_> {
@@ -83,25 +124,31 @@ impl egui_tiles::Behavior<Panel> for DockBehavior<'_> {
         _tile_id: egui_tiles::TileId,
         pane: &mut Panel,
     ) -> egui_tiles::UiResponse {
-        match pane {
-            Panel::Viewer => viewer_panel(ui, self.theme, self.app, self.preview_display),
-            Panel::Project => project_panel(ui, self.theme, self.app),
-            Panel::Timeline => timeline_panel(ui, self.theme, self.app),
-            Panel::EffectControls => empty_hint(
-                ui,
-                self.theme,
-                "No layer selected",
-                "Select a layer to see its effect stack.",
-            ),
-            Panel::EffectsAndPresets => effects_panel(ui, self.theme),
-            Panel::Scopes => empty_hint(
-                ui,
-                self.theme,
-                "Scopes",
-                "Waveform, vectorscope and histogram arrive with the render pipeline.",
-            ),
-        }
+        render_panel(ui, self.theme, self.app, self.preview_display, *pane);
         egui_tiles::UiResponse::None
+    }
+
+    fn top_bar_right_ui(
+        &mut self,
+        tiles: &egui_tiles::Tiles<Panel>,
+        ui: &mut egui::Ui,
+        _tile_id: egui_tiles::TileId,
+        tabs: &egui_tiles::Tabs,
+        _scroll_offset: &mut f32,
+    ) {
+        // A pop-out button for the active tab (the Viewer has no tab, so it
+        // never gets one). Detaches the panel into its own window.
+        if let Some(active) = tabs.active {
+            if let Some(egui_tiles::Tile::Pane(panel)) = tiles.get(active) {
+                if ui
+                    .small_button("⇱")
+                    .on_hover_text("Pop out into its own window")
+                    .clicked()
+                {
+                    self.pop_out = Some(*panel);
+                }
+            }
+        }
     }
 
     fn tab_title_for_pane(&mut self, pane: &Panel) -> egui::WidgetText {
@@ -3480,6 +3527,10 @@ pub struct Shell {
     /// The tiling layout: which panels sit where, and their sizes.
     #[serde(default = "default_layout")]
     dock: egui_tiles::Tree<Panel>,
+    /// Panels currently detached into their own OS windows. Hidden in the dock
+    /// while floating; closing the window docks them back.
+    #[serde(default)]
+    floating: Vec<Panel>,
     #[serde(skip, default)]
     theme: Theme,
     #[serde(skip, default)]
@@ -3522,6 +3573,7 @@ impl Default for Shell {
     fn default() -> Self {
         Self {
             dock: default_layout(),
+            floating: Vec::new(),
             theme: Theme::dark(),
             app: AppState::default(),
             splash: None,
@@ -4538,19 +4590,62 @@ impl Shell {
         // re-arrange the workspace.
         let Shell {
             dock,
+            floating,
             theme,
             app,
             preview_display,
             ..
         } = self;
-        let mut behavior = DockBehavior {
-            theme,
-            app,
-            preview_display: *preview_display,
+        let preview_display = *preview_display;
+        let pop_out = {
+            let mut behavior = DockBehavior {
+                theme,
+                app,
+                preview_display,
+                pop_out: None,
+            };
+            egui::CentralPanel::default()
+                .frame(egui::Frame::default().fill(theme.surface_0))
+                .show(ctx, |ui| dock.ui(&mut behavior, ui));
+            behavior.pop_out
         };
-        egui::CentralPanel::default()
-            .frame(egui::Frame::default().fill(theme.surface_0))
-            .show(ctx, |ui| dock.ui(&mut behavior, ui));
+
+        // Apply a pop-out request: hide the panel in the dock, float it.
+        if let Some(panel) = pop_out {
+            if let Some(tile) = tile_id_of(dock, panel) {
+                dock.tiles.set_visible(tile, false);
+            }
+            if !floating.contains(&panel) {
+                floating.push(panel);
+            }
+        }
+
+        // Render each floating panel in its own OS window (an immediate
+        // viewport, so it can borrow the live app state). Closing the window
+        // docks the panel back into the tree where it came from.
+        let mut dock_back: Vec<Panel> = Vec::new();
+        for &panel in floating.iter() {
+            let vid = egui::ViewportId::from_hash_of(("kiriko-float", panel.title()));
+            let builder = egui::ViewportBuilder::default()
+                .with_title(format!("Kiriko — {}", panel.title()))
+                .with_inner_size([640.0, 420.0]);
+            ctx.show_viewport_immediate(vid, builder, |ctx, _class| {
+                egui::CentralPanel::default()
+                    .frame(egui::Frame::default().fill(theme.surface_0))
+                    .show(ctx, |ui| {
+                        render_panel(ui, theme, app, preview_display, panel)
+                    });
+                if ctx.input(|i| i.viewport().close_requested()) {
+                    dock_back.push(panel);
+                }
+            });
+        }
+        for panel in dock_back {
+            floating.retain(|p| *p != panel);
+            if let Some(tile) = tile_id_of(dock, panel) {
+                dock.tiles.set_visible(tile, true);
+            }
+        }
     }
 }
 
@@ -4677,5 +4772,36 @@ mod geometry_tests {
         let draws = build_comp_draws(&doc, &patched, 0.0, &map, &mut visited);
         assert_eq!(draws.len(), 1);
         assert_eq!(draws[0].position.0, 500.0);
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod dock_tests {
+    use super::*;
+
+    // The default workspace contains every panel, and the pop-out mechanism
+    // (hide the tile, show it again) round-trips — the basis of detaching a
+    // panel into its own window and docking it back (K-074).
+    #[test]
+    fn default_layout_has_every_panel_and_popout_round_trips() {
+        let mut tree = default_layout();
+        for panel in [
+            Panel::Viewer,
+            Panel::Project,
+            Panel::Timeline,
+            Panel::EffectControls,
+            Panel::EffectsAndPresets,
+            Panel::Scopes,
+        ] {
+            let id = tile_id_of(&tree, panel).expect("panel present in default layout");
+            assert!(tree.tiles.is_visible(id), "{panel:?} should start visible");
+        }
+
+        let project = tile_id_of(&tree, Panel::Project).unwrap();
+        tree.tiles.set_visible(project, false); // pop out
+        assert!(!tree.tiles.is_visible(project));
+        tree.tiles.set_visible(project, true); // dock back
+        assert!(tree.tiles.is_visible(project));
     }
 }
