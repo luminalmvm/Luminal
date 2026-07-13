@@ -4,6 +4,7 @@
 pub mod app_state;
 pub mod export;
 pub mod native_menu;
+pub mod pixels;
 pub mod shell;
 pub mod splash;
 pub mod theme;

@@ -196,6 +196,15 @@ Two mechanisms make this safe, and you'll see them by name in the code:
   (`camera_matrix` in the GPU crate) shared by preview and export, so a camera move
   can't look different in the exported file. A regression test proves both promises:
   z = 0 maps 1:1, and depth scales exactly as the formula says.
+- The **Project panel** — AE-shaped (K-068): the selected item's details up top, the
+  folder tree below, and drag-and-drop everywhere. Drag footage onto the Timeline or
+  Viewer to make a layer; with no comp open yet, the composition dialogue appears
+  already filled in from that footage. Solids are proper assets now — one "White solid"
+  in the project can back fifty layers, and the first one you make creates a Solids
+  folder that future solids follow even if you rename it or tuck it inside another
+  folder (Kiriko remembers the folder itself, not its name). Compositions do the same
+  with a Compositions folder. Multi-step creations like that land as a single undo
+  step — a batch operation whose inverse is just the reversed inverses of its members.
 - `crates/kiriko-ui/src/theme.rs` — **the Aizome tokens.** The only file allowed to contain
   colour values. Change a colour here, it changes everywhere.
 - `crates/kiriko-ui/src/shell.rs` + `app_state.rs` — **the window**: panels, menus,

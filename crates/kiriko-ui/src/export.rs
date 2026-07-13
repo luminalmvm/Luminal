@@ -10,6 +10,7 @@
 
 #![cfg(feature = "media")]
 
+pub use crate::pixels::{px_tile, solid_rgba, srgb_decode, srgb_encode};
 use kiriko_core::model::{Composition, Document, LayerKind, MatteChannel, ProjectItem};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -92,12 +93,11 @@ struct Prepared {
 
 impl Renderer<'_> {
     /// Prepare one layer's source at comp time `t` (None = contributes
-    /// nothing). `parent_dims` sizes solids; `visited` guards precomp cycles.
+    /// nothing); `visited` guards precomp cycles.
     fn prepare(
         &mut self,
         layer: &kiriko_core::model::Layer,
         t: f64,
-        parent_dims: (u32, u32),
         visited: &mut Vec<Uuid>,
     ) -> Result<Option<Prepared>, String> {
         if t < layer.in_point.0.to_f64() || t >= layer.out_point.0.to_f64() {
@@ -138,27 +138,30 @@ impl Renderer<'_> {
                     natural: (px.width as f32, px.height as f32),
                 }))
             }
-            LayerKind::Solid { colour } => {
-                let px = solid_rgba(*colour);
-                // Masked solids rasterise at parent resolution; plain ones tile.
+            LayerKind::Solid { def } => {
+                let Some(sd) = self.doc.solid(*def) else {
+                    return Ok(None); // deleted def degrades to nothing, never an error
+                };
+                let px = solid_rgba(sd.colour);
+                // Masked solids rasterise at their own size; plain ones tile.
                 let (w, h) = if layer.masks.is_empty() {
                     (16, 16)
                 } else {
-                    parent_dims
+                    (sd.width, sd.height)
                 };
                 let mut rgba = px_tile(&px, w, h);
                 kiriko_core::mask::apply_masks(
                     &mut rgba,
                     w,
                     h,
-                    f64::from(parent_dims.0),
-                    f64::from(parent_dims.1),
+                    f64::from(sd.width),
+                    f64::from(sd.height),
                     &layer.masks,
                 );
                 let src = self.colour.upload_srgb8(self.gpu, &rgba, w, h);
                 Ok(Some(Prepared {
                     tex: self.colour.linearise(self.gpu, &src),
-                    natural: (parent_dims.0 as f32, parent_dims.1 as f32),
+                    natural: (sd.width as f32, sd.height as f32),
                 }))
             }
             LayerKind::Text { document } => {
@@ -211,7 +214,6 @@ impl Renderer<'_> {
         t: f64,
         visited: &mut Vec<Uuid>,
     ) -> Result<Tex, String> {
-        let dims = (comp.width, comp.height);
         let camera = comp
             .camera_pose(t)
             .map(|pose| camera_mat(comp.width, comp.height, pose));
@@ -224,7 +226,7 @@ impl Renderer<'_> {
             if !needed {
                 continue;
             }
-            if let Some(p) = self.prepare(l, t, dims, visited)? {
+            if let Some(p) = self.prepare(l, t, visited)? {
                 prepared.insert(l.id, p);
             }
         }
@@ -404,16 +406,6 @@ fn run(
     Ok(())
 }
 
-pub fn srgb_encode(v: f32) -> u8 {
-    let v = v.clamp(0.0, 1.0);
-    let e = if v <= 0.003_130_8 {
-        12.92 * v
-    } else {
-        1.055 * v.powf(1.0 / 2.4) - 0.055
-    };
-    (e * 255.0).round() as u8
-}
-
 /// CameraPose (core model) -> GPU camera matrix: the single conversion both
 /// the preview and the export path share, so they cannot disagree (K-031).
 pub fn camera_mat(
@@ -436,21 +428,6 @@ pub fn camera_mat(
             pose.rotation_deg.2 as f32,
         ),
     )
-}
-
-pub fn solid_rgba(c: kiriko_core::model::LinearColour) -> [u8; 4] {
-    [
-        srgb_encode(c.0[0]),
-        srgb_encode(c.0[1]),
-        srgb_encode(c.0[2]),
-        (c.0[3].clamp(0.0, 1.0) * 255.0).round() as u8,
-    ]
-}
-
-pub fn px_tile(px: &[u8; 4], w: u32, h: u32) -> Vec<u8> {
-    std::iter::repeat_n(*px, (w * h) as usize)
-        .flatten()
-        .collect()
 }
 
 /// Collect the ItemInfo map from probed media (UI thread, cheap).

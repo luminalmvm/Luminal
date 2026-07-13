@@ -104,6 +104,7 @@ fn viewer_panel(
 ) {
     let rect = ui.available_rect_before_wrap();
     ui.painter().rect_filled(rect, 0.0, theme.viewer_surround);
+    accept_item_drop(ui, theme, app, rect);
 
     #[cfg(feature = "media")]
     if app.preview_item.is_some() || app.preview_comp.is_some() {
@@ -198,8 +199,39 @@ fn viewer_panel(
     });
 }
 
+/// What a Project panel row asked for this frame (applied after drawing —
+/// rows only read state, so the borrow stays clean).
+enum PanelAction {
+    Select(uuid::Uuid),
+    OpenComp(uuid::Uuid),
+    PreviewFootage(uuid::Uuid),
+    MoveTo {
+        item: uuid::Uuid,
+        target: Option<uuid::Uuid>,
+    },
+    CompSettings(uuid::Uuid),
+    Delete(uuid::Uuid),
+}
+
+/// AE-style Project panel (docs/07-UI-SPEC.md §4): selected-item info at the
+/// top, the folder tree below, everything drag-and-drop (rows drag onto
+/// folders to file them; onto the Timeline or Viewer to make layers).
 fn project_panel(ui: &mut egui::Ui, theme: &Theme, app: &mut AppState) {
     let doc = app.store.snapshot();
+    let mut actions: Vec<PanelAction> = Vec::new();
+
+    project_header(ui, theme, app, &doc, &mut actions);
+    ui.separator();
+    ui.horizontal(|ui| {
+        if ui.small_button("+ Folder").clicked() {
+            app.new_folder();
+        }
+        if ui.small_button("+ Composition").clicked() {
+            app.open_new_comp_dialog(None);
+        }
+    });
+    ui.add_space(2.0);
+
     if doc.items.is_empty() {
         empty_hint(
             ui,
@@ -209,142 +241,385 @@ fn project_panel(ui: &mut egui::Ui, theme: &Theme, app: &mut AppState) {
         );
         return;
     }
-    ui.add_space(4.0);
-    let mut select = None;
-    let mut add_to_comp: Option<uuid::Uuid> = None;
-    let mut nest_comp: Option<uuid::Uuid> = None;
-    for item in &doc.items {
-        let (kind, colour) = match item {
-            ProjectItem::Footage(_) => ("footage", theme.text_muted),
-            ProjectItem::Folder(_) => ("folder", theme.text_muted),
-            ProjectItem::Composition(_) => ("comp", theme.accent),
-        };
-        let selected = app.selected_comp == Some(item.id());
-        let row = ui.selectable_label(
-            selected,
-            egui::RichText::new(format!("{}  ", item.name())).color(theme.text_secondary),
-        );
-        let row = row.on_hover_text(kind);
-        ui.painter().text(
-            row.rect.right_center() + egui::vec2(-4.0, 0.0),
-            egui::Align2::RIGHT_CENTER,
-            kind,
-            egui::FontId::monospace(10.0),
-            colour,
-        );
-        if row.clicked() {
-            match item {
-                ProjectItem::Composition(_) => {
-                    select = Some(item.id());
-                    app.preview_comp = Some(item.id());
-                    app.preview_item = None;
-                    app.preview_frame = 0;
-                    #[cfg(feature = "media")]
+
+    // The tree, with the panel background as a "move to root" drop target.
+    let bg_rect = ui.available_rect_before_wrap();
+    egui::ScrollArea::vertical()
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            let mut visited = Vec::new();
+            for id in doc.root_items() {
+                item_rows(ui, theme, app, &doc, id, 0, &mut actions, &mut visited);
+            }
+            // Trailing space so there is always a root drop area.
+            ui.allocate_space(egui::vec2(ui.available_width(), 40.0));
+        });
+    let bg = ui.interact(
+        bg_rect,
+        ui.id().with("panel-root-drop"),
+        egui::Sense::hover(),
+    );
+    if let Some(payload) = bg.dnd_release_payload::<uuid::Uuid>() {
+        // Row/folder drops claim the pointer first; reaching here means the
+        // drop landed on empty panel space.
+        actions.push(PanelAction::MoveTo {
+            item: *payload,
+            target: None,
+        });
+    }
+
+    for action in actions {
+        match action {
+            PanelAction::Select(id) => {
+                app.selected_item = Some(id);
+                if doc.comp(id).is_some() {
+                    app.selected_comp = Some(id);
+                }
+            }
+            PanelAction::OpenComp(id) => {
+                app.selected_comp = Some(id);
+                app.preview_comp = Some(id);
+                app.preview_item = None;
+                app.preview_frame = 0;
+                #[cfg(feature = "media")]
+                app.refresh_preview();
+            }
+            PanelAction::PreviewFootage(id) => {
+                app.preview_item = Some(id);
+                app.preview_comp = None;
+                app.preview_frame = 0;
+                #[cfg(feature = "media")]
+                {
                     app.refresh_preview();
+                    app.request_preview_audio();
                 }
-                ProjectItem::Footage(_) => {
-                    app.preview_item = Some(item.id());
-                    app.preview_frame = 0;
-                    #[cfg(feature = "media")]
-                    {
-                        app.refresh_preview();
-                        app.request_preview_audio();
-                    }
+            }
+            PanelAction::MoveTo { item, target } => app.move_item_to_folder(item, target),
+            PanelAction::CompSettings(id) => app.open_comp_settings(id),
+            PanelAction::Delete(id) => {
+                app.commit(kiriko_core::Op::RemoveItem { id });
+                if app.selected_item == Some(id) {
+                    app.selected_item = None;
                 }
-                _ => {}
             }
         }
-        if let ProjectItem::Composition(_) = item {
-            let target = app.preview_comp.or(app.selected_comp);
-            let nestable = target.is_some_and(|t| t != item.id());
-            ui.indent(("nest", item.id()), |ui| {
-                if ui
-                    .add_enabled(nestable, egui::Button::new("Nest in comp").small())
-                    .on_hover_text("Add as a Precomp layer of the selected composition")
-                    .clicked()
-                {
-                    nest_comp = Some(item.id());
+    }
+}
+
+/// The info header: what the selected item is, at a glance (AE's preview
+/// area — the thumbnail joins when the cache can supply one cheaply).
+fn project_header(
+    ui: &mut egui::Ui,
+    theme: &Theme,
+    app: &AppState,
+    doc: &kiriko_core::model::Document,
+    actions: &mut Vec<PanelAction>,
+) {
+    ui.add_space(4.0);
+    let Some(item) = app.selected_item.and_then(|id| doc.item(id)) else {
+        ui.label(
+            egui::RichText::new("Nothing selected")
+                .small()
+                .color(theme.text_disabled),
+        );
+        ui.add_space(2.0);
+        return;
+    };
+    ui.horizontal(|ui| {
+        ui.label(
+            egui::RichText::new(item.name())
+                .strong()
+                .color(theme.text_primary),
+        );
+        let kind = match item {
+            ProjectItem::Footage(_) => "footage",
+            ProjectItem::Folder(_) => "folder",
+            ProjectItem::Composition(_) => "comp",
+            ProjectItem::Solid(_) => "solid",
+        };
+        ui.label(
+            egui::RichText::new(kind)
+                .monospace()
+                .small()
+                .color(theme.text_muted),
+        );
+    });
+    match item {
+        ProjectItem::Composition(c) => {
+            ui.horizontal(|ui| {
+                ui.label(
+                    egui::RichText::new(format!(
+                        "{}×{} · {:.2} fps · {:.1} s · {} layer{}",
+                        c.width,
+                        c.height,
+                        c.frame_rate.fps(),
+                        c.duration.0.to_f64(),
+                        c.layers.len(),
+                        if c.layers.len() == 1 { "" } else { "s" }
+                    ))
+                    .monospace()
+                    .small()
+                    .color(theme.text_muted),
+                );
+                if ui.small_button("Settings…").clicked() {
+                    actions.push(PanelAction::CompSettings(c.id));
                 }
             });
         }
-        if let ProjectItem::Footage(_) = item {
-            let target = app.preview_comp.or(app.selected_comp);
-            ui.indent(("addto", item.id()), |ui| {
-                if ui
-                    .add_enabled(target.is_some(), egui::Button::new("Add to comp").small())
-                    .on_hover_text("Add as the top layer of the selected composition")
-                    .clicked()
-                {
-                    add_to_comp = Some(item.id());
-                }
+        ProjectItem::Solid(s) => {
+            ui.horizontal(|ui| {
+                let px = crate::pixels::solid_rgba(s.colour);
+                let (rect, _) =
+                    ui.allocate_exact_size(egui::vec2(14.0, 14.0), egui::Sense::hover());
+                ui.painter().rect_filled(
+                    rect,
+                    2.0,
+                    egui::Color32::from_rgba_unmultiplied(px[0], px[1], px[2], px[3]),
+                );
+                ui.label(
+                    egui::RichText::new(format!("{}×{}", s.width, s.height))
+                        .monospace()
+                        .small()
+                        .color(theme.text_muted),
+                );
             });
         }
-        #[cfg(feature = "media")]
-        if let ProjectItem::Footage(_) = item {
-            use crate::app_state::media::MediaStatus;
-            ui.indent(item.id(), |ui| match app.media.map.get(&item.id()) {
-                Some(MediaStatus::Probing) => {
-                    ui.label(
-                        egui::RichText::new("probing…")
-                            .small()
-                            .color(theme.text_disabled),
-                    );
-                }
-                Some(MediaStatus::Ready { probe, frames, vfr }) => {
-                    let mut line = String::new();
-                    if let Some(v) = &probe.video {
-                        line.push_str(&format!(
-                            "{}×{} · {:.2} fps · {} frames",
-                            v.width,
-                            v.height,
-                            v.fps(),
-                            frames
-                        ));
-                    } else if let Some(a) = &probe.audio {
-                        line.push_str(&format!("{} Hz · {} ch", a.sample_rate, a.channels));
-                    }
-                    line.push_str(&format!(" · {:.1} s", probe.duration_seconds));
-                    ui.horizontal(|ui| {
+        ProjectItem::Folder(f) => {
+            ui.label(
+                egui::RichText::new(format!(
+                    "{} item{}",
+                    f.children.len(),
+                    if f.children.len() == 1 { "" } else { "s" }
+                ))
+                .monospace()
+                .small()
+                .color(theme.text_muted),
+            );
+        }
+        ProjectItem::Footage(_) => {
+            #[cfg(feature = "media")]
+            {
+                use crate::app_state::media::MediaStatus;
+                match app.media.map.get(&item.id()) {
+                    Some(MediaStatus::Probing) => {
                         ui.label(
-                            egui::RichText::new(line)
-                                .monospace()
+                            egui::RichText::new("probing…")
                                 .small()
-                                .color(theme.text_muted),
+                                .color(theme.text_disabled),
                         );
-                        if *vfr {
+                    }
+                    Some(MediaStatus::Ready { probe, frames, vfr }) => {
+                        let mut line = String::new();
+                        if let Some(v) = &probe.video {
+                            line.push_str(&format!(
+                                "{}×{} · {:.2} fps · {} frames",
+                                v.width,
+                                v.height,
+                                v.fps(),
+                                frames
+                            ));
+                        } else if let Some(a) = &probe.audio {
+                            line.push_str(&format!("{} Hz · {} ch", a.sample_rate, a.channels));
+                        }
+                        line.push_str(&format!(" · {:.1} s", probe.duration_seconds));
+                        ui.horizontal(|ui| {
                             ui.label(
-                                egui::RichText::new("VFR")
+                                egui::RichText::new(line)
                                     .monospace()
                                     .small()
-                                    .color(theme.warning),
-                            )
-                            .on_hover_text("Variable frame rate: conformed to the median rate");
-                        }
-                    });
+                                    .color(theme.text_muted),
+                            );
+                            if *vfr {
+                                ui.label(
+                                    egui::RichText::new("VFR")
+                                        .monospace()
+                                        .small()
+                                        .color(theme.warning),
+                                )
+                                .on_hover_text("Variable frame rate: conformed to the median rate");
+                            }
+                        });
+                    }
+                    Some(MediaStatus::Failed(e)) => {
+                        ui.label(
+                            egui::RichText::new(format!("unreadable: {e}"))
+                                .small()
+                                .color(theme.warning),
+                        );
+                    }
+                    None => {}
                 }
-                Some(MediaStatus::Failed(e)) => {
-                    ui.label(
-                        egui::RichText::new(format!("unreadable: {e}"))
-                            .small()
-                            .color(theme.warning),
-                    );
-                }
-                None => {}
-            });
+            }
         }
     }
-    if let Some(id) = select {
-        app.selected_comp = Some(id);
+    ui.add_space(2.0);
+}
+
+/// One tree row (folders recurse). Rows are drag sources; folder rows are
+/// drop targets.
+#[allow(clippy::too_many_arguments)]
+fn item_rows(
+    ui: &mut egui::Ui,
+    theme: &Theme,
+    app: &AppState,
+    doc: &kiriko_core::model::Document,
+    id: uuid::Uuid,
+    depth: usize,
+    actions: &mut Vec<PanelAction>,
+    visited: &mut Vec<uuid::Uuid>,
+) {
+    if visited.contains(&id) {
+        return; // defensive: malformed folder cycles never hang the panel
     }
-    if let Some(id) = add_to_comp {
-        app.add_footage_to_comp(id);
+    let Some(item) = doc.item(id) else {
+        return; // stale child id (deleted item): just don't draw it
+    };
+    let is_folder = matches!(item, ProjectItem::Folder(_));
+    let (kind, tag_colour) = match item {
+        ProjectItem::Footage(_) => ("footage", theme.text_muted),
+        ProjectItem::Folder(_) => ("folder", theme.text_muted),
+        ProjectItem::Composition(_) => ("comp", theme.accent),
+        ProjectItem::Solid(_) => ("solid", theme.text_muted),
+    };
+    let selected = app.selected_item == Some(id);
+    let open_id = ui.id().with(("folder-open", id));
+    let mut open = is_folder && ui.data(|d| d.get_temp::<bool>(open_id).unwrap_or(true));
+
+    let row = ui
+        .horizontal(|ui| {
+            ui.add_space(12.0 * depth as f32 + 2.0);
+            if is_folder {
+                let arrow = if open { "▾" } else { "▸" };
+                if ui
+                    .add(
+                        egui::Label::new(egui::RichText::new(arrow).small())
+                            .sense(egui::Sense::click()),
+                    )
+                    .clicked()
+                {
+                    open = !open;
+                    ui.data_mut(|d| d.insert_temp(open_id, open));
+                }
+            }
+            let label = egui::RichText::new(item.name()).color(theme.text_secondary);
+            let resp = ui
+                .dnd_drag_source(ui.id().with(("drag", id)), id, |ui| {
+                    ui.selectable_label(selected, label)
+                })
+                .response;
+            ui.painter().text(
+                ui.max_rect().right_center() + egui::vec2(-4.0, 0.0),
+                egui::Align2::RIGHT_CENTER,
+                kind,
+                egui::FontId::monospace(10.0),
+                tag_colour,
+            );
+            resp
+        })
+        .inner;
+
+    if row.clicked() {
+        actions.push(PanelAction::Select(id));
+        match item {
+            ProjectItem::Composition(_) => actions.push(PanelAction::OpenComp(id)),
+            ProjectItem::Footage(_) => actions.push(PanelAction::PreviewFootage(id)),
+            _ => {}
+        }
     }
-    if let Some(id) = nest_comp {
-        app.add_precomp_to_comp(id);
+    row.context_menu(|ui| {
+        if let ProjectItem::Composition(_) = item {
+            if ui.button("Composition settings…").clicked() {
+                actions.push(PanelAction::CompSettings(id));
+                ui.close_menu();
+            }
+        }
+        if ui.button("Move to root").clicked() {
+            actions.push(PanelAction::MoveTo {
+                item: id,
+                target: None,
+            });
+            ui.close_menu();
+        }
+        if ui.button("Delete").clicked() {
+            actions.push(PanelAction::Delete(id));
+            ui.close_menu();
+        }
+    });
+
+    if is_folder {
+        // Folder rows accept drops (file the dragged item here).
+        if let Some(payload) = row.dnd_release_payload::<uuid::Uuid>() {
+            if *payload != id {
+                actions.push(PanelAction::MoveTo {
+                    item: *payload,
+                    target: Some(id),
+                });
+            }
+        } else if row.dnd_hover_payload::<uuid::Uuid>().is_some() {
+            ui.painter().rect_stroke(
+                row.rect,
+                2.0,
+                egui::Stroke::new(1.0_f32, theme.accent),
+                egui::StrokeKind::Inside,
+            );
+        }
+        if open {
+            if let Some(f) = doc.folder(id) {
+                visited.push(id);
+                for child in f.children.clone() {
+                    item_rows(ui, theme, app, doc, child, depth + 1, actions, visited);
+                }
+                visited.pop();
+            }
+        }
+    }
+}
+
+/// Accept a Project-panel item dropped on this panel's area: file it into
+/// the active comp as a layer, or — with no comp yet — open the composition
+/// dialogue pre-filled from the footage (K-068).
+fn accept_item_drop(ui: &egui::Ui, theme: &Theme, app: &mut AppState, rect: egui::Rect) {
+    let zone = ui.interact(rect, ui.id().with("item-drop-zone"), egui::Sense::hover());
+    if zone.dnd_hover_payload::<uuid::Uuid>().is_some() {
+        ui.painter().rect_stroke(
+            rect.shrink(1.0),
+            2.0,
+            egui::Stroke::new(1.0_f32, theme.accent),
+            egui::StrokeKind::Inside,
+        );
+    }
+    let Some(payload) = zone.dnd_release_payload::<uuid::Uuid>() else {
+        return;
+    };
+    let item = *payload;
+    let doc = app.store.snapshot();
+    let has_comp = app
+        .preview_comp
+        .or(app.selected_comp)
+        .and_then(|id| doc.comp(id))
+        .is_some();
+    match doc.item(item) {
+        Some(ProjectItem::Composition(_)) if !has_comp => {
+            // Dropping a comp with nothing open just opens it.
+            app.selected_comp = Some(item);
+            app.preview_comp = Some(item);
+            app.preview_item = None;
+            #[cfg(feature = "media")]
+            app.refresh_preview();
+        }
+        Some(ProjectItem::Footage(_)) if !has_comp => {
+            app.open_new_comp_dialog(Some(item));
+        }
+        Some(ProjectItem::Folder(_)) | None => {}
+        Some(_) if !has_comp => {
+            app.error = Some("create a composition first".into());
+        }
+        Some(_) => app.add_item_to_comp(item),
     }
 }
 
 fn timeline_panel(ui: &mut egui::Ui, theme: &Theme, app: &mut AppState) {
+    accept_item_drop(ui, theme, app, ui.max_rect());
     let doc = app.store.snapshot();
     let comp = app.selected_comp.and_then(|id| doc.comp(id));
     let Some(comp) = comp else {
@@ -352,7 +627,7 @@ fn timeline_panel(ui: &mut egui::Ui, theme: &Theme, app: &mut AppState) {
             ui,
             theme,
             "No composition open",
-            "Create one with Composition → New, or drop footage here.",
+            "Create one with Composition → New, or drag footage here from the Project panel.",
         );
         return;
     };
@@ -1406,18 +1681,18 @@ fn build_comp_draws(
                     (lp.width as f32, lp.height as f32),
                 )
             }),
-            LayerKind::Solid { colour } => in_span(layer).then(|| {
-                let px = crate::export::solid_rgba(*colour);
+            LayerKind::Solid { def } => doc.solid(*def).filter(|_| in_span(layer)).map(|sd| {
+                let px = crate::export::solid_rgba(sd.colour);
                 let (tw, th) = if layer.masks.is_empty() {
                     (8, 8)
                 } else {
-                    (comp.width, comp.height)
+                    (sd.width, sd.height)
                 };
                 (
                     crate::export::px_tile(&px, tw, th),
                     tw,
                     th,
-                    (comp.width as f32, comp.height as f32),
+                    (sd.width as f32, sd.height as f32),
                 )
             }),
             LayerKind::Text { document } => in_span(layer).then(|| {
@@ -1564,8 +1839,13 @@ fn mask_space(
     comp: &kiriko_core::model::Composition,
 ) -> (f64, f64) {
     match &layer.kind {
-        kiriko_core::model::LayerKind::Solid { .. }
-        | kiriko_core::model::LayerKind::Precomp { .. }
+        kiriko_core::model::LayerKind::Solid { def } => app
+            .store
+            .snapshot()
+            .solid(*def)
+            .map(|sd| (f64::from(sd.width), f64::from(sd.height)))
+            .unwrap_or((f64::from(comp.width), f64::from(comp.height))),
+        kiriko_core::model::LayerKind::Precomp { .. }
         | kiriko_core::model::LayerKind::Camera { .. }
         | kiriko_core::model::LayerKind::Text { .. } => {
             (f64::from(comp.width), f64::from(comp.height))
@@ -1998,7 +2278,9 @@ impl Shell {
         #[cfg(feature = "media")]
         lines.push(BootLine::ok("Kura cache: RAM tier ready (512 MB)"));
         #[cfg(feature = "media")]
-        lines.push(BootLine::ok("Hibiki audio: cpal (clock starts with playback)"));
+        lines.push(BootLine::ok(
+            "Hibiki audio: cpal (clock starts with playback)",
+        ));
         lines.push(BootLine::ok(
             "Effects: none registered — suite arrives in phase 3",
         ));
@@ -2054,6 +2336,11 @@ impl Shell {
                 MenuAction::AddSolidLayer => self.app.add_solid_layer(),
                 MenuAction::AddTextLayer => self.app.add_text_layer(),
                 MenuAction::AddCameraLayer => self.app.add_camera_layer(),
+                MenuAction::CompSettings => {
+                    if let Some(id) = self.app.preview_comp.or(self.app.selected_comp) {
+                        self.app.open_comp_settings(id);
+                    }
+                }
                 MenuAction::ResetWorkspace => self.dock = default_layout(),
             }
         }
@@ -2133,6 +2420,81 @@ impl Shell {
             bit_rate,
         ));
         self.export_progress = Some((0, 0));
+    }
+
+    /// The composition settings dialogue (create + edit — K-068).
+    fn comp_dialog_modal(&mut self, ctx: &egui::Context) {
+        let Some(dialog) = &mut self.app.comp_dialog else {
+            return;
+        };
+        let creating = dialog.editing.is_none();
+        let mut confirm = false;
+        let mut cancel = false;
+        egui::Window::new(if creating {
+            "New composition"
+        } else {
+            "Composition settings"
+        })
+        .collapsible(false)
+        .resizable(false)
+        .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+        .show(ctx, |ui| {
+            egui::Grid::new("comp-dialog")
+                .num_columns(2)
+                .spacing(egui::vec2(12.0, 6.0))
+                .show(ui, |ui| {
+                    ui.label("Name");
+                    ui.text_edit_singleline(&mut dialog.name);
+                    ui.end_row();
+                    ui.label("Width");
+                    ui.add(egui::DragValue::new(&mut dialog.width).range(16..=16384));
+                    ui.end_row();
+                    ui.label("Height");
+                    ui.add(egui::DragValue::new(&mut dialog.height).range(16..=16384));
+                    ui.end_row();
+                    ui.label("Frame rate");
+                    ui.horizontal(|ui| {
+                        ui.add(
+                            egui::DragValue::new(&mut dialog.fps)
+                                .range(1.0..=1000.0)
+                                .max_decimals(3)
+                                .suffix(" fps"),
+                        );
+                        for preset in [24.0, 30.0, 60.0] {
+                            if ui.small_button(format!("{preset:.0}")).clicked() {
+                                dialog.fps = preset;
+                            }
+                        }
+                    });
+                    ui.end_row();
+                    ui.label("Duration");
+                    ui.add(
+                        egui::DragValue::new(&mut dialog.duration_s)
+                            .range(0.04..=86400.0)
+                            .max_decimals(2)
+                            .suffix(" s"),
+                    );
+                    ui.end_row();
+                });
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if ui
+                    .button(if creating { "Create" } else { "Apply" })
+                    .clicked()
+                    || ui.input(|i| i.key_pressed(egui::Key::Enter))
+                {
+                    confirm = true;
+                }
+                if ui.button("Cancel").clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                    cancel = true;
+                }
+            });
+        });
+        if confirm {
+            self.app.confirm_comp_dialog();
+        } else if cancel {
+            self.app.comp_dialog = None;
+        }
     }
 
     fn recovery_modal(&mut self, ctx: &egui::Context) {
@@ -2496,6 +2858,7 @@ impl Shell {
         });
 
         self.recovery_modal(ctx);
+        self.comp_dialog_modal(ctx);
 
         let mut style = DockStyle::from_egui(&ctx.style());
         style.tab_bar.bg_fill = self.theme.surface_0;

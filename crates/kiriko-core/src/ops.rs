@@ -3,8 +3,10 @@
 //! of (op, inverse) pairs is the undo/redo stack and the crash-recovery log.
 
 use crate::anim::Animation;
-use crate::model::{BlendMode, Document, Layer, MatteRef, ProjectItem, TransformProp};
-use crate::time::CompTime;
+use crate::model::{
+    BlendMode, Document, Layer, LinearColour, MatteRef, ProjectItem, TransformProp,
+};
+use crate::time::{CompTime, Duration, FrameRate};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -108,6 +110,50 @@ pub enum Op {
         layer: Uuid,
         animation: Animation,
     },
+    /// Several ops as one undo step (e.g. "create Solids folder + solid +
+    /// layer"). Applied in order; the inverse is the reversed inverses. If a
+    /// member fails, the already-applied members are rolled back, so a batch
+    /// is all-or-nothing.
+    Batch {
+        ops: Vec<Op>,
+    },
+    /// Replace a folder's ordered children (coarse-grained: trivially
+    /// invertible, and every move is one of these on each affected folder).
+    SetFolderChildren {
+        folder: Uuid,
+        children: Vec<Uuid>,
+    },
+    /// Point an auto-filing slot (Solids / Compositions) at a folder.
+    SetAutoFolder {
+        kind: AutoFolderKind,
+        folder: Option<Uuid>,
+    },
+    /// Edit a composition's settings after creation (AE: Composition
+    /// Settings). Layers keep their spans; a shorter duration simply clips
+    /// what plays.
+    SetCompSettings {
+        comp: Uuid,
+        name: String,
+        width: u32,
+        height: u32,
+        frame_rate: FrameRate,
+        duration: Duration,
+        background: LinearColour,
+    },
+    /// Edit a SolidDef asset (colour/size/name); every layer using it updates.
+    SetSolidDef {
+        def: Uuid,
+        name: String,
+        colour: LinearColour,
+        width: u32,
+        height: u32,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AutoFolderKind {
+    Solids,
+    Compositions,
 }
 
 /// Apply `op` to `doc`, returning the exact inverse operation.
@@ -332,6 +378,87 @@ pub fn apply(doc: &mut Document, op: &Op) -> Result<Op, OpError> {
                 layer: *layer,
                 animation: previous,
             })
+        }
+        Op::Batch { ops } => {
+            let mut inverses = Vec::with_capacity(ops.len());
+            for member in ops {
+                match apply(doc, member) {
+                    Ok(inv) => inverses.push(inv),
+                    Err(e) => {
+                        // Roll back what applied; rollback of a just-applied
+                        // inverse cannot fail, but stay panic-free regardless.
+                        for inv in inverses.iter().rev() {
+                            let _ = apply(doc, inv);
+                        }
+                        return Err(e);
+                    }
+                }
+            }
+            inverses.reverse();
+            Ok(Op::Batch { ops: inverses })
+        }
+        Op::SetFolderChildren { folder, children } => {
+            let f = match doc.item_mut(*folder) {
+                Some(ProjectItem::Folder(f)) => f,
+                _ => return Err(OpError::UnknownItem),
+            };
+            let previous = std::mem::replace(&mut f.children, children.clone());
+            Ok(Op::SetFolderChildren {
+                folder: *folder,
+                children: previous,
+            })
+        }
+        Op::SetAutoFolder { kind, folder } => {
+            let slot = match kind {
+                AutoFolderKind::Solids => &mut doc.auto_folders.solids,
+                AutoFolderKind::Compositions => &mut doc.auto_folders.compositions,
+            };
+            let previous = std::mem::replace(slot, *folder);
+            Ok(Op::SetAutoFolder {
+                kind: *kind,
+                folder: previous,
+            })
+        }
+        Op::SetCompSettings {
+            comp,
+            name,
+            width,
+            height,
+            frame_rate,
+            duration,
+            background,
+        } => {
+            let c = doc.comp_mut(*comp).ok_or(OpError::UnknownComp)?;
+            let inverse = Op::SetCompSettings {
+                comp: *comp,
+                name: std::mem::replace(&mut c.name, name.clone()),
+                width: std::mem::replace(&mut c.width, *width),
+                height: std::mem::replace(&mut c.height, *height),
+                frame_rate: std::mem::replace(&mut c.frame_rate, *frame_rate),
+                duration: std::mem::replace(&mut c.duration, *duration),
+                background: std::mem::replace(&mut c.background, *background),
+            };
+            Ok(inverse)
+        }
+        Op::SetSolidDef {
+            def,
+            name,
+            colour,
+            width,
+            height,
+        } => {
+            let s = match doc.item_mut(*def) {
+                Some(ProjectItem::Solid(s)) => s,
+                _ => return Err(OpError::UnknownItem),
+            };
+            let inverse = Op::SetSolidDef {
+                def: *def,
+                name: std::mem::replace(&mut s.name, name.clone()),
+                colour: std::mem::replace(&mut s.colour, *colour),
+                width: std::mem::replace(&mut s.width, *width),
+                height: std::mem::replace(&mut s.height, *height),
+            };
+            Ok(inverse)
         }
         Op::RenameLayer { comp, layer, name } => {
             let c = doc.comp_mut(*comp).ok_or(OpError::UnknownComp)?;

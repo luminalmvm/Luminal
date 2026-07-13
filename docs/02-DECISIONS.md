@@ -282,3 +282,17 @@ names appear in user-facing surfaces (boot splash, settings, docs, marketing); c
 names stay `kiriko-*` and code identifiers stay plain English per the glossary. Future
 subsystem names come from the same craft vocabulary and are logged here. Added
 2026-07-13 at Mack's request.
+
+**K-068 · DECIDED · AE-style Project panel with auto-filing and the composition
+dialogue.** The Project panel is info-header-plus-tree: the selected item's details at
+the top, the folder tree below, and everything moves by drag and drop — rows drag onto
+folders to file them, onto the Timeline or Viewer to become layers (the "Add to comp"
+buttons are gone). Solids are assets (`SolidDef`, per 03-DATA-MODEL §2): the first solid
+creates a "Solids" folder and later ones follow it *by id* — renaming or nesting the
+folder keeps the habit; deleting it just recreates it on next use. Compositions auto-file
+the same way into "Compositions". Manual comp creation always shows the settings dialogue
+(name, size, frame rate, duration); dropping footage with no comp open shows it
+pre-filled from that footage; comps created implicitly inside an active comp (future
+precompose) inherit the parent's settings silently; settings stay editable later
+(Composition settings…, one invertible op). Multi-step creations commit as one
+`Op::Batch` — one undo step. Added 2026-07-13 at Mack's request.

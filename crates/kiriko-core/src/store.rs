@@ -421,6 +421,134 @@ mod tests {
             .is_err());
     }
 
+    /// The asset-organisation ops behave: a batch is one undo step and
+    /// all-or-nothing; folder children, auto-folder slots, comp settings and
+    /// solid defs all round-trip exactly.
+    #[test]
+    fn batch_folder_and_settings_ops_round_trip() {
+        use crate::model::{Folder, LinearColour, SolidDef};
+        use crate::ops::AutoFolderKind;
+        use crate::time::{Duration, FrameRate};
+        let store = DocumentStore::new(Document::new());
+        let (ops, comp_id) = scripted_ops(&store.snapshot());
+        for op in ops {
+            store.commit(op).unwrap();
+        }
+
+        // One batch: create the Solids folder, remember it, add a solid to it.
+        let folder_id = uuid::Uuid::now_v7();
+        let solid_id = uuid::Uuid::now_v7();
+        let n_items = store.snapshot().items.len();
+        store
+            .commit(Op::Batch {
+                ops: vec![
+                    Op::AddItem {
+                        index: n_items,
+                        item: Box::new(ProjectItem::Folder(Folder {
+                            id: folder_id,
+                            name: "Solids".into(),
+                            children: Vec::new(),
+                            extra: serde_json::Map::new(),
+                        })),
+                    },
+                    Op::SetAutoFolder {
+                        kind: AutoFolderKind::Solids,
+                        folder: Some(folder_id),
+                    },
+                    Op::AddItem {
+                        index: n_items + 1,
+                        item: Box::new(ProjectItem::Solid(SolidDef {
+                            id: solid_id,
+                            name: "White solid".into(),
+                            colour: LinearColour([1.0, 1.0, 1.0, 1.0]),
+                            width: 1920,
+                            height: 1080,
+                            extra: serde_json::Map::new(),
+                        })),
+                    },
+                    Op::SetFolderChildren {
+                        folder: folder_id,
+                        children: vec![solid_id],
+                    },
+                ],
+            })
+            .unwrap();
+        let doc = store.snapshot();
+        assert_eq!(doc.auto_folders.solids, Some(folder_id));
+        assert_eq!(doc.folder(folder_id).unwrap().children, vec![solid_id]);
+        assert!(doc.solid(solid_id).is_some());
+        assert!(!doc.root_items().contains(&solid_id), "filed, not root");
+
+        // One undo removes the whole batch.
+        store.undo().unwrap();
+        let doc = store.snapshot();
+        assert_eq!(doc.auto_folders.solids, None);
+        assert!(doc.solid(solid_id).is_none());
+        assert!(doc.folder(folder_id).is_none());
+        store.redo().unwrap();
+
+        // A failing member rolls back the whole batch.
+        let before = store.snapshot();
+        assert!(store
+            .commit(Op::Batch {
+                ops: vec![
+                    Op::RenameItem {
+                        id: folder_id,
+                        name: "Renamed".into(),
+                    },
+                    Op::RemoveItem {
+                        id: uuid::Uuid::now_v7(), // unknown: fails
+                    },
+                ],
+            })
+            .is_err());
+        assert_eq!(*store.snapshot(), *before, "all-or-nothing");
+
+        // Comp settings round-trip.
+        store
+            .commit(Op::SetCompSettings {
+                comp: comp_id,
+                name: "Retitled".into(),
+                width: 1280,
+                height: 720,
+                frame_rate: FrameRate::new(24, 1).unwrap(),
+                duration: Duration(Rational::new(5, 1).unwrap()),
+                background: LinearColour([0.1, 0.1, 0.1, 1.0]),
+            })
+            .unwrap();
+        let doc = store.snapshot();
+        let comp = doc.comp(comp_id).unwrap();
+        assert_eq!((comp.width, comp.height), (1280, 720));
+        assert_eq!(comp.name, "Retitled");
+        store.undo().unwrap();
+        let comp2 = store.snapshot();
+        let comp2 = comp2.comp(comp_id).unwrap();
+        assert_eq!((comp2.width, comp2.height), (1920, 1080));
+
+        // Solid def edit round-trips and errors on non-solid targets.
+        store
+            .commit(Op::SetSolidDef {
+                def: solid_id,
+                name: "Grey solid".into(),
+                colour: LinearColour([0.5, 0.5, 0.5, 1.0]),
+                width: 640,
+                height: 480,
+            })
+            .unwrap();
+        assert_eq!(store.snapshot().solid(solid_id).unwrap().width, 640);
+        store.undo().unwrap();
+        assert_eq!(store.snapshot().solid(solid_id).unwrap().width, 1920);
+        assert!(store
+            .commit(Op::SetSolidDef {
+                def: comp_id,
+                name: "x".into(),
+                colour: LinearColour([0.0, 0.0, 0.0, 1.0]),
+                width: 1,
+                height: 1,
+            })
+            .is_err());
+    }
+
     #[test]
     fn matte_op_round_trips_and_targets_any_layer() {
         use crate::model::{MatteChannel, MatteRef};

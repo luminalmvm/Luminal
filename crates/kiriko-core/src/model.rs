@@ -39,6 +39,21 @@ pub struct FootageItem {
     pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
+/// A shared solid definition (docs/03-DATA-MODEL.md §2): solids are assets,
+/// so many layers can reference one colour/size and they dedupe naturally.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SolidDef {
+    pub id: Uuid,
+    pub name: String,
+    pub colour: LinearColour,
+    pub width: u32,
+    pub height: u32,
+    /// Unknown fields from newer Kiriko versions, preserved on load/save
+    /// (docs/10-FILE-FORMAT.md §1.1 — mandatory forward compatibility).
+    #[serde(flatten, default, skip_serializing_if = "serde_json::Map::is_empty")]
+    pub extra: serde_json::Map<String, serde_json::Value>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Folder {
     pub id: Uuid,
@@ -209,9 +224,10 @@ pub enum LayerKind {
     Footage {
         item: Uuid,
     },
-    /// Flat colour at the comp's size (docs/01-GLOSSARY.md: Solid layer).
+    /// A SolidDef asset as this layer's source (docs/01-GLOSSARY.md: Solid
+    /// layer; docs/03-DATA-MODEL.md §5.2 — solids are assets so they dedupe).
     Solid {
-        colour: LinearColour,
+        def: Uuid,
     },
     /// Another composition as this layer's source (docs/01-GLOSSARY.md:
     /// Precomp layer). Cycles are invalid states, guarded at insertion and
@@ -332,6 +348,7 @@ pub enum ProjectItem {
     Footage(FootageItem),
     Folder(Folder),
     Composition(Composition),
+    Solid(SolidDef),
 }
 
 impl ProjectItem {
@@ -340,6 +357,7 @@ impl ProjectItem {
             ProjectItem::Footage(f) => f.id,
             ProjectItem::Folder(f) => f.id,
             ProjectItem::Composition(c) => c.id,
+            ProjectItem::Solid(s) => s.id,
         }
     }
 
@@ -348,6 +366,7 @@ impl ProjectItem {
             ProjectItem::Footage(f) => &f.name,
             ProjectItem::Folder(f) => &f.name,
             ProjectItem::Composition(c) => &c.name,
+            ProjectItem::Solid(s) => &s.name,
         }
     }
 
@@ -356,8 +375,21 @@ impl ProjectItem {
             ProjectItem::Footage(f) => f.name = name,
             ProjectItem::Folder(f) => f.name = name,
             ProjectItem::Composition(c) => c.name = name,
+            ProjectItem::Solid(s) => s.name = name,
         }
     }
+}
+
+/// The folders Kiriko files new assets into automatically: the first solid
+/// creates a "Solids" folder, the first comp a "Compositions" folder, and
+/// later ones follow the folder by id — so renaming or nesting the folder
+/// doesn't break the habit. A deleted folder is simply recreated on next use.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct AutoFolders {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub solids: Option<Uuid>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compositions: Option<Uuid>,
 }
 
 /// The whole editable document (docs/01-GLOSSARY.md: Project).
@@ -366,6 +398,9 @@ pub struct Document {
     pub id: Uuid,
     /// Flat item storage; Project panel order = Vec order, folders reference by id.
     pub items: Vec<ProjectItem>,
+    /// Where new solids/comps are filed (see [`AutoFolders`]).
+    #[serde(default)]
+    pub auto_folders: AutoFolders,
     /// Unknown fields from newer Kiriko versions, preserved on load/save
     /// (docs/10-FILE-FORMAT.md §1.1 — mandatory forward compatibility).
     #[serde(flatten, default, skip_serializing_if = "serde_json::Map::is_empty")]
@@ -377,6 +412,7 @@ impl Document {
         Self {
             id: Uuid::now_v7(),
             items: Vec::new(),
+            auto_folders: AutoFolders::default(),
             extra: serde_json::Map::new(),
         }
     }
@@ -401,6 +437,36 @@ impl Document {
             Some(ProjectItem::Composition(c)) => Some(c),
             _ => None,
         }
+    }
+
+    pub fn solid(&self, id: Uuid) -> Option<&SolidDef> {
+        match self.item(id) {
+            Some(ProjectItem::Solid(s)) => Some(s),
+            _ => None,
+        }
+    }
+
+    pub fn folder(&self, id: Uuid) -> Option<&Folder> {
+        match self.item(id) {
+            Some(ProjectItem::Folder(f)) => Some(f),
+            _ => None,
+        }
+    }
+
+    /// Ids that sit at the Project panel root: every item not referenced as
+    /// any folder's child (missing children are ignored, never an error).
+    pub fn root_items(&self) -> Vec<Uuid> {
+        let mut in_folder = std::collections::HashSet::new();
+        for item in &self.items {
+            if let ProjectItem::Folder(f) = item {
+                in_folder.extend(f.children.iter().copied());
+            }
+        }
+        self.items
+            .iter()
+            .map(|i| i.id())
+            .filter(|id| !in_folder.contains(id))
+            .collect()
     }
 }
 

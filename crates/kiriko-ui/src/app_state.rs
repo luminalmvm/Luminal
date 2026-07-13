@@ -358,6 +358,22 @@ fn rat(n: i64, d: i64) -> Rational {
     Rational::new(n, d).unwrap_or(Rational::ZERO)
 }
 
+/// The composition settings dialogue (AE: Composition Settings): used both
+/// for creating a comp (editing = None) and editing one later. Opened with
+/// footage-matched defaults when a drop starts the project's first comp.
+pub struct CompDialog {
+    /// Some = editing an existing comp; None = creating a new one.
+    pub editing: Option<Uuid>,
+    pub name: String,
+    pub width: u32,
+    pub height: u32,
+    pub fps: f64,
+    pub duration_s: f64,
+    /// Item to add as the first layer once the comp exists (drag-drop with
+    /// no comp yet).
+    pub pending_item: Option<Uuid>,
+}
+
 /// A recovery offer: the saved document plus the journal ops beyond it.
 pub struct PendingRecovery {
     pub doc: Document,
@@ -371,6 +387,10 @@ pub struct AppState {
     journal: Option<JournalFile>,
     pub dirty: bool,
     pub selected_comp: Option<Uuid>,
+    /// Item highlighted in the Project panel (any kind, not just comps).
+    pub selected_item: Option<Uuid>,
+    /// Open composition-settings dialogue, if any.
+    pub comp_dialog: Option<CompDialog>,
     pub pending_recovery: Option<PendingRecovery>,
     pub error: Option<String>,
     #[cfg(feature = "media")]
@@ -470,6 +490,8 @@ impl Default for AppState {
             last_display_scale: 1.0,
             last_autosave: Instant::now(),
             comp_counter: 0,
+            selected_item: None,
+            comp_dialog: None,
         }
     }
 }
@@ -898,10 +920,69 @@ impl AppState {
         self.refresh_preview();
     }
 
-    /// Add a white comp-sized Solid layer (colour editing joins the layer
-    /// properties panel).
+    /// Ops that guarantee the auto-filing folder for `kind` exists, plus its
+    /// id. Tracks the folder by id (AE habit: renaming or nesting the Solids
+    /// folder keeps it the Solids folder); a deleted one is recreated.
+    fn ensure_auto_folder_ops(&self, kind: kiriko_core::ops::AutoFolderKind) -> (Uuid, Vec<Op>) {
+        use kiriko_core::model::Folder;
+        use kiriko_core::ops::AutoFolderKind;
+        let doc = self.store.snapshot();
+        let slot = match kind {
+            AutoFolderKind::Solids => doc.auto_folders.solids,
+            AutoFolderKind::Compositions => doc.auto_folders.compositions,
+        };
+        if let Some(id) = slot {
+            if doc.folder(id).is_some() {
+                return (id, Vec::new());
+            }
+        }
+        let id = Uuid::now_v7();
+        let name = match kind {
+            AutoFolderKind::Solids => "Solids",
+            AutoFolderKind::Compositions => "Compositions",
+        };
+        (
+            id,
+            vec![
+                Op::AddItem {
+                    index: doc.items.len(),
+                    item: Box::new(ProjectItem::Folder(Folder {
+                        id,
+                        name: name.into(),
+                        children: Vec::new(),
+                        extra: serde_json::Map::new(),
+                    })),
+                },
+                Op::SetAutoFolder {
+                    kind,
+                    folder: Some(id),
+                },
+            ],
+        )
+    }
+
+    /// The op that files `item` into `folder` (appended), given the ops in
+    /// `prior` may have just created the folder.
+    fn file_into_folder_op(&self, folder: Uuid, item: Uuid, prior: &[Op]) -> Op {
+        let doc = self.store.snapshot();
+        let mut children = doc
+            .folder(folder)
+            .map(|f| f.children.clone())
+            .unwrap_or_default();
+        // The folder may not exist yet (created earlier in this batch).
+        let _ = prior;
+        children.push(item);
+        Op::SetFolderChildren { folder, children }
+    }
+
+    /// Add a Solid layer backed by a SolidDef asset filed in the Solids
+    /// auto-folder (docs/03-DATA-MODEL.md §2: solids are assets so they
+    /// dedupe). One batch, one undo step.
     pub fn add_solid_layer(&mut self) {
-        use kiriko_core::model::{Layer, LayerKind, LinearColour, Switches, TransformGroup};
+        use kiriko_core::model::{
+            Layer, LayerKind, LinearColour, SolidDef, Switches, TransformGroup,
+        };
+        use kiriko_core::ops::AutoFolderKind;
         use kiriko_core::time::CompTime;
         let Some(comp_id) = self.preview_comp.or(self.selected_comp) else {
             self.error = Some("select a composition first".into());
@@ -911,16 +992,227 @@ impl AppState {
         let Some(comp) = doc.comp(comp_id) else {
             return;
         };
+        let (folder_id, mut ops) = self.ensure_auto_folder_ops(AutoFolderKind::Solids);
+        let def_id = Uuid::now_v7();
+        let n_solids = doc
+            .items
+            .iter()
+            .filter(|i| matches!(i, ProjectItem::Solid(_)))
+            .count();
+        let added = ops
+            .iter()
+            .filter(|o| matches!(o, Op::AddItem { .. }))
+            .count();
+        ops.push(Op::AddItem {
+            index: doc.items.len() + added,
+            item: Box::new(ProjectItem::Solid(SolidDef {
+                id: def_id,
+                name: format!("White solid {}", n_solids + 1),
+                colour: LinearColour([1.0, 1.0, 1.0, 1.0]),
+                width: comp.width,
+                height: comp.height,
+                extra: serde_json::Map::new(),
+            })),
+        });
+        ops.push(self.file_into_folder_op(folder_id, def_id, &ops));
         let layer = Layer {
             id: Uuid::now_v7(),
-            name: "Solid".into(),
-            kind: LayerKind::Solid {
-                colour: LinearColour([1.0, 1.0, 1.0, 1.0]),
-            },
+            name: format!("White solid {}", n_solids + 1),
+            kind: LayerKind::Solid { def: def_id },
             in_point: CompTime(Rational::ZERO),
             out_point: CompTime(comp.duration.0),
             start_offset: CompTime(Rational::ZERO),
-            transform: TransformGroup::default(),
+            transform: TransformGroup {
+                position_x: kiriko_core::anim::Property::fixed(f64::from(comp.width) * 0.5),
+                position_y: kiriko_core::anim::Property::fixed(f64::from(comp.height) * 0.5),
+                anchor_x: kiriko_core::anim::Property::fixed(f64::from(comp.width) * 0.5),
+                anchor_y: kiriko_core::anim::Property::fixed(f64::from(comp.height) * 0.5),
+                ..TransformGroup::default()
+            },
+            matte: None,
+            blend: Default::default(),
+            masks: Vec::new(),
+            switches: Switches::default(),
+            extra: serde_json::Map::new(),
+        };
+        ops.push(Op::AddLayer {
+            comp: comp_id,
+            index: 0,
+            layer: Box::new(layer),
+        });
+        self.commit(Op::Batch { ops });
+        self.preview_comp = Some(comp_id);
+        #[cfg(feature = "media")]
+        self.refresh_preview();
+    }
+
+    /// Open the settings dialogue for a new comp. Defaults match the pending
+    /// footage when a drop starts the comp; otherwise the house defaults.
+    pub fn open_new_comp_dialog(&mut self, pending_item: Option<Uuid>) {
+        let mut dialog = CompDialog {
+            editing: None,
+            name: format!("Comp {}", self.comp_counter + 1),
+            width: 1920,
+            height: 1080,
+            fps: 60.0,
+            duration_s: 30.0,
+            pending_item,
+        };
+        #[cfg(feature = "media")]
+        if let Some(item) = pending_item {
+            if let Some(media::MediaStatus::Ready { probe, frames, .. }) = self.media.map.get(&item)
+            {
+                if let Some(v) = &probe.video {
+                    dialog.width = v.width;
+                    dialog.height = v.height;
+                    dialog.fps = v.fps();
+                    dialog.duration_s = *frames as f64 / v.fps().max(1.0);
+                }
+            }
+        }
+        self.comp_dialog = Some(dialog);
+    }
+
+    /// Open the settings dialogue pre-filled from an existing comp.
+    pub fn open_comp_settings(&mut self, comp_id: Uuid) {
+        let doc = self.store.snapshot();
+        let Some(comp) = doc.comp(comp_id) else {
+            return;
+        };
+        self.comp_dialog = Some(CompDialog {
+            editing: Some(comp_id),
+            name: comp.name.clone(),
+            width: comp.width,
+            height: comp.height,
+            fps: comp.frame_rate.fps(),
+            duration_s: comp.duration.0.to_f64(),
+            pending_item: None,
+        });
+    }
+
+    /// fps as a rational: exact when whole, NTSC-snapped near x/1.001,
+    /// millifps otherwise.
+    fn frame_rate_of(fps: f64) -> Option<FrameRate> {
+        let fps = fps.clamp(1.0, 1000.0);
+        let whole = fps.round();
+        if (fps - whole).abs() < 0.001 {
+            return FrameRate::new(whole as u32, 1).ok();
+        }
+        let ntsc_base = (fps * 1.001).round();
+        if (fps - ntsc_base * 1000.0 / 1001.0).abs() < 0.001 {
+            return FrameRate::new(ntsc_base as u32 * 1000, 1001).ok();
+        }
+        FrameRate::new((fps * 1000.0).round() as u32, 1000).ok()
+    }
+
+    /// Apply the open dialogue: create the comp (filed in the Compositions
+    /// auto-folder, one undo step) or update the existing one.
+    pub fn confirm_comp_dialog(&mut self) {
+        use kiriko_core::ops::AutoFolderKind;
+        let Some(dialog) = self.comp_dialog.take() else {
+            return;
+        };
+        let Some(frame_rate) = Self::frame_rate_of(dialog.fps) else {
+            self.error = Some("invalid frame rate".into());
+            return;
+        };
+        let duration = Duration(
+            Rational::from_f64_on_grid(dialog.duration_s.max(0.04), Rational::FLICK_DEN)
+                .unwrap_or(rat(30, 1)),
+        );
+        let width = dialog.width.clamp(16, 16384);
+        let height = dialog.height.clamp(16, 16384);
+        if let Some(comp_id) = dialog.editing {
+            let doc = self.store.snapshot();
+            let Some(comp) = doc.comp(comp_id) else {
+                return;
+            };
+            self.commit(Op::SetCompSettings {
+                comp: comp_id,
+                name: dialog.name,
+                width,
+                height,
+                frame_rate,
+                duration,
+                background: comp.background,
+            });
+            #[cfg(feature = "media")]
+            self.refresh_preview();
+            return;
+        }
+        self.comp_counter += 1;
+        let comp = Composition {
+            id: Uuid::now_v7(),
+            name: dialog.name,
+            width,
+            height,
+            frame_rate,
+            duration,
+            background: LinearColour::BLACK,
+            work_area: None,
+            layers: Vec::new(),
+            extra: serde_json::Map::new(),
+        };
+        let id = comp.id;
+        let doc = self.store.snapshot();
+        let (folder_id, mut ops) = self.ensure_auto_folder_ops(AutoFolderKind::Compositions);
+        let added = ops
+            .iter()
+            .filter(|o| matches!(o, Op::AddItem { .. }))
+            .count();
+        ops.push(Op::AddItem {
+            index: doc.items.len() + added,
+            item: Box::new(ProjectItem::Composition(comp)),
+        });
+        ops.push(self.file_into_folder_op(folder_id, id, &ops));
+        self.commit(Op::Batch { ops });
+        self.selected_comp = Some(id);
+        self.selected_item = Some(id);
+        if let Some(item) = dialog.pending_item {
+            self.preview_comp = Some(id);
+            self.add_item_to_comp(item);
+        }
+    }
+
+    /// Add any project item to the active comp as a new top layer (footage,
+    /// solid, or another comp as a Precomp — the drag-and-drop entry point).
+    pub fn add_item_to_comp(&mut self, item_id: Uuid) {
+        let doc = self.store.snapshot();
+        match doc.item(item_id) {
+            Some(ProjectItem::Footage(_)) => self.add_footage_to_comp(item_id),
+            Some(ProjectItem::Composition(_)) => self.add_precomp_to_comp(item_id),
+            Some(ProjectItem::Solid(_)) => self.add_solid_def_layer(item_id),
+            _ => {}
+        }
+    }
+
+    /// Add a layer referencing an existing SolidDef (dragging a solid asset
+    /// back into a comp — the def dedupes, no new asset).
+    pub fn add_solid_def_layer(&mut self, def_id: Uuid) {
+        use kiriko_core::model::{Layer, LayerKind, Switches, TransformGroup};
+        use kiriko_core::time::CompTime;
+        let Some(comp_id) = self.preview_comp.or(self.selected_comp) else {
+            self.error = Some("select a composition first".into());
+            return;
+        };
+        let doc = self.store.snapshot();
+        let (Some(comp), Some(def)) = (doc.comp(comp_id), doc.solid(def_id)) else {
+            return;
+        };
+        let layer = Layer {
+            id: Uuid::now_v7(),
+            name: def.name.clone(),
+            kind: LayerKind::Solid { def: def_id },
+            in_point: CompTime(Rational::ZERO),
+            out_point: CompTime(comp.duration.0),
+            start_offset: CompTime(Rational::ZERO),
+            transform: TransformGroup {
+                position_x: kiriko_core::anim::Property::fixed(f64::from(comp.width) * 0.5),
+                position_y: kiriko_core::anim::Property::fixed(f64::from(comp.height) * 0.5),
+                anchor_x: kiriko_core::anim::Property::fixed(f64::from(def.width) * 0.5),
+                anchor_y: kiriko_core::anim::Property::fixed(f64::from(def.height) * 0.5),
+                ..TransformGroup::default()
+            },
             matte: None,
             blend: Default::default(),
             masks: Vec::new(),
@@ -937,30 +1229,97 @@ impl AppState {
         self.refresh_preview();
     }
 
+    /// Manual New composition: always the dialogue (K-068 flow).
     pub fn new_composition(&mut self) {
-        self.comp_counter += 1;
-        let comp = Composition {
-            id: Uuid::now_v7(),
-            name: format!("Comp {}", self.comp_counter),
-            width: 1920,
-            height: 1080,
-            frame_rate: match FrameRate::new(60, 1) {
-                Ok(fr) => fr,
-                Err(_) => return,
-            },
-            duration: Duration(rat(30, 1)),
-            background: LinearColour::BLACK,
-            work_area: None,
-            layers: Vec::new(),
-            extra: serde_json::Map::new(),
-        };
-        let id = comp.id;
-        let index = self.store.snapshot().items.len();
+        self.open_new_comp_dialog(None);
+    }
+
+    /// True when `candidate` sits inside `ancestor`'s folder subtree.
+    fn folder_contains(doc: &Document, ancestor: Uuid, candidate: Uuid) -> bool {
+        let mut stack = vec![ancestor];
+        let mut seen = Vec::new();
+        while let Some(id) = stack.pop() {
+            if seen.contains(&id) {
+                continue; // defensive: malformed cycles never hang the UI
+            }
+            seen.push(id);
+            if let Some(f) = doc.folder(id) {
+                for c in &f.children {
+                    if *c == candidate {
+                        return true;
+                    }
+                    stack.push(*c);
+                }
+            }
+        }
+        false
+    }
+
+    /// Move an item into a folder (None = the panel root): one undo step
+    /// removing it from every folder that lists it, then filing it. Dropping
+    /// a folder into itself or its own subtree is refused quietly.
+    pub fn move_item_to_folder(&mut self, item: Uuid, target: Option<Uuid>) {
+        let doc = self.store.snapshot();
+        if Some(item) == target {
+            return;
+        }
+        if let Some(t) = target {
+            if doc.folder(t).is_none() || Self::folder_contains(&doc, item, t) {
+                return;
+            }
+        }
+        let mut ops = Vec::new();
+        for pi in &doc.items {
+            if let ProjectItem::Folder(f) = pi {
+                if f.children.contains(&item) && Some(f.id) != target {
+                    ops.push(Op::SetFolderChildren {
+                        folder: f.id,
+                        children: f.children.iter().copied().filter(|c| *c != item).collect(),
+                    });
+                }
+            }
+        }
+        if let Some(t) = target {
+            if let Some(f) = doc.folder(t) {
+                if !f.children.contains(&item) {
+                    let mut children = f.children.clone();
+                    children.push(item);
+                    ops.push(Op::SetFolderChildren {
+                        folder: t,
+                        children,
+                    });
+                }
+            }
+        }
+        match ops.len() {
+            0 => {}
+            1 => {
+                if let Some(op) = ops.pop() {
+                    self.commit(op);
+                }
+            }
+            _ => self.commit(Op::Batch { ops }),
+        }
+    }
+
+    /// Create an empty folder at the panel root.
+    pub fn new_folder(&mut self) {
+        use kiriko_core::model::Folder;
+        let doc = self.store.snapshot();
+        let n = doc
+            .items
+            .iter()
+            .filter(|i| matches!(i, ProjectItem::Folder(_)))
+            .count();
         self.commit(Op::AddItem {
-            index,
-            item: Box::new(ProjectItem::Composition(comp)),
+            index: doc.items.len(),
+            item: Box::new(ProjectItem::Folder(Folder {
+                id: Uuid::now_v7(),
+                name: format!("Folder {}", n + 1),
+                children: Vec::new(),
+                extra: serde_json::Map::new(),
+            })),
         });
-        self.selected_comp = Some(id);
     }
 
     /// Work-area frame span of a comp (start, end-exclusive); full when unset.
@@ -1338,6 +1697,106 @@ impl AppState {
 mod tests {
     use super::*;
 
+    /// K-068: solids are assets auto-filed into a "Solids" folder that is
+    /// followed by id (rename it, it still collects); comps auto-file into
+    /// "Compositions"; each creation is one undo step.
+    #[test]
+    fn auto_folders_collect_solids_and_comps() {
+        let mut app = AppState::default();
+        app.new_composition();
+        app.confirm_comp_dialog();
+        let doc = app.store.snapshot();
+        let comps_folder = doc.auto_folders.compositions.expect("comps folder");
+        assert_eq!(doc.folder(comps_folder).unwrap().children.len(), 1);
+
+        app.add_solid_layer();
+        let doc = app.store.snapshot();
+        let solids_folder = doc.auto_folders.solids.expect("solids folder");
+        let first_children = doc.folder(solids_folder).unwrap().children.clone();
+        assert_eq!(first_children.len(), 1);
+        assert!(doc.solid(first_children[0]).is_some());
+
+        // Rename the folder: the habit follows the id, not the name.
+        app.commit(Op::RenameItem {
+            id: solids_folder,
+            name: "My colours".into(),
+        });
+        app.add_solid_layer();
+        let doc = app.store.snapshot();
+        assert_eq!(doc.folder(solids_folder).unwrap().children.len(), 2);
+        assert_eq!(doc.folder(solids_folder).unwrap().name, "My colours");
+
+        // One undo removes the whole second solid creation (batch), and the
+        // layer count in the comp drops with it.
+        let comp_id = app.selected_comp.unwrap();
+        assert_eq!(doc.comp(comp_id).unwrap().layers.len(), 2);
+        app.undo();
+        let doc = app.store.snapshot();
+        assert_eq!(doc.folder(solids_folder).unwrap().children.len(), 1);
+        assert_eq!(doc.comp(comp_id).unwrap().layers.len(), 1);
+
+        // Deleting the folder recreates it on next use (fresh id).
+        app.commit(Op::RemoveItem { id: solids_folder });
+        app.add_solid_layer();
+        let doc = app.store.snapshot();
+        let new_folder = doc.auto_folders.solids.unwrap();
+        assert_ne!(new_folder, solids_folder);
+        assert_eq!(doc.folder(new_folder).unwrap().children.len(), 1);
+
+        // Move-to-folder: filing a solid under Compositions then back to root.
+        let solid_id = doc.folder(new_folder).unwrap().children[0];
+        app.move_item_to_folder(solid_id, Some(comps_folder));
+        let doc = app.store.snapshot();
+        assert!(doc
+            .folder(comps_folder)
+            .unwrap()
+            .children
+            .contains(&solid_id));
+        assert!(!doc.folder(new_folder).unwrap().children.contains(&solid_id));
+        app.move_item_to_folder(solid_id, None);
+        let doc = app.store.snapshot();
+        assert!(doc.root_items().contains(&solid_id));
+
+        // A folder cannot be filed into its own subtree.
+        app.move_item_to_folder(comps_folder, Some(comps_folder));
+        let doc = app.store.snapshot();
+        assert!(!doc
+            .folder(comps_folder)
+            .unwrap()
+            .children
+            .contains(&comps_folder));
+    }
+
+    /// K-068: the dialogue edits an existing comp's settings invertibly.
+    #[test]
+    fn comp_settings_dialog_edits_and_undoes() {
+        let mut app = AppState::default();
+        app.new_composition();
+        app.confirm_comp_dialog();
+        let comp_id = app.selected_comp.unwrap();
+
+        app.open_comp_settings(comp_id);
+        {
+            let d = app.comp_dialog.as_mut().unwrap();
+            assert_eq!(d.editing, Some(comp_id));
+            assert_eq!((d.width, d.height), (1920, 1080));
+            d.width = 1280;
+            d.height = 720;
+            d.fps = 23.976;
+            d.name = "Retitled".into();
+        }
+        app.confirm_comp_dialog();
+        let doc = app.store.snapshot();
+        let comp = doc.comp(comp_id).unwrap();
+        assert_eq!((comp.width, comp.height), (1280, 720));
+        assert_eq!(comp.name, "Retitled");
+        // NTSC snap: 23.976 becomes exactly 24000/1001.
+        assert!((comp.frame_rate.fps() - 24000.0 / 1001.0).abs() < 1e-9);
+        app.undo();
+        let doc = app.store.snapshot();
+        assert_eq!(doc.comp(comp_id).unwrap().width, 1920);
+    }
+
     /// The slice 3 drill: save, edit past the save, crash (drop without
     /// saving), reopen — the journal restores every post-save change.
     #[test]
@@ -1351,13 +1810,16 @@ mod tests {
             let mut app = AppState::default();
             doc_id = app.store.snapshot().id;
             app.new_composition();
+            app.confirm_comp_dialog();
             app.path = Some(path.clone());
             app.save();
             assert!(!app.dirty);
 
             // Edits after the save — journalled, never saved.
             app.new_composition();
+            app.confirm_comp_dialog();
             app.new_composition();
+            app.confirm_comp_dialog();
             assert!(app.dirty);
             final_json = serde_json::to_string(&*app.store.snapshot()).unwrap();
             // "kill -9": app dropped here with dirty state.
@@ -1392,10 +1854,12 @@ mod tests {
         {
             let mut app = AppState::default();
             app.new_composition();
+            app.confirm_comp_dialog();
             app.path = Some(path.clone());
             app.save();
             saved_json = serde_json::to_string(&*app.store.snapshot()).unwrap();
             app.new_composition(); // journalled, then "crash"
+            app.confirm_comp_dialog();
         }
         let mut app2 = AppState::default();
         app2.open_path(&path);
