@@ -294,6 +294,14 @@ fn lane_view(track_w: f32, duration: f64, zoom: f64, view_start: f64) -> (f64, f
     (px_per_sec, start)
 }
 
+/// A horizontal pixel distance in the lane area, as seconds — at the *displayed*
+/// zoom. Every lane drag and snap tolerance must convert through this: the naive
+/// `dx / track_w * duration` is only right at zoom 1, and makes a drag run
+/// `zoom×` faster than the cursor once zoomed in.
+fn drag_secs(dx_px: f64, px_per_sec: f64) -> f64 {
+    dx_px / px_per_sec.max(1e-6)
+}
+
 /// Parse a flexible duration: `SS(.sss)`, `MM:SS`, `HH:MM:SS`, or
 /// `HH:MM:SS:mmm`. None on anything unparseable.
 fn parse_duration(text: &str) -> Option<f64> {
@@ -1554,7 +1562,7 @@ fn timeline_panel(ui: &mut egui::Ui, theme: &Theme, app: &mut AppState) {
                 // the snapped landing is what draws.
                 let move_dx = match app.move_edit {
                     Some((id, raw_in)) if id == layer.id => {
-                        let thr = 6.0 / track_w as f64 * duration;
+                        let thr = drag_secs(6.0, px_per_sec);
                         let snapped = kiriko_core::markers::snap_time(
                             rational_at(raw_in.max(0.0)),
                             &comp.markers,
@@ -1799,7 +1807,7 @@ fn timeline_panel(ui: &mut egui::Ui, theme: &Theme, app: &mut AppState) {
                             app.selected_layer = Some(layer.id);
                         }
                         if resp.dragged() {
-                            let dx_secs = resp.drag_delta().x as f64 / track_w as f64 * duration;
+                            let dx_secs = drag_secs(resp.drag_delta().x as f64, px_per_sec);
                             let base = match app.move_edit {
                                 Some((id, s)) if id == layer.id => s,
                                 _ => layer.in_point.0.to_f64(),
@@ -1809,7 +1817,7 @@ fn timeline_panel(ui: &mut egui::Ui, theme: &Theme, app: &mut AppState) {
                         if resp.drag_stopped() {
                             if let Some((id, raw_in)) = app.move_edit.take() {
                                 if id == layer.id {
-                                    let thr = 6.0 / track_w as f64 * duration;
+                                    let thr = drag_secs(6.0, px_per_sec);
                                     let snapped = kiriko_core::markers::snap_time(
                                         rational_at(raw_in.max(0.0)),
                                         &comp.markers,
@@ -7425,5 +7433,29 @@ mod dock_tests {
         // Zoom below 1 is clamped to 1 (can't zoom out past the whole comp).
         let (ppx3, _) = lane_view(1000.0, 10.0, 0.2, 0.0);
         assert!((ppx3 - 100.0).abs() < 1e-6);
+    }
+
+    // Regression (layer move outran the cursor): a lane drag converts pixels to
+    // seconds at the *displayed* zoom. The same pixel delta must yield half the
+    // seconds at zoom 2 as at zoom 1 — the old `dx / track_w * duration` ignored
+    // zoom and made drags (and 6 px snap tolerances) run zoom× too fast.
+    #[test]
+    fn drag_secs_follows_the_displayed_zoom() {
+        let (ppx1, _) = lane_view(1000.0, 10.0, 1.0, 0.0);
+        let (ppx2, _) = lane_view(1000.0, 10.0, 2.0, 0.0);
+        let at_zoom_1 = drag_secs(50.0, ppx1);
+        let at_zoom_2 = drag_secs(50.0, ppx2);
+        assert!(
+            (at_zoom_1 - 0.5).abs() < 1e-9,
+            "zoom 1: 50 px over 100 px/s"
+        );
+        assert!(
+            (at_zoom_2 - at_zoom_1 / 2.0).abs() < 1e-9,
+            "zoom 2 shows twice the pixels per second, so the same drag is half the time"
+        );
+        // The unzoomed conversion would have (wrongly) said 0.5 s at any zoom.
+        assert!((at_zoom_2 - 0.25).abs() < 1e-9);
+        // A degenerate px_per_sec never divides by zero.
+        assert!(drag_secs(50.0, 0.0).is_finite());
     }
 }
