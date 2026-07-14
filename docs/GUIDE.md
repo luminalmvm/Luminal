@@ -299,6 +299,10 @@ Two mechanisms make this safe, and you'll see them by name in the code:
   on the right, along the same time ruler as the layer bars, a little diamond at each of that
   property's keyframes — so you can see *which* property is keyed *when*, not just that the
   layer has keys somewhere. Click a property's name to open its curve in the graph view.
+  Once a property is animated its row also carries a **keyframe navigator** — `◄ ◆ ►` — where
+  the middle button adds a key at the playhead (or removes the one already there) and the
+  arrows jump the playhead to the previous or next key, so you can walk a property's keys
+  without hunting for them by eye.
   (When the layer is twirled shut, the layer bar still shows a summary of all its keys.)
   Scale is special: by default x and y are locked together on a single "Scale %" row that
   keeps their ratio as you drag; the 🔓 button unlocks them into two separate rows for
@@ -313,6 +317,17 @@ Two mechanisms make this safe, and you'll see them by name in the code:
   another. Under the bonnet each speed keyframe becomes a segment of the retiming curve (a
   straight speed ramp between keys); the frame-accurate maths that keeps cuts on the beat is
   the same engine described above. Curved (eased) speed ramps are still the graph editor's job.
+- **Getting around the Timeline** — the panel is split into the **layer outline** on the left
+  (the stack of names, stopwatches and toggles) and the **lane area** on the right (the time
+  ruler with each layer's bar on its own *lane*). Drag a layer's bar body to slide it earlier
+  or later in time (one undo per drag). Zoom the time ruler with **Alt + wheel** — it zooms
+  toward the cursor so the frame under the pointer stays put — and scroll it with **Shift +
+  wheel** (or a trackpad's horizontal wheel); a plain wheel scrolls the rows up and down. Along
+  the bottom of the lanes sits a small contained bar: `−`, `+` and **Fit** with the current
+  zoom per cent on the left, the Layers/Graph view toggle on the right, and a draggable
+  horizontal scrollbar just above it (the vertical scrollbar stops above the bar so the two
+  never fight). Layers/Graph is only a change of what the lanes *draw* — the outline stays
+  identical between the two, so twirling a layer open shows the same rows either way.
 - The **2.5D camera** — the parallax tool. Every layer has a z position and x/y
   rotations alongside the flat transform; they sleep until you switch the layer to 3D
   (the "3D" toggle in its twirl-down) *and* the comp has a Camera layer
