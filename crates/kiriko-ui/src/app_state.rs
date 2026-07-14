@@ -713,6 +713,9 @@ pub struct AppState {
     /// In-flight property drag (layer, property, provisional value): commits
     /// once on release so a drag is ONE undo step, not hundreds.
     pub prop_edit: Option<(Uuid, kiriko_core::model::TransformProp, f64)>,
+    /// In-flight *linked* scale drag (layer, x%, y%): the live preview needs
+    /// both axes, since one drag moves both (else only x scales until release).
+    pub scale_preview: Option<(Uuid, f64, f64)>,
     /// In-flight bar-edge trim: (layer, trimming_out_edge, provisional seconds).
     pub trim_edit: Option<(Uuid, bool, f64)>,
     /// In-flight whole-layer move (drag the bar body): (layer, provisional new
@@ -884,6 +887,7 @@ impl Default for AppState {
             #[cfg(feature = "media")]
             audio_tx,
             prop_edit: None,
+            scale_preview: None,
             trim_edit: None,
             move_edit: None,
             selected_layer: None,

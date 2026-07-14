@@ -5508,6 +5508,10 @@ fn combined_scale_row(
         let resp = c.add(egui::DragValue::new(&mut value).speed(0.5).max_decimals(2));
         if resp.dragged() || resp.has_focus() {
             app.prop_edit = Some((ctx.layer.id, TransformProp::ScaleX, value));
+            // Both axes move together, so the live preview needs both (else it
+            // shows only x scaling until release).
+            let (nx, ny) = linked_scale(old_x, old_y, value);
+            app.scale_preview = Some((ctx.layer.id, nx, ny));
         }
         if resp.drag_stopped() || resp.lost_focus() {
             if (value - old_x).abs() > f64::EPSILON {
@@ -5525,6 +5529,7 @@ fn combined_scale_row(
                 *pending = Some(scale_batch(ctx.comp_id, ctx.layer.id, ax, ay));
             }
             app.prop_edit = None;
+            app.scale_preview = None;
         }
     }
     // Track: the union of both axes' keys.
@@ -7175,30 +7180,47 @@ impl Shell {
                         let doc = self.app.store.snapshot();
                         if let Some(comp) = doc.comp(comp_id) {
                             let t_comp = cf.frame as f64 / comp.frame_rate.fps().max(1.0);
-                            // A direct value drag gives (layer, prop, value)
-                            // outright; a graph keyframe drag gives the property's
-                            // provisional value at the playhead instead.
-                            let live = self.app.prop_edit.or_else(|| {
-                                let (idx, kt, kv) = self.app.graph_edit?;
-                                let prop = self.app.graph_prop?;
-                                let layer_id = self.app.selected_layer?;
-                                let layer = comp.layers.iter().find(|l| l.id == layer_id)?;
-                                let kiriko_core::anim::Animation::Keyframed(keys) =
-                                    &layer.transform.get(prop).animation
-                                else {
-                                    return None;
-                                };
-                                let mut keys = keys.clone();
-                                let k = keys.get_mut(idx)?;
-                                k.time = rational_at(kt.max(0.0));
-                                k.value = kv;
-                                keys.sort_by_key(|k| k.time);
-                                let lt = t_comp - layer.start_offset.0.to_f64();
-                                let value = kiriko_core::anim::evaluate(&keys, lt)?;
-                                Some((layer_id, prop, value))
-                            });
-                            if let Some((edit_layer, prop, value)) = live {
-                                let patched = patch_layer_prop(comp, edit_layer, prop, value);
+                            use kiriko_core::model::TransformProp;
+                            // A linked-scale drag moves both axes at once, so
+                            // patch both; otherwise a direct value drag gives
+                            // (layer, prop, value), and a graph keyframe drag
+                            // gives the property's provisional value at the
+                            // playhead.
+                            let patched = if let Some((sl, nx, ny)) = self.app.scale_preview {
+                                Some(patch_layer_prop(
+                                    &patch_layer_prop(comp, sl, TransformProp::ScaleX, nx),
+                                    sl,
+                                    TransformProp::ScaleY,
+                                    ny,
+                                ))
+                            } else {
+                                self.app
+                                    .prop_edit
+                                    .or_else(|| {
+                                        let (idx, kt, kv) = self.app.graph_edit?;
+                                        let prop = self.app.graph_prop?;
+                                        let layer_id = self.app.selected_layer?;
+                                        let layer =
+                                            comp.layers.iter().find(|l| l.id == layer_id)?;
+                                        let kiriko_core::anim::Animation::Keyframed(keys) =
+                                            &layer.transform.get(prop).animation
+                                        else {
+                                            return None;
+                                        };
+                                        let mut keys = keys.clone();
+                                        let k = keys.get_mut(idx)?;
+                                        k.time = rational_at(kt.max(0.0));
+                                        k.value = kv;
+                                        keys.sort_by_key(|k| k.time);
+                                        let lt = t_comp - layer.start_offset.0.to_f64();
+                                        let value = kiriko_core::anim::evaluate(&keys, lt)?;
+                                        Some((layer_id, prop, value))
+                                    })
+                                    .map(|(edit_layer, prop, value)| {
+                                        patch_layer_prop(comp, edit_layer, prop, value)
+                                    })
+                            };
+                            if let Some(patched) = patched {
                                 let pixels_by_layer: std::collections::HashMap<_, _> =
                                     cf.layers.iter().map(|lp| (lp.layer, lp)).collect();
                                 let mut visited = vec![comp_id];
