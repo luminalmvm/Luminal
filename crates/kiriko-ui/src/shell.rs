@@ -4,6 +4,7 @@
 //! Effect Controls / Effects & Presets right, Timeline across the bottom.
 
 use crate::app_state::{AppState, ShapeKind, ToolMode};
+use crate::icons::Icon;
 use crate::splash::{BootLine, Splash};
 use crate::theme::Theme;
 use kiriko_core::model::ProjectItem;
@@ -160,16 +161,9 @@ impl egui_tiles::Behavior<Panel> for DockBehavior<'_> {
     }
 
     fn tab_title_for_pane(&mut self, pane: &Panel) -> egui::WidgetText {
-        match pane {
-            // The Timeline tab shows the open comp's name, so comps read as tabs.
-            Panel::Timeline => self
-                .app
-                .selected_comp
-                .and_then(|id| self.app.store.snapshot().comp(id).map(|c| c.name.clone()))
-                .unwrap_or_else(|| "Timeline".into())
-                .into(),
-            other => other.title().into(),
-        }
+        // The Timeline carries its own in-panel tab strip — one tab per open
+        // comp (07-UI-SPEC §4) — so the dock tab keeps the plain panel name.
+        pane.title().into()
     }
 
     fn tab_bar_height(&self, _style: &egui::Style) -> f32 {
@@ -458,27 +452,64 @@ fn project_panel(ui: &mut egui::Ui, theme: &Theme, app: &mut AppState) {
     project_header(ui, theme, app, &doc, &mut actions);
     ui.separator();
     ui.horizontal(|ui| {
-        if ui.small_button("+ Folder").clicked() {
+        ui.spacing_mut().item_spacing.x = 2.0;
+        if icon_button(ui, theme, Icon::Folder, false)
+            .on_hover_text("New folder")
+            .clicked()
+        {
             app.new_folder();
         }
-        if ui.small_button("+ Composition").clicked() {
+        // The composition button also accepts a dropped item: dragging footage
+        // onto it opens the New composition dialogue pre-filled from that
+        // footage's size/rate/duration, queuing it as the first layer (K-068).
+        let new_comp = icon_button(ui, theme, Icon::Film, false)
+            .on_hover_text("New composition — or drop footage here to match its settings");
+        if new_comp.clicked() {
             app.open_new_comp_dialog(None);
+        }
+        if new_comp.dnd_hover_payload::<uuid::Uuid>().is_some() {
+            ui.painter().rect_stroke(
+                new_comp.rect.expand(2.0),
+                3.0,
+                egui::Stroke::new(1.0_f32, theme.accent),
+                egui::StrokeKind::Outside,
+            );
+        }
+        if let Some(payload) = new_comp.dnd_release_payload::<uuid::Uuid>() {
+            app.open_new_comp_dialog(Some(*payload));
         }
     });
     ui.add_space(2.0);
 
     if doc.items.is_empty() {
+        let bg_rect = ui.available_rect_before_wrap();
         empty_hint(
             ui,
             theme,
             "No footage yet",
-            "Drag files anywhere in the window, or use File → Import.",
+            "Double-click here to import, drag files in, or use File → Import.",
         );
+        let bg = ui.interact(
+            bg_rect,
+            ui.id().with("empty-backdrop"),
+            egui::Sense::click(),
+        );
+        if bg.double_clicked() {
+            app.import_footage_dialog();
+        }
         return;
     }
 
-    // The tree, with the panel background as a "move to root" drop target.
+    // The tree. A backdrop interaction sits UNDER the rows (created first, so
+    // the rows drawn next claim their own clicks and drops): only input on empty
+    // panel space reaches it. Double-click the backdrop to Import (AE
+    // convention); releasing a dragged item here files it at the root.
     let bg_rect = ui.available_rect_before_wrap();
+    let bg = ui.interact(
+        bg_rect,
+        ui.id().with("panel-backdrop"),
+        egui::Sense::click(),
+    );
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
         .show(ui, |ui| {
@@ -489,11 +520,9 @@ fn project_panel(ui: &mut egui::Ui, theme: &Theme, app: &mut AppState) {
             // Trailing space so there is always a root drop area.
             ui.allocate_space(egui::vec2(ui.available_width(), 40.0));
         });
-    let bg = ui.interact(
-        bg_rect,
-        ui.id().with("panel-root-drop"),
-        egui::Sense::hover(),
-    );
+    if bg.double_clicked() {
+        app.import_footage_dialog();
+    }
     if let Some(payload) = bg.dnd_release_payload::<uuid::Uuid>() {
         // Row/folder drops claim the pointer first; reaching here means the
         // drop landed on empty panel space.
@@ -506,19 +535,12 @@ fn project_panel(ui: &mut egui::Ui, theme: &Theme, app: &mut AppState) {
     for action in actions {
         match action {
             PanelAction::Select(id) => {
+                // Selection only drives the info header/highlight. The active
+                // Timeline comp changes only when a comp is opened (double-click
+                // or a tab), so selecting a comp must not switch tabs underfoot.
                 app.selected_item = Some(id);
-                if doc.comp(id).is_some() {
-                    app.selected_comp = Some(id);
-                }
             }
-            PanelAction::OpenComp(id) => {
-                app.selected_comp = Some(id);
-                app.preview_comp = Some(id);
-                app.preview_item = None;
-                app.preview_frame = 0;
-                #[cfg(feature = "media")]
-                app.refresh_preview();
-            }
+            PanelAction::OpenComp(id) => app.open_comp(id),
             PanelAction::PreviewFootage(id) => {
                 app.preview_item = Some(id);
                 app.preview_comp = None;
@@ -533,6 +555,9 @@ fn project_panel(ui: &mut egui::Ui, theme: &Theme, app: &mut AppState) {
             PanelAction::CompSettings(id) => app.open_comp_settings(id),
             PanelAction::Delete(id) => {
                 app.commit(kiriko_core::Op::RemoveItem { id });
+                // A deleted comp also loses its Timeline tab (neighbour takes
+                // over, or the Timeline empties).
+                app.close_comp_tab(id);
                 if app.selected_item == Some(id) {
                     app.selected_item = None;
                 }
@@ -687,6 +712,73 @@ fn project_header(
     ui.add_space(2.0);
 }
 
+/// A row that is one widget yet both a click target and a drag source. egui's
+/// `dnd_drag_source` lays a drag-only overlay over its contents, and that
+/// overlay swallows plain clicks — Project-panel rows looked dead (you could not
+/// open a comp or preview footage by clicking). A single `Button` that senses
+/// click *and* drag keeps both; while dragged it registers `payload` so every
+/// existing drop target (folders, Timeline, Viewer, the "+ Composition" button)
+/// keeps working unchanged. `dnd_drag_source`'s ghost-under-cursor is dropped;
+/// the drop targets' own hover highlight stands in for it.
+fn draggable_row<P: std::any::Any + Send + Sync>(
+    ui: &mut egui::Ui,
+    id: egui::Id,
+    payload: P,
+    selected: bool,
+    text: impl Into<egui::WidgetText>,
+) -> egui::Response {
+    let resp = ui
+        .push_id(id, |ui| {
+            ui.add(
+                egui::Button::new(text)
+                    .selected(selected)
+                    .frame(false)
+                    .sense(egui::Sense::click_and_drag()),
+            )
+        })
+        .inner;
+    // Only actually sets the payload while this row is the one being dragged.
+    resp.dnd_set_drag_payload(payload);
+    resp
+}
+
+/// A compact icon button in the house toolbar style (docs/15-DESIGN.md §5): a
+/// stroke glyph in `text_secondary`, brightening to `text_primary` on hover and
+/// `accent` when `active`, over a faint surface chip. Returns the response so
+/// the caller reads `.clicked()` and attaches a tooltip with `.on_hover_text`.
+fn icon_button(ui: &mut egui::Ui, theme: &Theme, icon: Icon, active: bool) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(26.0, 24.0), egui::Sense::click());
+    let hovered = resp.hovered();
+    if active || hovered {
+        ui.painter().rect_filled(
+            rect.shrink(1.0),
+            4.0,
+            if active {
+                theme.surface_3
+            } else {
+                theme.surface_2
+            },
+        );
+    }
+    if active {
+        ui.painter().rect_stroke(
+            rect.shrink(1.0),
+            4.0,
+            egui::Stroke::new(1.0_f32, theme.accent),
+            egui::StrokeKind::Inside,
+        );
+    }
+    let color = if active {
+        theme.accent
+    } else if hovered {
+        theme.text_primary
+    } else {
+        theme.text_secondary
+    };
+    crate::icons::paint(ui.painter(), rect, icon, color, 1.5);
+    resp
+}
+
 /// One tree row (folders recurse). Rows are drag sources; folder rows are
 /// drop targets.
 #[allow(clippy::too_many_arguments)]
@@ -707,11 +799,13 @@ fn item_rows(
         return; // stale child id (deleted item): just don't draw it
     };
     let is_folder = matches!(item, ProjectItem::Folder(_));
-    let (kind, tag_colour) = match item {
-        ProjectItem::Footage(_) => ("footage", theme.text_muted),
-        ProjectItem::Folder(_) => ("folder", theme.text_muted),
-        ProjectItem::Composition(_) => ("comp", theme.accent),
-        ProjectItem::Solid(_) => ("solid", theme.text_muted),
+    // Type glyph + tint carried on the left of the row (replaces the old text
+    // tag): comps take the accent, the rest a muted tint (docs/15-DESIGN.md §5).
+    let (type_icon, tag_colour) = match item {
+        ProjectItem::Footage(_) => (Icon::Footage, theme.text_muted),
+        ProjectItem::Folder(_) => (Icon::Folder, theme.text_muted),
+        ProjectItem::Composition(_) => (Icon::Comp, theme.accent),
+        ProjectItem::Solid(_) => (Icon::Solid, theme.text_muted),
     };
     let selected = app.selected_item == Some(id);
     let open_id = ui.id().with(("folder-open", id));
@@ -732,30 +826,29 @@ fn item_rows(
                     open = !open;
                     ui.data_mut(|d| d.insert_temp(open_id, open));
                 }
+            } else {
+                ui.add_space(13.0); // align type glyphs under the folder rows'
             }
+            let (icon_rect, _) =
+                ui.allocate_exact_size(egui::vec2(15.0, 15.0), egui::Sense::hover());
+            crate::icons::paint(ui.painter(), icon_rect, type_icon, tag_colour, 1.4);
             let label = egui::RichText::new(item.name()).color(theme.text_secondary);
-            let resp = ui
-                .dnd_drag_source(ui.id().with(("drag", id)), id, |ui| {
-                    ui.selectable_label(selected, label)
-                })
-                .response;
-            ui.painter().text(
-                ui.max_rect().right_center() + egui::vec2(-4.0, 0.0),
-                egui::Align2::RIGHT_CENTER,
-                kind,
-                egui::FontId::monospace(10.0),
-                tag_colour,
-            );
-            resp
+            draggable_row(ui, ui.id().with(("row", id)), id, selected, label)
         })
         .inner;
 
+    // Single click selects (info header, highlight); footage also previews so
+    // browsing stays a one-click scrub. A comp opens in the Timeline on a
+    // double-click (AE: single-click selects, double-click opens).
     if row.clicked() {
         actions.push(PanelAction::Select(id));
-        match item {
-            ProjectItem::Composition(_) => actions.push(PanelAction::OpenComp(id)),
-            ProjectItem::Footage(_) => actions.push(PanelAction::PreviewFootage(id)),
-            _ => {}
+        if let ProjectItem::Footage(_) = item {
+            actions.push(PanelAction::PreviewFootage(id));
+        }
+    }
+    if row.double_clicked() {
+        if let ProjectItem::Composition(_) = item {
+            actions.push(PanelAction::OpenComp(id));
         }
     }
     row.context_menu(|ui| {
@@ -832,12 +925,8 @@ fn accept_item_drop(ui: &egui::Ui, theme: &Theme, app: &mut AppState, rect: egui
         .is_some();
     match doc.item(item) {
         Some(ProjectItem::Composition(_)) if !has_comp => {
-            // Dropping a comp with nothing open just opens it.
-            app.selected_comp = Some(item);
-            app.preview_comp = Some(item);
-            app.preview_item = None;
-            #[cfg(feature = "media")]
-            app.refresh_preview();
+            // Dropping a comp with nothing open just opens it (as a tab).
+            app.open_comp(item);
         }
         Some(ProjectItem::Footage(_)) if !has_comp => {
             app.open_new_comp_dialog(Some(item));
@@ -850,8 +939,122 @@ fn accept_item_drop(ui: &egui::Ui, theme: &Theme, app: &mut AppState, rect: egui
     }
 }
 
+/// The Timeline's comp tab strip: one tab per open comp (07-UI-SPEC §4), the
+/// active one highlighted. Clicking a tab switches to that comp; the × closes
+/// its tab (the comp stays in the Project panel). Nothing is drawn when no comp
+/// is open — the empty-state hint covers that.
+fn comp_tab_strip(ui: &mut egui::Ui, theme: &Theme, app: &mut AppState) {
+    let doc = app.store.snapshot();
+    // Open comps that still exist, in tab order. A comp deleted elsewhere just
+    // drops out of the strip.
+    let tabs: Vec<(uuid::Uuid, String)> = app
+        .open_comps
+        .iter()
+        .filter_map(|id| doc.comp(*id).map(|c| (*id, c.name.clone())))
+        .collect();
+    if tabs.is_empty() {
+        return;
+    }
+    let active = app.selected_comp;
+    let mut activate: Option<uuid::Uuid> = None;
+    let mut close: Option<uuid::Uuid> = None;
+    let strip = egui::Frame::new()
+        .fill(theme.surface_1)
+        .inner_margin(egui::Margin::symmetric(4, 2))
+        .show(ui, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing.x = 2.0;
+                for (id, name) in &tabs {
+                    let is_active = active == Some(*id);
+                    let name_btn = ui.add(
+                        egui::Button::new(egui::RichText::new(trim_title(name)).small().color(
+                            if is_active {
+                                theme.text_primary
+                            } else {
+                                theme.text_secondary
+                            },
+                        ))
+                        .fill(if is_active {
+                            theme.surface_3
+                        } else {
+                            theme.surface_2
+                        })
+                        .stroke(egui::Stroke::new(
+                            1.0_f32,
+                            if is_active {
+                                theme.accent
+                            } else {
+                                theme.hairline
+                            },
+                        )),
+                    );
+                    // Re-clicking the active tab is a no-op (don't reset its
+                    // playhead); only switching tabs re-activates.
+                    if name_btn.clicked() && !is_active {
+                        activate = Some(*id);
+                    }
+                    if ui
+                        .add(
+                            egui::Button::new(
+                                egui::RichText::new("×").small().color(theme.text_muted),
+                            )
+                            .frame(false),
+                        )
+                        .on_hover_text("Close this comp tab")
+                        .clicked()
+                    {
+                        close = Some(*id);
+                    }
+                }
+            });
+        });
+    // The strip (across the full panel width, so the empty space beside the
+    // tabs counts) is a drop target: dropping a comp here opens it as its own
+    // tab (separate from the comp already open); dropping anything else files
+    // it into the active comp, matching the body. This is how you open a second
+    // comp without nesting it — drop it beside the tabs, not into the timeline.
+    let strip_rect = egui::Rect::from_min_max(
+        egui::pos2(ui.max_rect().left(), strip.response.rect.top()),
+        egui::pos2(ui.max_rect().right(), strip.response.rect.bottom()),
+    );
+    let strip_drop = ui.interact(
+        strip_rect,
+        ui.id().with("comp-strip-drop"),
+        egui::Sense::hover(),
+    );
+    if strip_drop.dnd_hover_payload::<uuid::Uuid>().is_some() {
+        ui.painter().rect_stroke(
+            strip_rect,
+            0.0,
+            egui::Stroke::new(1.0_f32, theme.accent),
+            egui::StrokeKind::Inside,
+        );
+    }
+    if let Some(id) = activate {
+        app.open_comp(id);
+    }
+    if let Some(id) = close {
+        app.close_comp_tab(id);
+    }
+    if let Some(payload) = strip_drop.dnd_release_payload::<uuid::Uuid>() {
+        let dropped = *payload;
+        if app.store.snapshot().comp(dropped).is_some() {
+            app.open_comp(dropped); // open beside the tabs as a separate tab
+        } else {
+            app.add_item_to_comp(dropped); // footage/solid → into the active comp
+        }
+    }
+}
+
 fn timeline_panel(ui: &mut egui::Ui, theme: &Theme, app: &mut AppState) {
-    accept_item_drop(ui, theme, app, ui.max_rect());
+    // Comp tab strip first: it owns a drop zone (drop a comp here to open it as
+    // a separate tab). The body below then accepts drops that file into the
+    // open comp (footage → layer, comp → nested precomp). Splitting the two
+    // regions is what lets a comp be opened *beside* the tabs versus added
+    // *into* the open comp.
+    comp_tab_strip(ui, theme, app);
+    let body_rect = ui.available_rect_before_wrap();
+    accept_item_drop(ui, theme, app, body_rect);
     let doc = app.store.snapshot();
     let comp = app.selected_comp.and_then(|id| doc.comp(id));
     let Some(comp) = comp else {
@@ -864,8 +1067,8 @@ fn timeline_panel(ui: &mut egui::Ui, theme: &Theme, app: &mut AppState) {
         return;
     };
     let comp_id = comp.id;
-    // The dock tab already names the open comp; no redundant in-panel title,
-    // resolution or frame-rate line here (Mack).
+    // The comp tab strip above already names the open comp; no redundant
+    // in-panel title, resolution or frame-rate line here (Mack).
     if comp.layers.is_empty() {
         ui.label(
             egui::RichText::new("Drag footage here to create the first layer.")
@@ -1795,22 +1998,38 @@ fn timeline_panel(ui: &mut egui::Ui, theme: &Theme, app: &mut AppState) {
                     }
                 });
             });
-            // Each animatable property as its own timeline row: stopwatch/name/
-            // value in the left column, that property's keyframes on the track
-            // to the right; click a row to graph it (K-072).
-            transform_property_rows(
-                ui,
-                theme,
-                app,
-                comp,
-                comp_id,
-                layer,
-                name_w,
-                track_left,
-                track_w,
-                duration,
-                &mut pending,
-            );
+            // Transform group: its own twirl (open by default) revealing each
+            // animatable property as a timeline row — stopwatch/name/value in
+            // the left column, that property's keyframes on the track to the
+            // right; click a row to graph it (K-072).
+            let tf_id = ui.id().with(("transform-group", layer.id));
+            if group_header_row(ui, theme, "Transform", tf_id, true) {
+                transform_property_rows(
+                    ui,
+                    theme,
+                    app,
+                    comp,
+                    comp_id,
+                    layer,
+                    name_w,
+                    track_left,
+                    track_w,
+                    duration,
+                    &mut pending,
+                );
+            }
+            // Effects group: the home for the layer's effect stack. The effects
+            // system itself lands later; the twirl is here so the shape is right.
+            let fx_id = ui.id().with(("effects-group", layer.id));
+            if group_header_row(ui, theme, "Effects", fx_id, false) {
+                ui.indent(("fx-empty", layer.id), |ui| {
+                    ui.label(
+                        egui::RichText::new("No effects yet — the effects system is on the way.")
+                            .small()
+                            .color(theme.text_disabled),
+                    );
+                });
+            }
         }
     }
     // Vertical separator + drag handle: resizes the left column (Mack).
@@ -1883,13 +2102,13 @@ fn timeline_panel(ui: &mut egui::Ui, theme: &Theme, app: &mut AppState) {
     timeline_mode_toggle(ui, theme, app);
 }
 
-/// Layer-view / graph-view switch, bottom-right of the Timeline (K-070). Small
-/// glyphs for now; the designed icons come later.
+/// Layer-view / graph-view switch, bottom-right of the Timeline (K-070). The
+/// node-graph view joins this row when the node system lands.
 fn timeline_mode_toggle(ui: &mut egui::Ui, theme: &Theme, app: &mut AppState) {
     let panel = ui.max_rect();
     let r = egui::Rect::from_min_max(
-        egui::pos2(panel.right() - 58.0, panel.bottom() - 22.0),
-        egui::pos2(panel.right() - 6.0, panel.bottom() - 4.0),
+        egui::pos2(panel.right() - 66.0, panel.bottom() - 26.0),
+        egui::pos2(panel.right() - 6.0, panel.bottom() - 2.0),
     );
     let mut child = ui.new_child(
         egui::UiBuilder::new()
@@ -1898,21 +2117,19 @@ fn timeline_mode_toggle(ui: &mut egui::Ui, theme: &Theme, app: &mut AppState) {
     );
     child.set_clip_rect(r);
     let graph = app.timeline_graph_mode;
-    if child
-        .selectable_label(graph, egui::RichText::new("〜").small())
+    // Right-to-left layout: the graph toggle is drawn first so it sits rightmost.
+    if icon_button(&mut child, theme, Icon::GraphCurve, graph)
         .on_hover_text("Graph editor")
         .clicked()
     {
         app.timeline_graph_mode = true;
     }
-    if child
-        .selectable_label(!graph, egui::RichText::new("▤").small())
+    if icon_button(&mut child, theme, Icon::TimelineBars, !graph)
         .on_hover_text("Layers")
         .clicked()
     {
         app.timeline_graph_mode = false;
     }
-    let _ = theme;
 }
 
 /// Footage preview: the frame fit to the surround, scrub bar, resolution picker.
@@ -2530,6 +2747,23 @@ fn viewer_footage(
             .inner_margin(egui::Margin::symmetric(8, 4))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
+                    // Transport: play/pause the preview (also the space bar).
+                    let playing = app.is_playing();
+                    if icon_button(
+                        ui,
+                        theme,
+                        if playing { Icon::Pause } else { Icon::Play },
+                        playing,
+                    )
+                    .on_hover_text(if playing {
+                        "Pause (space)"
+                    } else {
+                        "Play (space)"
+                    })
+                    .clicked()
+                    {
+                        app.toggle_play();
+                    }
                     let labels = ["Full", "Half", "Third", "Quarter"];
                     let current = if app.preview_auto_res {
                         "Auto"
@@ -3885,6 +4119,45 @@ fn linked_scale(old_x: f64, old_y: f64, new_x: f64) -> (f64, f64) {
     }
 }
 
+/// A collapsible sub-group header inside a layer's twirl-down ("Transform",
+/// "Effects", …): a disclosure triangle and label, indented under the layer and
+/// full width so it reads as a band. Persists and returns its open state.
+fn group_header_row(
+    ui: &mut egui::Ui,
+    theme: &Theme,
+    label: &str,
+    id: egui::Id,
+    default_open: bool,
+) -> bool {
+    let mut open = ui.data(|d| d.get_temp::<bool>(id)).unwrap_or(default_open);
+    let (rect, resp) =
+        ui.allocate_exact_size(egui::vec2(ui.available_width(), 18.0), egui::Sense::click());
+    if resp.clicked() {
+        open = !open;
+        ui.data_mut(|d| d.insert_temp(id, open));
+    }
+    if resp.hovered() {
+        ui.painter().rect_filled(rect, 0.0, theme.surface_1);
+    }
+    let cy = rect.center().y;
+    let tx = rect.left() + 22.0;
+    ui.painter().text(
+        egui::pos2(tx, cy),
+        egui::Align2::CENTER_CENTER,
+        if open { "▾" } else { "▸" },
+        egui::FontId::proportional(11.0),
+        theme.text_muted,
+    );
+    ui.painter().text(
+        egui::pos2(tx + 10.0, cy),
+        egui::Align2::LEFT_CENTER,
+        label,
+        egui::FontId::proportional(12.0),
+        theme.text_secondary,
+    );
+    open
+}
+
 /// The layer's transform properties as full-width timeline rows (K-072): each
 /// row shows its stopwatch/name/value in the left column and its own keyframes
 /// as diamonds on the track to the right; clicking a row's name graphs it.
@@ -4236,7 +4509,8 @@ fn scale_batch(
 }
 
 /// The combined "Scale %" row (ratio locked): edits both axes keeping the
-/// ratio, with a 🔓 button to unlink. Sets `*unlinked` = true when unlinked.
+/// ratio, with a chain-link button to unlink. Sets `*unlinked` = true when
+/// unlinked.
 fn combined_scale_row(
     ui: &mut egui::Ui,
     app: &mut AppState,
@@ -4292,7 +4566,7 @@ fn combined_scale_row(
         app.selected_layer = Some(ctx.layer.id);
         app.graph_prop = Some(TransformProp::ScaleX);
     }
-    if c.small_button("🔓")
+    if icon_button(&mut c, ctx.theme, Icon::Link, true)
         .on_hover_text("Unlink scale (edit x and y separately)")
         .clicked()
     {
@@ -4340,9 +4614,15 @@ fn combined_scale_row(
 /// A thin row holding the "link scale" button; true when clicked.
 fn link_toggle_row(ui: &mut egui::Ui, ctx: &RowCtx) -> bool {
     let (_row_rect, mut c) = row_frame(ui, ctx, false);
-    c.small_button("🔗 link scale")
+    let clicked = icon_button(&mut c, ctx.theme, Icon::Link, false)
         .on_hover_text("Re-lock the x:y ratio and edit scale as one value")
-        .clicked()
+        .clicked();
+    c.label(
+        egui::RichText::new("Link scale")
+            .small()
+            .color(ctx.theme.text_muted),
+    );
+    clicked
 }
 
 /// Insert or replace a speed keyframe at local time `lt` (seconds) with `speed`
@@ -5292,10 +5572,14 @@ impl Shell {
                             }
                         }
                         let lock = dialog.lock_ratio;
-                        if ui
-                            .selectable_label(lock, if lock { "🔒" } else { "🔓" })
-                            .on_hover_text("Lock aspect ratio")
-                            .clicked()
+                        if icon_button(
+                            ui,
+                            theme,
+                            if lock { Icon::Lock } else { Icon::Unlock },
+                            lock,
+                        )
+                        .on_hover_text("Lock aspect ratio")
+                        .clicked()
                         {
                             dialog.lock_ratio = !lock;
                             dialog.aspect =
@@ -5934,29 +6218,31 @@ impl Shell {
         // tools join as they land; today: navigation and mask drawing.
         egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {
             ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 2.0;
                 let tool = self.app.tool;
-                if ui
-                    .selectable_label(tool == ToolMode::Select, "Select")
+                if icon_button(ui, &self.theme, Icon::Pointer, tool == ToolMode::Select)
                     .on_hover_text("Select / move the view (V)")
                     .clicked()
                 {
                     self.app.tool = ToolMode::Select;
                 }
-                if ui
-                    .selectable_label(tool == ToolMode::Hand, "Hand")
+                if icon_button(ui, &self.theme, Icon::Move, tool == ToolMode::Hand)
                     .on_hover_text("Drag to pan the view (H)")
                     .clicked()
                 {
                     self.app.tool = ToolMode::Hand;
                 }
-                let shape_resp = ui
-                    .selectable_label(
-                        tool == ToolMode::Shape,
-                        format!("Shape · {}", self.app.shape_kind.label()),
-                    )
-                    .on_hover_text(
-                        "Drag in the Viewer to draw a mask — right-click to pick a shape (Q)",
-                    );
+                // The Shape button wears the current shape; right-click to switch.
+                let shape_icon = match self.app.shape_kind {
+                    ShapeKind::Rectangle => Icon::Rectangle,
+                    ShapeKind::Ellipse => Icon::Ellipse,
+                    ShapeKind::Star => Icon::Star,
+                };
+                let shape_resp = icon_button(ui, &self.theme, shape_icon, tool == ToolMode::Shape)
+                    .on_hover_text(format!(
+                        "Draw a {} mask — right-click to pick a shape (Q)",
+                        self.app.shape_kind.label().to_lowercase()
+                    ));
                 if shape_resp.clicked() {
                     self.app.tool = ToolMode::Shape;
                 }
@@ -5972,8 +6258,7 @@ impl Shell {
                         }
                     }
                 });
-                if ui
-                    .selectable_label(tool == ToolMode::Pen, "Pen")
+                if icon_button(ui, &self.theme, Icon::Pen, tool == ToolMode::Pen)
                     .on_hover_text("Click points to draw a mask; click the first to close (G)")
                     .clicked()
                 {
@@ -6250,6 +6535,260 @@ mod geometry_tests {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod dock_tests {
     use super::*;
+
+    /// Drive one widget through hover → press → release and report whether it
+    /// registered a click. Used to prove which drag-source pattern still lets a
+    /// plain click through (egui's `dnd_drag_source` does not).
+    fn simulate_click(build: impl Fn(&mut egui::Ui) -> egui::Response) -> bool {
+        let ctx = egui::Context::default();
+        let rect = std::cell::Cell::new(egui::Rect::NOTHING);
+        let clicked = std::cell::Cell::new(false);
+        let run = |events: Vec<egui::Event>| {
+            let ri = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::pos2(0.0, 0.0),
+                    egui::vec2(400.0, 400.0),
+                )),
+                events,
+                ..Default::default()
+            };
+            let _ = ctx.run(ri, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let r = build(ui);
+                    rect.set(r.rect);
+                    if r.clicked() {
+                        clicked.set(true);
+                    }
+                });
+            });
+        };
+        let m = egui::Modifiers::default();
+        let btn = egui::PointerButton::Primary;
+        run(vec![]); // lay out so the widget rect is known
+        let pos = rect.get().center();
+        run(vec![egui::Event::PointerMoved(pos)]); // hover
+        run(vec![egui::Event::PointerButton {
+            pos,
+            button: btn,
+            pressed: true,
+            modifiers: m,
+        }]);
+        run(vec![egui::Event::PointerButton {
+            pos,
+            button: btn,
+            pressed: false,
+            modifiers: m,
+        }]);
+        clicked.get()
+    }
+
+    /// Drive one widget through two quick clicks and report whether it saw a
+    /// double-click (how a comp row opens its comp).
+    fn simulate_double_click(build: impl Fn(&mut egui::Ui) -> egui::Response) -> bool {
+        let ctx = egui::Context::default();
+        let rect = std::cell::Cell::new(egui::Rect::NOTHING);
+        let dbl = std::cell::Cell::new(false);
+        let run = |events: Vec<egui::Event>| {
+            let ri = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::pos2(0.0, 0.0),
+                    egui::vec2(400.0, 400.0),
+                )),
+                events,
+                ..Default::default()
+            };
+            let _ = ctx.run(ri, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let r = build(ui);
+                    rect.set(r.rect);
+                    if r.double_clicked() {
+                        dbl.set(true);
+                    }
+                });
+            });
+        };
+        let m = egui::Modifiers::default();
+        let btn = egui::PointerButton::Primary;
+        run(vec![]); // lay out
+        let pos = rect.get().center();
+        run(vec![egui::Event::PointerMoved(pos)]);
+        for _ in 0..2 {
+            run(vec![egui::Event::PointerButton {
+                pos,
+                button: btn,
+                pressed: true,
+                modifiers: m,
+            }]);
+            run(vec![egui::Event::PointerButton {
+                pos,
+                button: btn,
+                pressed: false,
+                modifiers: m,
+            }]);
+        }
+        dbl.get()
+    }
+
+    /// A comp row opens its comp on a double-click, so the draggable row must
+    /// report `double_clicked()` (it senses click as well as drag).
+    #[test]
+    fn a_draggable_row_reports_a_double_click() {
+        assert!(simulate_double_click(|ui| draggable_row(
+            ui,
+            egui::Id::new("row"),
+            1u32,
+            false,
+            "row"
+        )));
+    }
+
+    /// The Project panel opens comps and previews footage on a row click. egui's
+    /// `dnd_drag_source` puts a drag-sensing overlay on top of its contents, so
+    /// the click never reaches either the outer or the inner response — the row
+    /// looked dead. A single widget that senses click *and* drag keeps both,
+    /// which is what [`draggable_row`] uses.
+    #[test]
+    fn a_row_that_is_both_clickable_and_draggable_still_clicks() {
+        // Control: a plain button clicks under this simulation.
+        assert!(simulate_click(|ui| ui.button("x")));
+        // The old pattern: the drag overlay eats the click.
+        assert!(!simulate_click(|ui| {
+            ui.dnd_drag_source(egui::Id::new("s"), 1u32, |ui| {
+                ui.selectable_label(false, "x")
+            })
+            .response
+        }));
+        // The fix: one widget sensing click+drag still reports the click.
+        assert!(simulate_click(|ui| draggable_row(
+            ui,
+            egui::Id::new("row"),
+            1u32,
+            false,
+            "x"
+        )));
+    }
+
+    /// The other half of [`draggable_row`]: dragging it must still deliver its
+    /// payload to a drop target, so dropping footage/comps into the Timeline,
+    /// Viewer or onto "+ Composition" keeps working after the click fix.
+    #[test]
+    fn dragging_a_row_delivers_its_payload_to_a_drop_target() {
+        let ctx = egui::Context::default();
+        let payload = uuid::Uuid::from_u128(0x1234_5678);
+        let src_rect = std::cell::Cell::new(egui::Rect::NOTHING);
+        let zone_rect = std::cell::Cell::new(egui::Rect::NOTHING);
+        let got = std::cell::Cell::new(None);
+        let run = |events: Vec<egui::Event>| {
+            let ri = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::pos2(0.0, 0.0),
+                    egui::vec2(400.0, 400.0),
+                )),
+                events,
+                ..Default::default()
+            };
+            let _ = ctx.run(ri, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let src = draggable_row(ui, egui::Id::new("src"), payload, false, "source");
+                    src_rect.set(src.rect);
+                    ui.add_space(60.0);
+                    let (zr, zresp) =
+                        ui.allocate_exact_size(egui::vec2(120.0, 40.0), egui::Sense::hover());
+                    zone_rect.set(zr);
+                    if let Some(p) = zresp.dnd_release_payload::<uuid::Uuid>() {
+                        got.set(Some(*p));
+                    }
+                });
+            });
+        };
+        let m = egui::Modifiers::default();
+        let btn = egui::PointerButton::Primary;
+        run(vec![]); // lay out
+        let from = src_rect.get().center();
+        let to = zone_rect.get().center();
+        run(vec![egui::Event::PointerMoved(from)]); // hover source
+        run(vec![egui::Event::PointerButton {
+            pos: from,
+            button: btn,
+            pressed: true,
+            modifiers: m,
+        }]);
+        run(vec![egui::Event::PointerMoved(to)]); // drag across (past threshold)
+        run(vec![egui::Event::PointerButton {
+            pos: to,
+            button: btn,
+            pressed: false,
+            modifiers: m,
+        }]);
+        assert_eq!(
+            got.get(),
+            Some(payload),
+            "the drop target received the drag"
+        );
+    }
+
+    /// Double-clicking empty Project-panel space opens Import, but double-clicking
+    /// a row must not — the row (drawn on top) claims the click. Mirrors the
+    /// backdrop-under-rows layout `project_panel` uses.
+    #[test]
+    fn backdrop_double_click_fires_only_off_the_rows() {
+        fn scene(pick: impl Fn(egui::Rect, egui::Rect) -> egui::Pos2) -> bool {
+            let ctx = egui::Context::default();
+            let bg_rect = std::cell::Cell::new(egui::Rect::NOTHING);
+            let row_rect = std::cell::Cell::new(egui::Rect::NOTHING);
+            let bg_dbl = std::cell::Cell::new(false);
+            let run = |events: Vec<egui::Event>| {
+                let ri = egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::pos2(0.0, 0.0),
+                        egui::vec2(400.0, 400.0),
+                    )),
+                    events,
+                    ..Default::default()
+                };
+                let _ = ctx.run(ri, |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        let full = ui.available_rect_before_wrap();
+                        // Backdrop first (under the row), exactly as project_panel.
+                        let bg = ui.interact(full, egui::Id::new("bg"), egui::Sense::click());
+                        bg_rect.set(full);
+                        let row = draggable_row(ui, egui::Id::new("row"), 1u32, false, "row");
+                        row_rect.set(row.rect);
+                        if bg.double_clicked() {
+                            bg_dbl.set(true);
+                        }
+                    });
+                });
+            };
+            let m = egui::Modifiers::default();
+            let btn = egui::PointerButton::Primary;
+            run(vec![]); // lay out
+            let pos = pick(bg_rect.get(), row_rect.get());
+            run(vec![egui::Event::PointerMoved(pos)]);
+            for _ in 0..2 {
+                run(vec![egui::Event::PointerButton {
+                    pos,
+                    button: btn,
+                    pressed: true,
+                    modifiers: m,
+                }]);
+                run(vec![egui::Event::PointerButton {
+                    pos,
+                    button: btn,
+                    pressed: false,
+                    modifiers: m,
+                }]);
+            }
+            bg_dbl.get()
+        }
+        // Empty space below the row → Import fires.
+        assert!(scene(|bg, row| egui::pos2(
+            bg.center().x,
+            row.bottom() + 80.0
+        )));
+        // On the row → the row consumes it; the backdrop stays silent.
+        assert!(!scene(|_bg, row| row.center()));
+    }
 
     // The default workspace contains every panel, and the pop-out mechanism
     // (hide the tile, show it again) round-trips — the basis of detaching a
