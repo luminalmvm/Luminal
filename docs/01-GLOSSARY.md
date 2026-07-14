@@ -94,7 +94,7 @@ two views of Retime.
 
 | Term | Definition |
 |---|---|
-| **Speed** | The derivative of the retime map: 1.0 = normal, 0.0 = freeze, negative = reverse. The UI shows percentages (100%, 0%, −100%). *Velocity* is not a Kiriko term. |
+| **Speed** | The derivative of the retime map: 1.0 = normal, 0.0 = freeze, negative = reverse. The UI shows percentages (100%, 0%, −100%). The Retime graph channel *labels* its derivative lens **Velocity** and its value lens **Time** (K-076, Vegas/AE heritage); "speed" stays the term for the quantity itself. |
 | **Freeze** | A retime region of speed 0. |
 | **Overrun** | The state where a retime map requests source time beyond the media's end (or before its start). Kiriko renders a hold of the boundary frame and marks the region visibly in the timeline. Overrun never moves clip boundaries or edit points. |
 | **Frame interpolation** | How non-integer source frames are synthesised: **nearest** (duplicate), **blend** (crossfade), or **flow** (optical-flow synthesis). A per-clip/per-layer render policy, independent of the retime map itself. |
@@ -152,7 +152,7 @@ These three words are **not interchangeable**.
 | Banned term | Use instead | Why |
 |---|---|---|
 | **Track** / **line** | Layer, or Sequence layer | "Track" imports NLE semantics that don't match layer stacking; ambiguity here is exactly what this glossary exists to prevent. |
-| **Velocity** | Speed | One word for one concept. |
+| **Velocity** | Speed (the quantity) | Reversed as the UI *label* for the Retime graph's derivative lens only (K-076); "speed" stays the word for the quantity everywhere else. |
 | **Time remap(ping)** | Retime (value graph) | AE legacy name for one view of Retime. Acceptable in AE-import docs when describing AE itself. |
 | **Bin** | Folder | Premiere-ism. |
 | **CTI** | Playhead | |

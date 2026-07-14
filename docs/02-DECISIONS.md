@@ -453,3 +453,14 @@ the sequence view.** Confirmed by Mack (2026-07-14), building on K-021, K-070, K
   correct default lens; *2b* — the full [04-RETIMING.md](04-RETIMING.md) §9.2 in-graph segment
   editing (RateSegment endpoint drags, compensating edits, Rate↔Map conversions); *2c* (later)
   — the sequence-view graph pane.
+
+**K-076 · DECIDED · The Retime graph channel is named by its lens: Time (value) and Velocity
+(speed).** Confirmed by Mack (2026-07-14), refining K-075. The Retime channel — its outline
+row and its graph — reads **Time** in the value lens (source position, "which frame is
+showing") and **Velocity** in the derivative lens (the Vegas velocity-envelope heritage the
+speed graph already invokes). This **reverses the glossary §9 "velocity → speed" ban for this
+one UI label**: "speed" remains the term for the quantity everywhere else (percentages,
+RateSegment speeds, prose, identifiers); "velocity" is permitted solely as this channel's
+derivative-lens label. The channel also behaves like any other property — it carries a
+stopwatch/keyframe control in the outline — and its **default lens is the value (Time) lens**
+(the Vegas-preference of K-075 defaults **off**), so the channel opens to Time.
