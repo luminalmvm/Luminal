@@ -2190,6 +2190,48 @@ fn timeline_mode_toggle(ui: &mut egui::Ui, theme: &Theme, app: &mut AppState) {
     {
         app.timeline_graph_mode = false;
     }
+
+    // Lane-area zoom controls, bottom-left (opposite the graph toggle): out / in /
+    // fit, with a zoom readout. Alt-wheel zooms too; Shift-wheel scrolls.
+    let zr = egui::Rect::from_min_max(
+        egui::pos2(panel.left() + 6.0, panel.bottom() - 26.0),
+        egui::pos2(panel.left() + 190.0, panel.bottom() - 2.0),
+    );
+    let mut zc = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(zr)
+            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+    );
+    zc.set_clip_rect(zr);
+    if zc
+        .small_button("−")
+        .on_hover_text("Zoom out (Alt-wheel)")
+        .clicked()
+    {
+        app.timeline_zoom = (app.timeline_zoom / 1.4).max(1.0);
+    }
+    if zc
+        .small_button("+")
+        .on_hover_text("Zoom in (Alt-wheel)")
+        .clicked()
+    {
+        app.timeline_zoom = (app.timeline_zoom * 1.4).min(400.0);
+    }
+    if zc
+        .small_button("Fit")
+        .on_hover_text("Fit the whole comp")
+        .clicked()
+    {
+        app.timeline_zoom = 1.0;
+        app.timeline_view_start = 0.0;
+    }
+    if app.timeline_zoom > 1.001 {
+        zc.label(
+            egui::RichText::new(format!("{:.0}%", app.timeline_zoom * 100.0))
+                .small()
+                .color(theme.text_muted),
+        );
+    }
 }
 
 /// Footage preview: the frame fit to the surround, scrub bar, resolution picker.
