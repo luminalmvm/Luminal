@@ -4297,6 +4297,8 @@ impl Shell {
                 MenuAction::AddSequenceLayer => self.app.add_sequence_layer(),
                 MenuAction::CutClip => self.app.cut_sequence_at_playhead(),
                 MenuAction::DeleteClip => self.app.delete_clip_at_playhead(),
+                MenuAction::AddMarker => self.app.add_marker_at_playhead(),
+                MenuAction::ClearBeatMarkers => self.app.clear_beat_markers(),
                 MenuAction::DetectBeats => {
                     #[cfg(feature = "media")]
                     if let Some(id) = self.app.preview_comp.or(self.app.selected_comp) {
@@ -5106,11 +5108,19 @@ impl Shell {
                         self.app.delete_clip_at_playhead();
                         ui.close_menu();
                     }
+                    if ui.button("Add marker at playhead").clicked() {
+                        self.app.add_marker_at_playhead();
+                        ui.close_menu();
+                    }
                     #[cfg(feature = "media")]
                     if ui.button("Detect beats").clicked() {
                         if let Some(id) = self.app.preview_comp.or(self.app.selected_comp) {
                             self.app.detect_beats(id);
                         }
+                        ui.close_menu();
+                    }
+                    if ui.button("Clear beat markers").clicked() {
+                        self.app.clear_beat_markers();
                         ui.close_menu();
                     }
                     ui.separator();

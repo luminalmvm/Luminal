@@ -2459,6 +2459,55 @@ impl AppState {
         self.audio_loaded = None; // the footage buffer is no longer loaded
     }
 
+    /// Drop a user marker at the playhead on the current composition.
+    pub fn add_marker_at_playhead(&mut self) {
+        let Some(comp_id) = self.preview_comp.or(self.selected_comp) else {
+            return;
+        };
+        let doc = self.store.snapshot();
+        let Some(comp) = doc.comp(comp_id) else {
+            return;
+        };
+        let Ok(t) = comp.frame_rate.time_of_frame(self.preview_frame as i64) else {
+            return;
+        };
+        let mut markers = comp.markers.clone();
+        markers.push(kiriko_core::markers::Marker::user(
+            uuid::Uuid::now_v7(),
+            t.0,
+        ));
+        markers.sort_by_key(|m| m.time.0);
+        self.commit(kiriko_core::Op::SetCompMarkers {
+            comp: comp_id,
+            markers,
+        });
+    }
+
+    /// Remove all detected Beat markers from the current composition, keeping
+    /// user and chapter markers.
+    pub fn clear_beat_markers(&mut self) {
+        let Some(comp_id) = self.preview_comp.or(self.selected_comp) else {
+            return;
+        };
+        let doc = self.store.snapshot();
+        let Some(comp) = doc.comp(comp_id) else {
+            return;
+        };
+        if !comp.markers.iter().any(|m| m.is_beat()) {
+            return;
+        }
+        let markers: Vec<_> = comp
+            .markers
+            .iter()
+            .filter(|m| !m.is_beat())
+            .cloned()
+            .collect();
+        self.commit(kiriko_core::Op::SetCompMarkers {
+            comp: comp_id,
+            markers,
+        });
+    }
+
     /// Detect beat markers for `comp_id` off the UI thread: mix the comp's
     /// audio (same path as playback), run onset + tempo detection, and hand the
     /// beat times back ([`Self::poll_beats`] turns them into markers). No-op —

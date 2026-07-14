@@ -32,6 +32,8 @@ pub enum MenuAction {
     CutClip,
     DeleteClip,
     DetectBeats,
+    AddMarker,
+    ClearBeatMarkers,
     AddMaskRectangle,
     AddMaskEllipse,
     AddMaskStar,
@@ -121,6 +123,8 @@ impl NativeMenu {
             &item("comp.cut", "Cut clip at playhead", cmd_shift(Code::KeyD)),
             &item("comp.delclip", "Delete clip at playhead", None),
             &item("comp.beats", "Detect beats", None),
+            &item("comp.marker", "Add marker at playhead", None),
+            &item("comp.clearbeats", "Clear beat markers", None),
             &item("comp.settings", "Composition settings…", None),
         ])?;
         let mask = Submenu::new("Add mask", true);
@@ -173,6 +177,8 @@ impl NativeMenu {
                 "comp.cut" => Some(MenuAction::CutClip),
                 "comp.delclip" => Some(MenuAction::DeleteClip),
                 "comp.beats" => Some(MenuAction::DetectBeats),
+                "comp.marker" => Some(MenuAction::AddMarker),
+                "comp.clearbeats" => Some(MenuAction::ClearBeatMarkers),
                 "comp.mask.rect" => Some(MenuAction::AddMaskRectangle),
                 "comp.mask.ellipse" => Some(MenuAction::AddMaskEllipse),
                 "comp.mask.star" => Some(MenuAction::AddMaskStar),
