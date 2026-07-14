@@ -243,6 +243,11 @@ Two mechanisms make this safe, and you'll see them by name in the code:
   never your hand-placed cues). The markers show as clay ticks on the timeline ruler — faint
   or bright by confidence — and scrubbing the playhead snaps to a nearby marker, so you land
   on the beat.
+- **The timeline waveform** — a strip under the ruler draws the composition's mixed audio as
+  a min/max envelope on the same time axis, so the beats sit right above the transients that
+  made them. It's built by `waveform_peaks` (in `kiriko-audio::mix`), which buckets the mono
+  mixdown into (min, max) pairs — a pure, tested down-sample — computed once when the comp's
+  audio is mixed for playback.
 - The **graph editor** (tabbed with the Timeline) — click a layer, and its animated
   properties draw as live curves: drag the keyframes (value and time together, one
   undo per drag), double-click the background to add a key, right-click a key for a menu

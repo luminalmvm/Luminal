@@ -630,6 +630,10 @@ pub struct AppState {
     beats_rx: std::sync::mpsc::Receiver<(Uuid, Vec<(f64, f32)>)>,
     #[cfg(feature = "media")]
     beats_tx: std::sync::mpsc::Sender<(Uuid, Vec<(f64, f32)>)>,
+    /// (comp id, (min,max) peaks) for the timeline waveform, computed when the
+    /// comp's audio is mixed. Drawn under the ruler.
+    #[cfg(feature = "media")]
+    pub comp_waveform: Option<(Uuid, Vec<(f32, f32)>)>,
     /// In-flight property drag (layer, property, provisional value): commits
     /// once on release so a drag is ONE undo step, not hundreds.
     pub prop_edit: Option<(Uuid, kiriko_core::model::TransformProp, f64)>,
@@ -746,6 +750,8 @@ impl Default for AppState {
             beats_rx,
             #[cfg(feature = "media")]
             beats_tx,
+            #[cfg(feature = "media")]
+            comp_waveform: None,
             #[cfg(feature = "media")]
             audio_rx,
             #[cfg(feature = "media")]
@@ -2393,6 +2399,12 @@ impl AppState {
         }
         let playing = self.comp_playback.is_some();
         let start_s = self.preview_frame as f64 / fps;
+        // Waveform peaks for the timeline (computed before the buffer moves
+        // into the engine); ~2 buckets per horizontal pixel is plenty.
+        self.comp_waveform = Some((
+            comp_id,
+            kiriko_audio::mix::waveform_peaks(&buffer.samples, 2048),
+        ));
         if let Some(engine) = &self.audio_engine {
             engine.load(std::sync::Arc::new(buffer));
             engine.seek_seconds(start_s);

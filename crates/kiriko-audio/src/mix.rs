@@ -83,10 +83,50 @@ pub fn place_on_timeline(
     Some((out_start, src_start, len))
 }
 
+/// Down-sample interleaved-stereo PCM to `buckets` `(min, max)` pairs of the
+/// mono mixdown — the timeline waveform. Each bucket spans an equal slice of
+/// the audio; empty input or zero buckets yields an empty result. Pure, so the
+/// waveform is a plain deterministic test like everything else here.
+pub fn waveform_peaks(interleaved: &[f32], buckets: usize) -> Vec<(f32, f32)> {
+    let frames = interleaved.len() / 2;
+    if frames == 0 || buckets == 0 {
+        return Vec::new();
+    }
+    let mut out = Vec::with_capacity(buckets);
+    for b in 0..buckets {
+        let start = b * frames / buckets;
+        let end = (((b + 1) * frames / buckets).max(start + 1)).min(frames);
+        let (mut lo, mut hi) = (f32::MAX, f32::MIN);
+        for i in start..end {
+            let m = 0.5 * (interleaved[i * 2] + interleaved[i * 2 + 1]);
+            lo = lo.min(m);
+            hi = hi.max(m);
+        }
+        if lo > hi {
+            (lo, hi) = (0.0, 0.0);
+        }
+        out.push((lo, hi));
+    }
+    out
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn waveform_peaks_bucket_min_max() {
+        // 4 frames: (1,1) (-1,-1) (0,0) (0,0) → mono 1, -1, 0, 0.
+        let audio = [1.0, 1.0, -1.0, -1.0, 0.0, 0.0, 0.0, 0.0];
+        let peaks = waveform_peaks(&audio, 2);
+        assert_eq!(peaks, vec![(-1.0, 1.0), (0.0, 0.0)]);
+        // Degenerate inputs are safe.
+        assert!(waveform_peaks(&[], 8).is_empty());
+        assert!(waveform_peaks(&audio, 0).is_empty());
+        // More buckets than frames still returns one (min,max) per bucket.
+        assert_eq!(waveform_peaks(&audio, 8).len(), 8);
+    }
 
     #[test]
     fn placement_full_clip_at_origin() {
