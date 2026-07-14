@@ -1492,6 +1492,24 @@ fn timeline_panel(ui: &mut egui::Ui, theme: &Theme, app: &mut AppState) {
     }
     // Vertical separator + drag handle: resizes the left column (Mack).
     let sep_bottom = ui.cursor().top();
+    // Faint marker guide lines through the track rows, so beats line up across
+    // every layer and the waveform (the ruler carries the bright ticks).
+    for m in &comp.markers {
+        let x = x_of(m.time.0.to_f64());
+        if x < track_left - 1.0 || x > track_left + track_w + 1.0 {
+            continue;
+        }
+        let a = match m.kind {
+            kiriko_core::markers::MarkerKind::Beat { confidence } => {
+                0.10 + 0.15 * confidence.clamp(0.0, 1.0)
+            }
+            _ => 0.4,
+        };
+        ui.painter().line_segment(
+            [egui::pos2(x, rows_top), egui::pos2(x, sep_bottom)],
+            egui::Stroke::new(1.0_f32, theme.accent.gamma_multiply(a)),
+        );
+    }
     let sep_x = track_left - 4.0;
     let handle = egui::Rect::from_min_max(
         egui::pos2(sep_x - 3.0, rows_top),
