@@ -4243,7 +4243,12 @@ fn graph_plot(
             };
             let sp = match app.graph_speed_edit {
                 Some((i, s)) if i == idx => s,
-                _ => rest,
+                // Follow a live tangent-handle drag on this key too, so the
+                // point rides with the handle (K-081).
+                _ => match app.graph_tangent_edit {
+                    Some((i, _, s, _)) if i == idx => s,
+                    _ => rest,
+                },
             };
             let pos = egui::pos2(x, speed_y(sp));
             let resp = ui.interact(
@@ -4251,7 +4256,8 @@ fn graph_plot(
                 ui.id().with(("gspd", layer_id, idx)),
                 egui::Sense::click_and_drag(),
             );
-            let active = app.graph_speed_edit.is_some_and(|(i, _)| i == idx);
+            let selected = selection.contains(&idx);
+            let active = app.graph_speed_edit.is_some_and(|(i, _)| i == idx) || selected;
             let colour = if resp.hovered() || active {
                 theme.accent
             } else {
@@ -4274,6 +4280,105 @@ fn graph_plot(
                         new_keys[i].interp_in = side;
                         new_keys[i].interp_out = side;
                         pending = Some(new_keys);
+                    }
+                }
+            }
+            // A plain click selects the key, so its tangent handles appear —
+            // the same select-then-shape gesture as the value lens.
+            if resp.clicked() {
+                app.graph_selection = Some(crate::app_state::GraphSelection {
+                    layer: layer_id,
+                    prop: current,
+                    retime: is_retime,
+                    keys: vec![(idx, key.time)],
+                });
+            }
+        }
+
+        // Gold tangent handles in the speed lens (K-081): a selected key shows
+        // the same handles as the value lens, here shaping the derivative
+        // directly — a handle's *height* is that side's speed and its horizontal
+        // reach is its influence (AE's speed-graph ease bars). They write the
+        // same bezier store, so the value and speed lenses stay in lock-step.
+        let handle_colour = theme.curve[3];
+        let alt_now = ui.input(|i| i.modifiers.alt);
+        for &idx in &selection {
+            let Some(key) = keys.get(idx) else { continue };
+            let kt = key.time.to_f64();
+            let x = x_of(kt);
+            let key_unified = matches!(
+                (side_speed(key.interp_in), side_speed(key.interp_out)),
+                (Some(a), Some(b)) if (a - b).abs() < 1e-6
+            );
+            for is_out in [true, false] {
+                let side = if is_out {
+                    key.interp_out
+                } else {
+                    key.interp_in
+                };
+                let has_neighbour = if is_out {
+                    idx + 1 < keys.len()
+                } else {
+                    idx > 0
+                };
+                if !has_neighbour || !matches!(side, SideInterp::Bezier { .. }) {
+                    continue;
+                }
+                let seg = if is_out {
+                    keys[idx + 1].time.to_f64() - kt
+                } else {
+                    kt - keys[idx - 1].time.to_f64()
+                };
+                if seg <= 1e-6 {
+                    continue;
+                }
+                // In-flight drag overrides this side; a unified partner mirrors
+                // the dragged speed (keeping its own reach).
+                let (sp, influence) = match app.graph_tangent_edit {
+                    Some((i, o, s, inf)) if i == idx && o == is_out => (s, inf),
+                    Some((i, _, s, _)) if i == idx && key_unified && !alt_now => {
+                        (s, side_influence(side))
+                    }
+                    _ => (side_speed(side).unwrap_or(0.0), side_influence(side)),
+                };
+                let reach = influence * seg;
+                let anchor = egui::pos2(x, speed_y(sp));
+                let hend = egui::pos2(
+                    x_of(if is_out { kt + reach } else { kt - reach }),
+                    speed_y(sp),
+                );
+                ui.painter()
+                    .line_segment([anchor, hend], egui::Stroke::new(1.0_f32, handle_colour));
+                let hresp = ui.interact(
+                    egui::Rect::from_center_size(hend, egui::vec2(10.0, 10.0)),
+                    ui.id().with(("gspdtan", layer_id, idx, is_out)),
+                    egui::Sense::click_and_drag(),
+                );
+                let hot = hresp.hovered()
+                    || app
+                        .graph_tangent_edit
+                        .is_some_and(|(i, o, ..)| i == idx && o == is_out);
+                ui.painter()
+                    .circle_filled(hend, if hot { 4.5 } else { 3.0 }, handle_colour);
+                if hresp.dragged() {
+                    if let Some(p) = hresp.interact_pointer_pos() {
+                        // Horizontal reach → influence; height → this side's
+                        // speed. No partner-length trickery here: the speed lens
+                        // is about the speeds themselves.
+                        let pt = t_of(p.x);
+                        let dt = (if is_out { pt - kt } else { kt - pt }).clamp(seg * 1e-3, seg);
+                        let inf = dt / seg;
+                        app.graph_tangent_edit = Some((idx, is_out, speed_of(p.y), inf));
+                    }
+                }
+                if hresp.drag_stopped() {
+                    if let Some((i, o, sp2, inf)) = app.graph_tangent_edit.take() {
+                        if i == idx {
+                            let alt = ui.input(|inp| inp.modifiers.alt);
+                            let mut new_keys = keys.clone();
+                            apply_tangent(&mut new_keys[i], o, sp2, inf, alt, None);
+                            pending = Some(new_keys);
+                        }
                     }
                 }
             }

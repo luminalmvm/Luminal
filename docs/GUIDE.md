@@ -312,6 +312,10 @@ Two mechanisms make this safe, and you'll see them by name in the code:
   The speed curve is the *exact* derivative of the value curve (K-080), so any bezier shaping you
   give a key in the value view carries straight across: an eased key that starts and ends slow
   shows in the speed view as a smooth hump, a straight run shows as a flat line, a hold as zero.
+  You can shape a key from *either* view (K-081): click a key in the speed view to select it and
+  the same **gold tangent handles** appear, here drawn as horizontal ease bars — drag a handle up
+  or down to set that side's speed, and left or right to set its influence (how long the ease
+  holds). It edits the very same curve, so the value view updates in step.
   The value/speed switch lives in the timeline's **bottom bar** (its own little group next to
   the zoom buttons, shown only in graph mode) rather than in each curve's header, because it
   is one setting shared by every curve. The plot also carries a small **y-axis**: a few faint

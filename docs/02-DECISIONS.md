@@ -518,3 +518,14 @@ half-frame steps — a display stopgap that could smear the shape near steep han
 value lens draws: bezier easing in the value view shows as the matching smooth speed curve, a
 straight span as a flat speed, a Hold as zero. This is the value/speed "two views of one data"
 promise (K-070) made exact.
+
+**K-081 · DECIDED · Tangent handles are draggable in the speed lens too.** From Mack
+(2026-07-15). The speed (derivative) lens showed one draggable speed point per key; it now also
+carries the same gold tangent handles as the value lens for a selected key, so a curve can be
+eased from either view. In the speed graph a handle's **height is that side's speed** and its
+**horizontal reach is its influence** (After Effects' speed-graph ease bars); dragging writes the
+same `SideInterp::Bezier` store through `apply_tangent`, so the value and speed lenses stay in
+lock-step. Clicking a speed key selects it (as in the value lens) to reveal its handles. The
+value lens keeps the unified partner-length behaviour (K-072 refinement); the speed lens mirrors
+a unified drag but keeps the partner's own reach (no screen-length preservation — the speed lens
+is about the speeds themselves).
