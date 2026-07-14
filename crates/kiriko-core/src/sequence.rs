@@ -257,6 +257,20 @@ impl Clip {
             ..self.clone()
         })
     }
+
+    /// Trim the out point to the last moment still inside the source extent
+    /// (docs/04-RETIMING.md §7.4, non-ripple): when the retime runs the clip
+    /// past its trimmed source end (tail overrun), crop the clip to the crossing
+    /// point. The clip's start never moves and a gap is left after it (gaps are
+    /// never auto-closed — the beat-sync covenant K-022). None when there is no
+    /// tail overrun, so the command can report "nothing to trim".
+    pub fn trim_to_source_end(&self) -> Option<Clip> {
+        // Local time where the mapped source position first reaches source_out.
+        let crossing = self.retime.overrun_local_time(self.source_out)?;
+        let crossing = Rational::from_f64_on_grid(crossing, Rational::FLICK_DEN).ok()?;
+        let new_end = self.place_start.checked_add(crossing).ok()?;
+        self.trim_end(new_end)
+    }
 }
 
 /// The clip active at layer-local time `lt`, or None if `lt` is in a gap
@@ -460,6 +474,21 @@ mod tests {
         assert!(c.trim_end(rat(7, 1)).is_none());
         assert!(c.trim_start(rat(1, 1)).is_none());
         assert!(c.trim_end(rat(2, 1)).is_none()); // zero length
+    }
+
+    #[test]
+    fn trim_to_source_end_crops_a_tail_overrun() {
+        let src = Uuid::now_v7();
+        // Clip at layer [0,4), source [0,4). Retime it to 2× so f(t) = 2t runs
+        // out of the source (out = 4) at local time 2.
+        let mut c = clip(src, 0, 4);
+        c.retime = Retime::constant_speed(rat(4, 1), rat(0, 1), rat(2, 1));
+        let t = c.trim_to_source_end().expect("a tail overrun trims");
+        assert_eq!(t.place_start, c.place_start); // non-ripple: start held
+        assert!((t.place_duration.to_f64() - 2.0).abs() < 1e-6);
+        assert!((t.source_out.to_f64() - 4.0).abs() < 1e-6); // ends at the source end
+                                                             // A clip that fits inside its source has nothing to trim.
+        assert!(clip(src, 0, 4).trim_to_source_end().is_none());
     }
 
     #[test]
