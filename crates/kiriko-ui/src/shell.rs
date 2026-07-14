@@ -823,6 +823,8 @@ fn timeline_panel(ui: &mut egui::Ui, theme: &Theme, app: &mut AppState) {
     }
     use kiriko_core::anim::Animation;
     let mut pending: Option<kiriko_core::Op> = None;
+    // A per-clip speed edit (percent), applied after the layer loop.
+    let mut clip_speed_edit: Option<f64> = None;
 
     // ---- ruler + time geometry (07-UI-SPEC Timeline) --------------------
     let panel_left = ui.max_rect().left();
@@ -1265,16 +1267,48 @@ fn timeline_panel(ui: &mut egui::Ui, theme: &Theme, app: &mut AppState) {
             for clip in clips {
                 let cs = x_of(off + clip.place_start.to_f64());
                 let ce = x_of(off + clip.place_end().to_f64());
+                let crect = egui::Rect::from_min_max(
+                    egui::pos2(cs, bar.top() + 1.0),
+                    egui::pos2(ce, bar.bottom() - 1.0),
+                );
+                // Click a clip to select it (for per-clip speed editing).
+                let cresp =
+                    ui.interact(crect, ui.id().with(("clip", clip.id)), egui::Sense::click());
+                if cresp.clicked() {
+                    app.selected_clip = Some(clip.id);
+                    app.selected_layer = Some(layer.id);
+                }
+                let sel = app.selected_clip == Some(clip.id);
                 ui.painter().rect(
-                    egui::Rect::from_min_max(
-                        egui::pos2(cs, bar.top() + 1.0),
-                        egui::pos2(ce, bar.bottom() - 1.0),
-                    ),
+                    crect,
                     2.0,
-                    theme.surface_2,
-                    egui::Stroke::new(1.0_f32, theme.hairline_strong),
+                    if sel {
+                        theme.surface_3
+                    } else {
+                        theme.surface_2
+                    },
+                    egui::Stroke::new(
+                        if sel { 1.5_f32 } else { 1.0_f32 },
+                        if sel {
+                            theme.accent
+                        } else {
+                            theme.hairline_strong
+                        },
+                    ),
                     egui::StrokeKind::Inside,
                 );
+                // A non-100% clip shows its speed.
+                if let Some(sp) = clip.constant_speed() {
+                    if (sp - 1.0).abs() > 1e-6 && ce - cs > 24.0 {
+                        ui.painter().text(
+                            crect.center(),
+                            egui::Align2::CENTER_CENTER,
+                            format!("{:.0}%", sp * 100.0),
+                            egui::FontId::monospace(8.0),
+                            theme.text_secondary,
+                        );
+                    }
+                }
                 // Edit point (clip boundary) — the beat-sync landmark.
                 ui.painter().line_segment(
                     [egui::pos2(ce, bar.top()), egui::pos2(ce, bar.bottom())],
@@ -1458,6 +1492,42 @@ fn timeline_panel(ui: &mut egui::Ui, theme: &Theme, app: &mut AppState) {
                         });
                     });
                 }
+                // Per-clip speed for the selected clip in a Sequence layer.
+                if let kiriko_core::model::LayerKind::Sequence { clips } = &layer.kind {
+                    if let Some(cid) = app.selected_clip {
+                        if let Some(clip) = clips.iter().find(|c| c.id == cid) {
+                            ui.indent(("clipspeed", layer.id), |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.label(
+                                        egui::RichText::new("Clip speed %")
+                                            .small()
+                                            .color(theme.text_muted),
+                                    );
+                                    let current =
+                                        clip.constant_speed().map(|s| s * 100.0).unwrap_or(100.0);
+                                    let id = egui::Id::new(("clipspeedv", cid));
+                                    let mut v =
+                                        ui.data(|d| d.get_temp::<f64>(id)).unwrap_or(current);
+                                    let resp = ui.add(
+                                        egui::DragValue::new(&mut v)
+                                            .speed(1.0)
+                                            .range(-800.0..=800.0)
+                                            .suffix(" %"),
+                                    );
+                                    if resp.dragged() || resp.has_focus() {
+                                        ui.data_mut(|d| d.insert_temp(id, v));
+                                    }
+                                    if resp.drag_stopped() || resp.lost_focus() {
+                                        if (v - current).abs() > 1e-6 {
+                                            clip_speed_edit = Some(v);
+                                        }
+                                        ui.data_mut(|d| d.remove::<f64>(id));
+                                    }
+                                });
+                            });
+                        }
+                    }
+                }
             });
 
             // Transform label sits in the left column; the properties (and, for
@@ -1550,6 +1620,9 @@ fn timeline_panel(ui: &mut egui::Ui, theme: &Theme, app: &mut AppState) {
     }
     if let Some(op) = pending {
         app.commit(op);
+    }
+    if let Some(v) = clip_speed_edit {
+        app.set_selected_clip_speed(v);
     }
     timeline_mode_toggle(ui, theme, app);
 }

@@ -84,6 +84,29 @@ impl Clip {
             .unwrap_or(self.place_start)
     }
 
+    /// This clip at a new constant `speed` (1.0 = source rate), its place on the
+    /// layer unchanged (the beat-sync covenant — edit points never move). The
+    /// source range it covers follows from the speed, so `source_out` is
+    /// re-derived from the retime; the clip id is preserved.
+    pub fn with_speed(&self, speed: Rational) -> Clip {
+        let retime = Retime::constant_speed(self.place_duration, self.source_in, speed);
+        let source_out = retime.boundaries.last().map_or(self.source_out, |b| b.s);
+        Clip {
+            retime,
+            source_out,
+            ..self.clone()
+        }
+    }
+
+    /// The clip's single constant speed (1.0 = source rate), or None if it holds
+    /// a ramp or a more complex retime that the timeline can't show as one value.
+    pub fn constant_speed(&self) -> Option<f64> {
+        self.retime
+            .single_ramp_view()
+            .filter(|(v0, v1, _)| (v0 - v1).abs() < 1e-9)
+            .map(|(v0, _, _)| v0)
+    }
+
     /// True when layer-local time `lt` (seconds) falls within this clip.
     pub fn contains(&self, lt: f64) -> bool {
         lt >= self.place_start.to_f64() && lt < self.place_end().to_f64()
@@ -202,6 +225,25 @@ mod tests {
             rat(place_start, 1),
             rat(place_dur, 1),
         )
+    }
+
+    #[test]
+    fn with_speed_reprices_the_clip_without_moving_it() {
+        // A 4 s clip of source [0,4). Play it at 2× → it still occupies 4 s on
+        // the layer (place unchanged) but consumes 8 s of source.
+        let base = clip(Uuid::now_v7(), 3, 4);
+        let fast = base.with_speed(rat(2, 1));
+        assert_eq!(fast.place_start, base.place_start); // edit point held
+        assert_eq!(fast.place_duration, base.place_duration);
+        assert_eq!(fast.source_out, rat(8, 1)); // 4 s × 2×
+        assert_eq!(fast.id, base.id); // same clip
+        assert_eq!(fast.constant_speed(), Some(2.0));
+        // Half speed consumes half the source.
+        let slow = base.with_speed(rat(1, 2));
+        assert_eq!(slow.source_out, rat(2, 1));
+        assert_eq!(slow.constant_speed(), Some(0.5));
+        // A plain clip reads as 1×.
+        assert_eq!(base.constant_speed(), Some(1.0));
     }
 
     #[test]

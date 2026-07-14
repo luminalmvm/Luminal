@@ -159,7 +159,11 @@ Two mechanisms make this safe, and you'll see them by name in the code:
   speed, so splitting and re-speeding the second half never shifts where it starts.
   You can also **delete the clip under the playhead** (Composition → Delete clip at
   playhead), which leaves a gap — the Vegas surface allows gaps, and a gap simply renders
-  transparent. Dragging more clips in and per-clip trimming are the next steps.
+  transparent. **Click a clip to select it** (it highlights in clay) and set its **Clip speed
+  %** in the layer's twirl-down: the clip keeps its exact place on the layer — its edit points
+  don't budge, honouring the beat-sync covenant — and only the stretch of source it consumes
+  changes (that maths is `Clip::with_speed`, unit-tested). A non-100% clip shows its speed on
+  its bar. Dragging more clips in and per-clip trimming are the next steps.
   You can also **right-click a footage layer → Convert to sequenced layer** (K-071): it
   becomes a single-source layer bound to that one clip — a "fancy precomp" you'll soon
   open in its own editing tab to cut and retime, where a camera track (run once on the

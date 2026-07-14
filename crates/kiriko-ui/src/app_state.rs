@@ -649,6 +649,9 @@ pub struct AppState {
     pub trim_edit: Option<(Uuid, bool, f64)>,
     /// Layer whose properties the graph editor shows (clicked in the Timeline).
     pub selected_layer: Option<Uuid>,
+    /// Selected clip within a Sequence layer (clicked sub-bar), for per-clip
+    /// speed editing.
+    pub selected_clip: Option<Uuid>,
     /// Mask vertex mid-drag in the Viewer: (mask index, vertex index,
     /// layer-space position). Committed as one SetLayerMasks op on release.
     pub mask_drag: Option<(usize, usize, (f64, f64))>,
@@ -769,6 +772,7 @@ impl Default for AppState {
             prop_edit: None,
             trim_edit: None,
             selected_layer: None,
+            selected_clip: None,
             graph_prop: None,
             graph_edit: None,
             graph_speed_view: false,
@@ -1443,6 +1447,41 @@ impl AppState {
         };
         let mut new_clips = clips.clone();
         new_clips.splice(idx..=idx, [left, right]);
+        self.commit(Op::SetSequenceClips {
+            comp: comp_id,
+            layer: layer_id,
+            clips: new_clips,
+        });
+        #[cfg(feature = "media")]
+        self.refresh_preview();
+    }
+
+    /// Set the selected clip's constant speed (percent; 100 = source rate) in
+    /// its Sequence layer, keeping its place on the layer (beat-sync covenant).
+    pub fn set_selected_clip_speed(&mut self, percent: f64) {
+        use kiriko_core::model::LayerKind;
+        let (Some(comp_id), Some(layer_id), Some(clip_id)) =
+            (self.selected_comp, self.selected_layer, self.selected_clip)
+        else {
+            return;
+        };
+        let doc = self.store.snapshot();
+        let Some(comp) = doc.comp(comp_id) else {
+            return;
+        };
+        let Some(layer) = comp.layers.iter().find(|l| l.id == layer_id) else {
+            return;
+        };
+        let LayerKind::Sequence { clips } = &layer.kind else {
+            return;
+        };
+        let Some(idx) = clips.iter().position(|c| c.id == clip_id) else {
+            return;
+        };
+        let speed = kiriko_core::Rational::from_f64_on_grid(percent / 100.0, 1000)
+            .unwrap_or(kiriko_core::Rational::ONE);
+        let mut new_clips = clips.clone();
+        new_clips[idx] = new_clips[idx].with_speed(speed);
         self.commit(Op::SetSequenceClips {
             comp: comp_id,
             layer: layer_id,
