@@ -3795,6 +3795,40 @@ fn graph_plot(
     // ---- plot geometry: x = layer time over the comp span, y = value ----
     ui.painter().rect_filled(rect, 0.0, theme.surface_0);
     let duration = comp.duration.0.to_f64().max(1e-6);
+
+    // Provisional keys during a drag (visual only until release) — computed up
+    // here so the y-range can fit the *drawn* curve, not just the keyframes.
+    let multi_delta: Option<f64> = match app.graph_edit {
+        Some((i, _, v)) if multi && selection.contains(&i) => keys.get(i).map(|k| v - k.value),
+        _ => None,
+    };
+    let mut shown: Vec<Keyframe> = keys.clone();
+    if let Some(delta) = multi_delta {
+        nudge_selected_values(&mut shown, &selection, delta);
+    } else if let Some((idx, kt, kv)) = app.graph_edit {
+        if let Some(k) = shown.get_mut(idx) {
+            k.time = rational_at(kt);
+            k.value = kv;
+        }
+        shown.sort_by_key(|k| k.time);
+    }
+    if let Some((idx, sp)) = app.graph_speed_edit {
+        if let Some(k) = shown.get_mut(idx) {
+            let side = SideInterp::Bezier {
+                speed: sp,
+                influence: side_influence(k.interp_out),
+            };
+            k.interp_in = side;
+            k.interp_out = side;
+        }
+    }
+    if let Some((idx, is_out, sp, inf)) = app.graph_tangent_edit {
+        let alt = ui.input(|i| i.modifiers.alt);
+        if let Some(k) = shown.get_mut(idx) {
+            apply_tangent(k, is_out, sp, inf, alt);
+        }
+    }
+
     let (mut vmin, mut vmax) = keys.iter().fold((f64::MAX, f64::MIN), |(lo, hi), k| {
         (lo.min(k.value), hi.max(k.value))
     });
@@ -3805,6 +3839,17 @@ fn graph_plot(
     if let Some((_, _, v)) = app.graph_edit {
         vmin = vmin.min(v);
         vmax = vmax.max(v);
+    }
+    // Fit the drawn value curve too: a bezier can overshoot past its keyframes,
+    // so sample it and grow the range to keep the whole curve on screen (Mack).
+    {
+        let n = (rect.width() as usize / 2).max(16);
+        for i in 0..=n {
+            let t = duration * i as f64 / n as f64;
+            let v = kiriko_core::anim::evaluate(&shown, t).unwrap_or(static_val);
+            vmin = vmin.min(v);
+            vmax = vmax.max(v);
+        }
     }
     let pad = ((vmax - vmin).abs().max(1.0)) * 0.15;
     let (vmin, vmax) = (vmin - pad, vmax + pad);
@@ -3878,44 +3923,9 @@ fn graph_plot(
         }
     }
 
-    // Live multi-drag: a selected key mid-drag previews the same value delta
-    // on every selected key (times stay put — the multi-edit is value-only).
-    let multi_delta: Option<f64> = match app.graph_edit {
-        Some((i, _, v)) if multi && selection.contains(&i) => keys.get(i).map(|k| v - k.value),
-        _ => None,
-    };
-
-    // Provisional keys during a drag (visual only until release).
-    let mut shown: Vec<Keyframe> = keys.clone();
-    if let Some(delta) = multi_delta {
-        nudge_selected_values(&mut shown, &selection, delta);
-    } else if let Some((idx, kt, kv)) = app.graph_edit {
-        if let Some(k) = shown.get_mut(idx) {
-            k.time = rational_at(kt);
-            k.value = kv;
-        }
-        shown.sort_by_key(|k| k.time);
-    }
-    // A speed-lens drag re-tangents one key so the whole derivative curve moves
-    // live; the value/time are untouched (K-070 — a lens on the same store).
-    if let Some((idx, sp)) = app.graph_speed_edit {
-        if let Some(k) = shown.get_mut(idx) {
-            let side = SideInterp::Bezier {
-                speed: sp,
-                influence: side_influence(k.interp_out),
-            };
-            k.interp_in = side;
-            k.interp_out = side;
-        }
-    }
-    // A value-lens tangent-handle drag previews live too — the dragged side (and
-    // its unified partner) re-tangents so the curve bends as you pull.
-    if let Some((idx, is_out, sp, inf)) = app.graph_tangent_edit {
-        let alt = ui.input(|i| i.modifiers.alt);
-        if let Some(k) = shown.get_mut(idx) {
-            apply_tangent(k, is_out, sp, inf, alt);
-        }
-    }
+    // (`shown` — the provisional keys with any in-flight drag applied — and its
+    // multi_delta are computed above, before the y-range, so the range fits the
+    // drawn curve including live bezier overshoots.)
 
     // Curve polyline: value, or its derivative in the speed lens (central
     // difference at half-frame steps — display-first; exact closed forms
