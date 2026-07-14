@@ -37,35 +37,43 @@ impl Panel {
     }
 }
 
-/// The default workspace: slim tool columns either side of a tall Viewer that
-/// sits above the Timeline. The Viewer is a bare pane (no tab); Project/effects
-/// share a tab group on the left, Scopes tabs on the right, Timeline tabs below.
+/// The default workspace: a full-width Timeline strip along the bottom, beneath a
+/// band of slim tool columns flanking a tall Viewer. The Viewer is a bare pane (no
+/// tab); Project/effects share a tab group on the left, Scopes on the right, and
+/// the Timeline tabs span the whole width below both — the editing-suite default.
 pub fn default_layout() -> egui_tiles::Tree<Panel> {
     let mut tiles = egui_tiles::Tiles::default();
     let viewer = tiles.insert_pane(Panel::Viewer);
-    let timeline = tiles.insert_pane(Panel::Timeline);
-    let timeline_tabs = tiles.insert_tab_tile(vec![timeline]);
-    let centre = tiles.insert_vertical_tile(vec![viewer, timeline_tabs]);
+
     let project = tiles.insert_pane(Panel::Project);
     let fx = tiles.insert_pane(Panel::EffectControls);
     let fxp = tiles.insert_pane(Panel::EffectsAndPresets);
     let left = tiles.insert_tab_tile(vec![project, fx, fxp]);
     let scopes = tiles.insert_pane(Panel::Scopes);
     let right = tiles.insert_tab_tile(vec![scopes]);
-    let root = tiles.insert_horizontal_tile(vec![left, centre, right]);
+
+    // Upper band: the tool columns either side of the Viewer.
+    let upper = tiles.insert_horizontal_tile(vec![left, viewer, right]);
+    if let Some(egui_tiles::Tile::Container(egui_tiles::Container::Linear(lin))) =
+        tiles.get_mut(upper)
+    {
+        lin.shares.set_share(left, 0.22);
+        lin.shares.set_share(viewer, 0.58);
+        lin.shares.set_share(right, 0.20);
+    }
+
+    // The Timeline is a direct child of the vertical root, so it spans the full
+    // window width along the bottom rather than only the Viewer's column.
+    let timeline = tiles.insert_pane(Panel::Timeline);
+    let timeline_tabs = tiles.insert_tab_tile(vec![timeline]);
+    let root = tiles.insert_vertical_tile(vec![upper, timeline_tabs]);
     if let Some(egui_tiles::Tile::Container(egui_tiles::Container::Linear(lin))) =
         tiles.get_mut(root)
     {
-        lin.shares.set_share(left, 0.22);
-        lin.shares.set_share(centre, 0.58);
-        lin.shares.set_share(right, 0.20);
-    }
-    if let Some(egui_tiles::Tile::Container(egui_tiles::Container::Linear(lin))) =
-        tiles.get_mut(centre)
-    {
-        lin.shares.set_share(viewer, 0.68);
+        lin.shares.set_share(upper, 0.68);
         lin.shares.set_share(timeline_tabs, 0.32);
     }
+
     egui_tiles::Tree::new("kiriko-dock", root, tiles)
 }
 
@@ -5806,6 +5814,44 @@ mod dock_tests {
         assert!(!tree.tiles.is_visible(project));
         tree.tiles.set_visible(project, true); // dock back
         assert!(tree.tiles.is_visible(project));
+    }
+
+    // The Timeline starts as a full-width strip along the bottom: its tile is a
+    // direct child of the vertical root (so it is as wide as the window) and the
+    // last child (the bottom band). Guards the default workspace against a
+    // regression back to the Timeline nested inside the Viewer's column.
+    #[test]
+    fn timeline_starts_full_width_along_the_bottom() {
+        let tree = default_layout();
+        let root = tree.root().expect("layout has a root");
+        let egui_tiles::Tile::Container(egui_tiles::Container::Linear(lin)) =
+            tree.tiles.get(root).expect("root tile exists")
+        else {
+            panic!("the root should be a vertical linear container");
+        };
+        assert_eq!(lin.dir, egui_tiles::LinearDir::Vertical);
+
+        let timeline = tile_id_of(&tree, Panel::Timeline).expect("timeline present");
+        let timeline_band = tree
+            .tiles
+            .iter()
+            .find_map(|(id, tile)| match tile {
+                egui_tiles::Tile::Container(c) if c.children().any(|ch| *ch == timeline) => {
+                    Some(*id)
+                }
+                _ => None,
+            })
+            .expect("timeline sits in a container");
+
+        assert!(
+            lin.children.contains(&timeline_band),
+            "timeline band should be a direct child of the vertical root (full width)"
+        );
+        assert_eq!(
+            lin.children.last(),
+            Some(&timeline_band),
+            "timeline band should be the bottom-most child"
+        );
     }
 
     // Each keyframe's glyph codes its interpolation (graph-editor ergonomics).
