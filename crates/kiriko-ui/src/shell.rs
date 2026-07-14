@@ -811,6 +811,9 @@ fn layer_type_style(kind: &kiriko_core::model::LayerKind, theme: &Theme) -> (Ico
         LayerKind::Solid { .. } => (Icon::Solid, theme.layer.solid),
         LayerKind::Text { .. } => (Icon::Text, theme.layer.text),
         LayerKind::Camera { .. } => (Icon::Camera, theme.layer.camera),
+        // Reuses the solid glyph/colour for now (an adjustment layer is a
+        // comp-sized effect container); a distinct glyph is a later refinement.
+        LayerKind::Adjustment => (Icon::Solid, theme.layer.solid),
     }
 }
 
@@ -3969,6 +3972,9 @@ fn build_comp_draws(
     };
     let pixels_for = |layer: &kiriko_core::model::Layer| -> Option<LayerPixels> {
         let raw = match &layer.kind {
+            // An adjustment layer has no pixels of its own; until its effect
+            // stack exists it is a pass-through and draws nothing.
+            LayerKind::Adjustment => return None,
             // Footage and Sequence footage clips both arrive decoded, keyed by
             // the layer id (collect_comp_jobs pushes one job per layer/frame).
             LayerKind::Footage { .. } | LayerKind::Sequence { .. } => {
@@ -5192,6 +5198,10 @@ fn mask_space(
     comp: &kiriko_core::model::Composition,
 ) -> (f64, f64) {
     match &layer.kind {
+        // An adjustment layer is comp-sized: its masks live in comp space.
+        kiriko_core::model::LayerKind::Adjustment => {
+            (f64::from(comp.width), f64::from(comp.height))
+        }
         kiriko_core::model::LayerKind::Solid { def } => app
             .store
             .snapshot()
@@ -5763,6 +5773,7 @@ impl Shell {
                 MenuAction::AddSolidLayer => self.app.add_solid_layer(),
                 MenuAction::AddTextLayer => self.app.add_text_layer(),
                 MenuAction::AddCameraLayer => self.app.add_camera_layer(),
+                MenuAction::AddAdjustmentLayer => self.app.add_adjustment_layer(),
                 MenuAction::AddSequenceLayer => self.app.add_sequence_layer(),
                 MenuAction::CutClip => self.app.cut_sequence_at_playhead(),
                 MenuAction::DeleteClip => self.app.delete_clip_at_playhead(),
@@ -6573,6 +6584,10 @@ impl Shell {
                     }
                     if ui.button("Add camera layer").clicked() {
                         self.app.add_camera_layer();
+                        ui.close_menu();
+                    }
+                    if ui.button("Add adjustment layer").clicked() {
+                        self.app.add_adjustment_layer();
                         ui.close_menu();
                     }
                     if ui.button("Add sequence layer").clicked() {

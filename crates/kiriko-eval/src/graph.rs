@@ -47,6 +47,10 @@ pub enum NodeKind {
         blend: BlendMode,
         has_matte: bool,
     },
+    /// An adjustment layer processing the composite beneath it: its effect
+    /// stack (masks gate the region) is applied to the accumulator, and the
+    /// result replaces it. Takes the accumulated composite as its input.
+    Adjust { layer: Uuid },
     /// The composition's final pixels: the background with every layer
     /// composited onto it.
     CompOutput { comp: Uuid, width: u32, height: u32 },
@@ -111,6 +115,24 @@ pub fn compile(comp: &Composition) -> EvalGraph {
     };
     let mut acc: Option<NodeId> = None;
     for layer in comp.layers.iter().rev() {
+        // An adjustment layer has no source of its own — it processes the
+        // composite beneath it. With nothing below there is nothing to adjust.
+        if matches!(layer.kind, LayerKind::Adjustment) {
+            let Some(below) = acc else {
+                continue;
+            };
+            let mut top = below;
+            if !layer.masks.is_empty() {
+                top = g.push(
+                    NodeKind::Masks {
+                        count: layer.masks.len(),
+                    },
+                    vec![top],
+                );
+            }
+            acc = Some(g.push(NodeKind::Adjust { layer: layer.id }, vec![top]));
+            continue;
+        }
         let Some(source) = source_ref(&layer.kind) else {
             continue; // a camera contributes no pixels
         };
@@ -174,7 +196,9 @@ fn source_ref(kind: &LayerKind) -> Option<SourceRef> {
         LayerKind::Precomp { comp } => SourceRef::Precomp(*comp),
         LayerKind::Text { .. } => SourceRef::Text,
         LayerKind::Sequence { .. } => SourceRef::Sequence,
-        LayerKind::Camera { .. } => return None,
+        // Cameras and adjustment layers have no source of their own; the
+        // compiler handles both before this point.
+        LayerKind::Camera { .. } | LayerKind::Adjustment => return None,
     })
 }
 
@@ -327,5 +351,51 @@ mod tests {
         assert_eq!(g.len(), 1);
         assert!(matches!(g.node(g.output).kind, NodeKind::CompOutput { .. }));
         assert!(g.node(g.output).inputs.is_empty());
+    }
+
+    #[test]
+    fn an_adjustment_layer_wraps_the_composite_beneath_it() {
+        // A footage layer with an adjustment layer above it (index 0 = top).
+        let adj = layer(LayerKind::Adjustment, Vec::new());
+        let g = compile(&comp_with(vec![adj, footage(None, Vec::new())]));
+        let adjust = g
+            .nodes
+            .iter()
+            .find(|n| matches!(n.kind, NodeKind::Adjust { .. }))
+            .expect("an adjustment over content emits an Adjust node");
+        // It takes the layer-below's composite as its single input, and the comp
+        // output now pulls from the Adjust (it replaced the accumulator).
+        assert_eq!(adjust.inputs.len(), 1);
+        assert!(matches!(
+            g.node(adjust.inputs[0]).kind,
+            NodeKind::Composite { .. }
+        ));
+        let out = g.node(g.output);
+        assert!(matches!(
+            g.node(out.inputs[0]).kind,
+            NodeKind::Adjust { .. }
+        ));
+    }
+
+    #[test]
+    fn an_adjustment_masks_wrap_and_over_nothing_it_is_dropped() {
+        // Masks on the adjustment wrap its input.
+        let adj = layer(
+            LayerKind::Adjustment,
+            vec![Mask::rectangle(0.0, 0.0, 10.0, 10.0)],
+        );
+        let g = compile(&comp_with(vec![adj, footage(None, Vec::new())]));
+        let adjust = g
+            .nodes
+            .iter()
+            .find(|n| matches!(n.kind, NodeKind::Adjust { .. }))
+            .unwrap();
+        assert!(matches!(
+            g.node(adjust.inputs[0]).kind,
+            NodeKind::Masks { count: 1 }
+        ));
+        // An adjustment with nothing beneath it has nothing to process.
+        let g2 = compile(&comp_with(vec![layer(LayerKind::Adjustment, Vec::new())]));
+        assert!(!g2.kinds().any(|k| matches!(k, NodeKind::Adjust { .. })));
     }
 }

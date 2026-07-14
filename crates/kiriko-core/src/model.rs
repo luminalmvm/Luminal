@@ -254,6 +254,10 @@ pub enum LayerKind {
         #[serde(default)]
         clips: Vec<crate::sequence::Clip>,
     },
+    /// An adjustment layer (docs/01-GLOSSARY.md): no source of its own — its
+    /// masks and effect stack apply to the accumulated composite of every layer
+    /// beneath it, within its span. A comp-sized container for effects.
+    Adjustment,
 }
 
 /// The active camera's evaluated placement at one comp time — what both the

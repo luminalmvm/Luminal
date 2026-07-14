@@ -1343,6 +1343,45 @@ impl AppState {
         self.refresh_preview();
     }
 
+    /// Add an adjustment layer at the top of the stack — a comp-sized effect
+    /// container whose stack applies to every layer beneath it within its span
+    /// (docs/01-GLOSSARY.md). Inert until the effect suite lands, but it already
+    /// takes its place in the evaluation graph.
+    pub fn add_adjustment_layer(&mut self) {
+        use kiriko_core::model::{Layer, LayerKind, Switches, TransformGroup};
+        use kiriko_core::time::CompTime;
+        let Some(comp_id) = self.preview_comp.or(self.selected_comp) else {
+            self.error = Some("select a composition first".into());
+            return;
+        };
+        let doc = self.store.snapshot();
+        let Some(comp) = doc.comp(comp_id) else {
+            return;
+        };
+        let layer = Layer {
+            id: Uuid::now_v7(),
+            name: "Adjustment".into(),
+            kind: LayerKind::Adjustment,
+            in_point: CompTime(Rational::ZERO),
+            out_point: CompTime(comp.duration.0),
+            start_offset: CompTime(Rational::ZERO),
+            transform: TransformGroup::default(),
+            matte: None,
+            blend: Default::default(),
+            masks: Vec::new(),
+            switches: Switches::default(),
+            extra: serde_json::Map::new(),
+        };
+        self.commit(Op::AddLayer {
+            comp: comp_id,
+            index: 0,
+            layer: Box::new(layer),
+        });
+        self.preview_comp = Some(comp_id);
+        #[cfg(feature = "media")]
+        self.refresh_preview();
+    }
+
     /// Add a Sequence layer (Vegas-style clip row). If a footage item is
     /// selected in the Project panel it becomes the first clip spanning the
     /// footage; otherwise the layer starts empty. This is a first, simple
@@ -2413,7 +2452,12 @@ impl AppState {
             }
             let lt = t - layer.start_offset.0.to_f64();
             match &layer.kind {
-                LayerKind::Solid { .. } | LayerKind::Text { .. } | LayerKind::Camera { .. } => {}
+                // No footage source to decode (an adjustment layer processes
+                // the composite below; solids/text/cameras rasterise elsewhere).
+                LayerKind::Solid { .. }
+                | LayerKind::Text { .. }
+                | LayerKind::Camera { .. }
+                | LayerKind::Adjustment => {}
                 LayerKind::Sequence { clips } => {
                     // Resolve the clip under the playhead to a footage frame
                     // (comp-source clips + gaps are handled elsewhere/skip).

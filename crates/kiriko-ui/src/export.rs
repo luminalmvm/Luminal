@@ -207,6 +207,9 @@ impl Renderer<'_> {
         }
         let lt = t - layer.start_offset.0.to_f64();
         match &layer.kind {
+            // An adjustment layer has no source of its own; with no effect
+            // stack yet it contributes nothing to the export.
+            LayerKind::Adjustment => Ok(None),
             LayerKind::Footage { item, retime } => {
                 // Retime maps local → source time; preview uses the same
                 // Retime::evaluate + frame-pick, so export matches preview (K-031).

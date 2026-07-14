@@ -353,6 +353,13 @@ Two mechanisms make this safe, and you'll see them by name in the code:
   (`camera_matrix` in the GPU crate) shared by preview and export, so a camera move
   can't look different in the exported file. A regression test proves both promises:
   z = 0 maps 1:1, and depth scales exactly as the formula says.
+- **Adjustment layers** (Composition → Add adjustment layer) — a comp-sized layer with no
+  picture of its own: its effects (and masks, to limit the region) apply to *everything
+  beneath it* on the stack, so one grade or glow can treat a whole composite at once. The
+  layer type and its place in the render graph are wired now — the compiler gives it an
+  "adjust" node that wraps the composite below — but since the effect suite arrives in a
+  later phase, today an adjustment layer simply passes the picture through unchanged. It also
+  reuses the solid's glyph for the moment; a distinct icon is a small later touch.
 - **The window layout** (K-074) — the picture (the Viewer) fills the middle with nothing
   above it: no tab, no strip, just the image. Around it sit the other panels, each with a
   little title tab you can grab: Project and the effect panels on the left, scopes on the
