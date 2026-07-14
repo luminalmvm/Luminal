@@ -818,6 +818,7 @@ fn solve_u(x: &[f64; 4], t: f64) -> f64 {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     fn rat(n: i64, d: i64) -> Rational {
         Rational::new(n, d).unwrap()
@@ -1293,5 +1294,33 @@ mod tests {
         assert_eq!(r.segment_index_at(rat(4, 1)), Some(1)); // t == D → last segment
         assert_eq!(r.segment_index_at(rat(-1, 1)), None);
         assert_eq!(r.segment_index_at(rat(5, 1)), None);
+    }
+
+    proptest! {
+        // The frame-pinning covenant (K-070): editing a segment's speeds only
+        // moves source positions *after* its start — the start itself is pinned,
+        // and the store stays valid, for any speeds.
+        #[test]
+        fn setting_speeds_pins_the_edited_segment_start(
+            v0 in 1i64..30,
+            v1 in 1i64..30,
+            nv0 in 1i64..30,
+            nv1 in 1i64..30,
+        ) {
+            let keys = [
+                (rat(0, 1), rat(v0, 10)),
+                (rat(1, 1), rat(v1, 10)),
+                (rat(2, 1), rat(v0, 10)),
+                (rat(3, 1), rat(v1, 10)),
+            ];
+            let base = Retime::from_speed_keyframes(rat(0, 1), &keys).unwrap();
+            let i = base.segment_index_at(rat(3, 2)).unwrap();
+            let start_before = base.boundaries[i].s;
+            let edited = base
+                .with_segment_speeds(rat(3, 2), rat(nv0, 10), rat(nv1, 10))
+                .unwrap();
+            prop_assert_eq!(edited.boundaries[i].s, start_before);
+            edited.validate().unwrap();
+        }
     }
 }
