@@ -224,6 +224,15 @@ Two mechanisms make this safe, and you'll see them by name in the code:
   background thread so pressing Space never stalls; a silent comp just plays on a plain
   timer instead. This retires the old stopgap where comp playback guessed the time from a
   wall clock.
+- **Beat detection** (`kiriko-audio::beat`) — the groundwork for cutting to the music. It
+  slides a short window along the track and, at each step, measures how much *new* energy
+  appeared since the last step (the "spectral flux"); a kick or snare makes that number
+  spike, and the spikes are the onsets. Autocorrelating the spikes recovers the tempo (BPM),
+  preferring the sensible 70–180 range so a fast track doesn't report double-time. A
+  sensitivity dial trades more markers for fewer. It's the standard, well-understood
+  approach done carefully — no AI guesswork — and it's tested against synthetic clicks at a
+  known tempo (every beat found, tempo within 2 BPM). Turning these onsets into snap-to
+  markers on the timeline is the next step.
 - The **graph editor** (tabbed with the Timeline) — click a layer, and its animated
   properties draw as live curves: drag the keyframes (value and time together, one
   undo per drag), double-click the background to add a key, right-click a key for a menu
