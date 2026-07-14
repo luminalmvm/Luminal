@@ -1442,6 +1442,49 @@ impl AppState {
         self.refresh_preview();
     }
 
+    /// Delete the clip under the playhead in the selected sequence layer,
+    /// leaving a gap (the Vegas surface allows gaps — K-071).
+    pub fn delete_clip_at_playhead(&mut self) {
+        use kiriko_core::model::LayerKind;
+        let Some(comp_id) = self.preview_comp.or(self.selected_comp) else {
+            return;
+        };
+        let Some(layer_id) = self.selected_layer else {
+            self.error = Some("select a sequence layer".into());
+            return;
+        };
+        let doc = self.store.snapshot();
+        let Some(comp) = doc.comp(comp_id) else {
+            return;
+        };
+        let Some(layer) = comp.layers.iter().find(|l| l.id == layer_id) else {
+            return;
+        };
+        let LayerKind::Sequence { clips } = &layer.kind else {
+            self.error = Some("not a sequence layer".into());
+            return;
+        };
+        let Ok(comp_t) = comp.frame_rate.time_of_frame(self.preview_frame as i64) else {
+            return;
+        };
+        let Ok(tau) = comp_t.0.checked_sub(layer.start_offset.0) else {
+            return;
+        };
+        let Some(idx) = clips.iter().position(|c| c.contains(tau.to_f64())) else {
+            self.error = Some("no clip under the playhead".into());
+            return;
+        };
+        let mut new_clips = clips.clone();
+        new_clips.remove(idx);
+        self.commit(Op::SetSequenceClips {
+            comp: comp_id,
+            layer: layer_id,
+            clips: new_clips,
+        });
+        #[cfg(feature = "media")]
+        self.refresh_preview();
+    }
+
     /// Ops that guarantee the auto-filing folder for `kind` exists, plus its
     /// id. Tracks the folder by id (AE habit: renaming or nesting the Solids
     /// folder keeps it the Solids folder); a deleted one is recreated.

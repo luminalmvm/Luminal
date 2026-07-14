@@ -4296,6 +4296,7 @@ impl Shell {
                 MenuAction::AddCameraLayer => self.app.add_camera_layer(),
                 MenuAction::AddSequenceLayer => self.app.add_sequence_layer(),
                 MenuAction::CutClip => self.app.cut_sequence_at_playhead(),
+                MenuAction::DeleteClip => self.app.delete_clip_at_playhead(),
                 MenuAction::DetectBeats => {
                     #[cfg(feature = "media")]
                     if let Some(id) = self.app.preview_comp.or(self.app.selected_comp) {
@@ -5099,6 +5100,10 @@ impl Shell {
                     }
                     if ui.button("Cut clip at playhead").clicked() {
                         self.app.cut_sequence_at_playhead();
+                        ui.close_menu();
+                    }
+                    if ui.button("Delete clip at playhead").clicked() {
+                        self.app.delete_clip_at_playhead();
                         ui.close_menu();
                     }
                     #[cfg(feature = "media")]

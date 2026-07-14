@@ -151,7 +151,9 @@ Two mechanisms make this safe, and you'll see them by name in the code:
   speed ramps exactly partition the original, and neither clip moves (the beat-sync
   covenant). Crucially, a clip's first frame is always its own trim-in whatever its
   speed, so splitting and re-speeding the second half never shifts where it starts.
-  Dragging more clips in and per-clip trimming are the next steps.
+  You can also **delete the clip under the playhead** (Composition → Delete clip at
+  playhead), which leaves a gap — the Vegas surface allows gaps, and a gap simply renders
+  transparent. Dragging more clips in and per-clip trimming are the next steps.
   You can also **right-click a footage layer → Convert to sequenced layer** (K-071): it
   becomes a single-source layer bound to that one clip — a "fancy precomp" you'll soon
   open in its own editing tab to cut and retime, where a camera track (run once on the
