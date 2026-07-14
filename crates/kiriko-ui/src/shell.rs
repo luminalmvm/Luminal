@@ -1475,7 +1475,14 @@ fn timeline_panel(ui: &mut egui::Ui, theme: &Theme, app: &mut AppState) {
                     expanded = !expanded;
                     ui.data_mut(|d| d.insert_temp(twirl_id, expanded));
                 }
-                crate::icons::disclosure(&outline_painter, tri, expanded, theme.text_muted);
+                // Secondary (not muted) so the twirl reads as a control against
+                // the dark outline; brightens under the cursor like other glyphs.
+                let twirl_col = if tri_resp.hovered() {
+                    theme.text_primary
+                } else {
+                    theme.text_secondary
+                };
+                crate::icons::disclosure(&outline_painter, tri, expanded, twirl_col);
                 // Left-column subcolumns (Mack): [visibility][title…][matte][blend][3D]
                 // [mute]. Switches are right-anchored so they align across every row;
                 // the title flexes and truncates. Each is clipped to its slot, so a
