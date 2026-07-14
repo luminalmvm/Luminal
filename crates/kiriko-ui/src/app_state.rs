@@ -708,6 +708,14 @@ pub struct AppState {
     /// Graph editor lens: false = value graph, true = speed graph
     /// (docs/01-GLOSSARY.md §3: two views of the same data, never separate).
     pub graph_speed_view: bool,
+    /// Graph the selected footage layer's Retime channel (K-075) rather than a
+    /// transform property: value lens = source position as frame timecode,
+    /// derivative lens = speed %.
+    pub graph_retime: bool,
+    /// Vegas-editor preference (K-075): the Speed/Retime channel opens to the
+    /// speed-% (derivative) lens by default; off, to the frame-timecode lens.
+    /// Session state for now — a persisted Settings home is a later refinement.
+    pub vegas_default_lens: bool,
     /// Comp shown in the Viewer (takes precedence over preview_item).
     pub preview_comp: Option<Uuid>,
     /// Wall-clock comp playback v0 (the frame scheduler replaces this):
@@ -811,6 +819,8 @@ impl Default for AppState {
             graph_edit: None,
             graph_speed_edit: None,
             graph_speed_view: false,
+            graph_retime: false,
+            vegas_default_lens: false,
             preview_comp: None,
             comp_playback: None,
             preview_item: None,

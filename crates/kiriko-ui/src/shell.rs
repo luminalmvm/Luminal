@@ -255,6 +255,20 @@ fn fmt_duration(secs: f64) -> String {
     format!("{h:02}:{m:02}:{s:02}:{ms:03}")
 }
 
+/// `HH:MM:SS:FF` frame timecode from seconds at `fps` — the Retime value lens
+/// reading (K-075: "which source frame is showing here"). The frame field wraps
+/// at `fps`; a whole extra second is carried up so `59:24`→`00`+1s at 25 fps.
+fn fmt_timecode_frames(secs: f64, fps: f64) -> String {
+    let fps_i = fps.round().max(1.0) as u64;
+    let total_frames = (secs.max(0.0) * fps).round() as u64;
+    let ff = total_frames % fps_i;
+    let total_s = total_frames / fps_i;
+    let s = total_s % 60;
+    let m = (total_s / 60) % 60;
+    let h = total_s / 3600;
+    format!("{h:02}:{m:02}:{s:02}:{ff:02}")
+}
+
 /// Parse a flexible duration: `SS(.sss)`, `MM:SS`, `HH:MM:SS`, or
 /// `HH:MM:SS:mmm`. None on anything unparseable.
 fn parse_duration(text: &str) -> Option<f64> {
@@ -2543,6 +2557,7 @@ fn graph_editor_panel(ui: &mut egui::Ui, theme: &Theme, app: &mut AppState) {
     // selection state don't overlap.
     let mut picked_layer: Option<uuid::Uuid> = None;
     let mut picked_prop: Option<TransformProp> = None;
+    let mut picked_retime = false;
     let mut left = ui.new_child(
         egui::UiBuilder::new()
             .max_rect(left_rect)
@@ -2584,6 +2599,24 @@ fn graph_editor_panel(ui: &mut egui::Ui, theme: &Theme, app: &mut AppState) {
                     );
                 });
             }
+            // A retimed footage layer graphs its Speed channel too (K-075).
+            if matches!(
+                layer.kind,
+                kiriko_core::model::LayerKind::Footage {
+                    retime: Some(_),
+                    ..
+                }
+            ) {
+                left.horizontal(|ui| {
+                    ui.add_space(16.0);
+                    if ui
+                        .selectable_label(app.graph_retime, "Speed (Retime)")
+                        .clicked()
+                    {
+                        picked_retime = true;
+                    }
+                });
+            }
         }
     }
     if let Some(l) = picked_layer {
@@ -2591,6 +2624,11 @@ fn graph_editor_panel(ui: &mut egui::Ui, theme: &Theme, app: &mut AppState) {
     }
     if let Some(p) = picked_prop {
         app.graph_prop = Some(p);
+        app.graph_retime = false; // switching to a transform property
+    }
+    if picked_retime {
+        app.graph_retime = true;
+        app.graph_speed_view = app.vegas_default_lens; // open to the preferred lens
     }
 
     // Right area: the curve for the selected layer / property.
@@ -2602,6 +2640,35 @@ fn graph_editor_panel(ui: &mut egui::Ui, theme: &Theme, app: &mut AppState) {
         hint_in_rect(ui, theme, plot_rect, "The selected layer is gone.");
         return;
     };
+    // Retime channel (K-075): a retimed footage layer's Speed, graphed like a
+    // property — value lens = source position as timecode, derivative = speed %.
+    if app.graph_retime {
+        if let kiriko_core::model::LayerKind::Footage {
+            item,
+            retime: Some(rt),
+        } = &layer.kind
+        {
+            // Source frame rate for the timecode: the probed footage fps when
+            // media is present, else the comp's rate as a reasonable fallback.
+            #[cfg(feature = "media")]
+            let src_fps = app
+                .media
+                .map
+                .get(item)
+                .and_then(|s| match s {
+                    crate::app_state::media::MediaStatus::Ready { probe, .. } => {
+                        probe.video.as_ref().map(|v| v.fps())
+                    }
+                    _ => None,
+                })
+                .unwrap_or_else(|| comp.frame_rate.fps());
+            #[cfg(not(feature = "media"))]
+            let src_fps = comp.frame_rate.fps();
+            graph_plot_retime(ui, theme, app, comp, layer, rt, src_fps, plot_rect);
+            return;
+        }
+        app.graph_retime = false; // selected layer isn't retimed footage
+    }
     let animated: Vec<TransformProp> = PROPS
         .iter()
         .map(|(p, _)| *p)
@@ -2622,6 +2689,142 @@ fn graph_editor_panel(ui: &mut egui::Ui, theme: &Theme, app: &mut AppState) {
         .unwrap_or(first);
     app.graph_prop = Some(current);
     graph_plot(ui, theme, app, comp, layer, current, plot_rect);
+}
+
+/// The Retime channel graphed (K-075, increment 2a): the value lens plots the
+/// source position read as `HH:MM:SS:FF` frame timecode, the derivative lens
+/// plots speed per cent. Display-only for now — in-graph segment editing is 2b.
+#[allow(clippy::too_many_arguments)]
+fn graph_plot_retime(
+    ui: &mut egui::Ui,
+    theme: &Theme,
+    app: &mut AppState,
+    comp: &kiriko_core::model::Composition,
+    layer: &kiriko_core::model::Layer,
+    retime: &kiriko_core::retime::Retime,
+    src_fps: f64,
+    rect: egui::Rect,
+) {
+    // Header: the Source/Speed lens toggle and the Vegas default-lens setting.
+    let header = egui::Rect::from_min_max(rect.min, egui::pos2(rect.right(), rect.top() + 22.0));
+    {
+        let mut h = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(header)
+                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+        );
+        h.set_clip_rect(header);
+        if h.selectable_label(!app.graph_speed_view, "Source")
+            .on_hover_text("Value lens — the source frame showing at each point (HH:MM:SS:FF)")
+            .clicked()
+        {
+            app.graph_speed_view = false;
+        }
+        if h.selectable_label(app.graph_speed_view, "Speed %")
+            .on_hover_text("Derivative lens — playback speed per cent (Vegas-style)")
+            .clicked()
+        {
+            app.graph_speed_view = true;
+        }
+        h.separator();
+        h.checkbox(&mut app.vegas_default_lens, "Vegas")
+            .on_hover_text("Open the Speed channel to the speed-% lens by default (K-075)");
+    }
+    let rect = egui::Rect::from_min_max(egui::pos2(rect.left(), rect.top() + 22.0), rect.max);
+    ui.painter().rect_filled(rect, 0.0, theme.surface_0);
+
+    let duration = comp.duration.0.to_f64().max(1e-6);
+    let x_of = |t: f64| rect.left() + ((t / duration) as f32) * rect.width();
+
+    // Sample the active lens across the pane width.
+    let speed_view = app.graph_speed_view;
+    let samples = (rect.width() as usize / 2).max(16);
+    let values: Vec<(f64, f64)> = (0..=samples)
+        .map(|i| {
+            let t = duration * i as f64 / samples as f64;
+            let v = if speed_view {
+                retime.speed_at(t) * 100.0
+            } else {
+                retime.evaluate(t)
+            };
+            (t, v)
+        })
+        .collect();
+    let (mut lo, mut hi) = values.iter().fold((f64::MAX, f64::MIN), |(l, h), (_, v)| {
+        (l.min(*v), h.max(*v))
+    });
+    if speed_view {
+        lo = lo.min(0.0); // always frame 0% and 100%
+        hi = hi.max(100.0);
+    }
+    let pad = ((hi - lo).abs().max(1.0)) * 0.12;
+    let (lo, hi) = (lo - pad, hi + pad);
+    let y_of = |v: f64| rect.bottom() - (((v - lo) / (hi - lo)) as f32) * rect.height();
+
+    if speed_view {
+        // The speed lens marks its 0% and 100% references.
+        for val in [0.0_f64, 100.0] {
+            let y = y_of(val);
+            ui.painter().line_segment(
+                [egui::pos2(rect.left(), y), egui::pos2(rect.right(), y)],
+                egui::Stroke::new(0.5_f32, theme.hairline),
+            );
+        }
+    } else {
+        // The value lens labels its source-time extent as frame timecode.
+        ui.painter().text(
+            egui::pos2(rect.left() + 4.0, rect.top() + 2.0),
+            egui::Align2::LEFT_TOP,
+            fmt_timecode_frames(hi, src_fps),
+            egui::FontId::monospace(10.0),
+            theme.text_muted,
+        );
+        ui.painter().text(
+            egui::pos2(rect.left() + 4.0, rect.bottom() - 2.0),
+            egui::Align2::LEFT_BOTTOM,
+            fmt_timecode_frames(lo.max(0.0), src_fps),
+            egui::FontId::monospace(10.0),
+            theme.text_muted,
+        );
+    }
+
+    // The curve.
+    let points: Vec<egui::Pos2> = values
+        .iter()
+        .map(|(t, v)| egui::pos2(x_of(*t), y_of(*v)))
+        .collect();
+    let colour = if speed_view {
+        theme.curve[1]
+    } else {
+        theme.curve[0]
+    };
+    ui.painter().add(egui::Shape::line(
+        points,
+        egui::Stroke::new(1.5_f32, colour),
+    ));
+
+    // Playhead + a header readout (source timecode and speed %).
+    if app.preview_comp == Some(comp.id) {
+        let lt = app.preview_frame as f64 / comp.frame_rate.fps().max(1.0)
+            - layer.start_offset.0.to_f64();
+        let x = x_of(lt.clamp(0.0, duration));
+        ui.painter().line_segment(
+            [egui::pos2(x, rect.top()), egui::pos2(x, rect.bottom())],
+            egui::Stroke::new(1.0_f32, theme.accent),
+        );
+        let readout = format!(
+            "{}   {:.1}%",
+            fmt_timecode_frames(retime.evaluate(lt), src_fps),
+            retime.speed_at(lt) * 100.0
+        );
+        ui.painter().text(
+            egui::pos2(rect.right() - 6.0, rect.top() + 4.0),
+            egui::Align2::RIGHT_TOP,
+            readout,
+            egui::FontId::monospace(11.0),
+            theme.text_secondary,
+        );
+    }
 }
 
 /// Centre a muted hint inside `rect` (empty state of a sub-pane).
@@ -6037,5 +6240,19 @@ mod dock_tests {
             (measured - target).abs() < 1.0,
             "derivative at the key was {measured}, expected ≈ {target}"
         );
+    }
+
+    // The Retime value lens reads source position as HH:MM:SS:FF frame timecode
+    // (K-075); the frame field wraps at the source fps.
+    #[test]
+    fn frame_timecode_formats_and_wraps() {
+        assert_eq!(fmt_timecode_frames(0.0, 25.0), "00:00:00:00");
+        assert_eq!(fmt_timecode_frames(2.0, 30.0), "00:00:02:00");
+        assert_eq!(fmt_timecode_frames(1.0 / 25.0, 25.0), "00:00:00:01");
+        // Frame field wraps at fps: 24/25 s is frame 24; the 25th rolls the second.
+        assert_eq!(fmt_timecode_frames(24.0 / 25.0, 25.0), "00:00:00:24");
+        assert_eq!(fmt_timecode_frames(1.0, 25.0), "00:00:01:00");
+        // Hours / minutes / seconds compose.
+        assert_eq!(fmt_timecode_frames(3661.0, 24.0), "01:01:01:00");
     }
 }
