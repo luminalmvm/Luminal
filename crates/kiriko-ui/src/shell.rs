@@ -2992,6 +2992,9 @@ fn graph_editor_panel(ui: &mut egui::Ui, theme: &Theme, app: &mut AppState) {
     let mut picked_layer: Option<uuid::Uuid> = None;
     let mut picked_prop: Option<TransformProp> = None;
     let mut picked_retime = false;
+    // A stopwatch toggle from the outline, applied after the immutable comp
+    // borrow ends (for the selected layer).
+    let mut graph_kf_toggle: Option<(TransformProp, kiriko_core::anim::Animation)> = None;
     let mut left = ui.new_child(
         egui::UiBuilder::new()
             .max_rect(left_rect)
@@ -3008,29 +3011,22 @@ fn graph_editor_panel(ui: &mut egui::Ui, theme: &Theme, app: &mut AppState) {
             picked_layer = Some(layer.id);
         }
         if selected {
-            let mut any = false;
+            // Show every property (not just animated ones): the graph outline
+            // matches the lane view, so you can enable a stopwatch and start
+            // adding keyframes here (Mack).
+            let fps = comp.frame_rate.fps().max(1.0);
+            let lt = app.preview_frame as f64 / fps - layer.start_offset.0.to_f64();
             for (p, name) in PROPS.iter().copied() {
-                if !layer.transform.get(p).is_animated() {
-                    continue;
-                }
-                any = true;
-                let is_cur = app.graph_prop == Some(p);
+                let slot = layer.transform.get(p);
+                let is_cur = !app.graph_retime && app.graph_prop == Some(p);
                 left.horizontal(|ui| {
-                    ui.add_space(16.0);
+                    ui.add_space(4.0);
+                    if let Some(anim) = stopwatch(ui, slot, lt) {
+                        graph_kf_toggle = Some((p, anim));
+                    }
                     if ui.selectable_label(is_cur, name).clicked() {
                         picked_prop = Some(p);
                     }
-                });
-            }
-            if !any {
-                left.horizontal(|ui| {
-                    ui.add_space(16.0);
-                    ui.label(
-                        egui::RichText::new("no animated properties")
-                            .small()
-                            .italics()
-                            .color(theme.text_muted),
-                    );
                 });
             }
             // A retimed footage layer graphs its Speed channel too (K-075).
@@ -3063,6 +3059,16 @@ fn graph_editor_panel(ui: &mut egui::Ui, theme: &Theme, app: &mut AppState) {
     if picked_retime {
         app.graph_retime = true;
         app.graph_speed_view = app.vegas_default_lens; // open to the preferred lens
+    }
+    if let (Some(l), Some((prop, animation))) = (app.selected_layer, graph_kf_toggle) {
+        app.graph_prop = Some(prop);
+        app.graph_retime = false;
+        app.commit(kiriko_core::Op::SetTransformProperty {
+            comp: comp.id,
+            layer: l,
+            prop,
+            animation,
+        });
     }
 
     // Right area: the curve for the selected layer / property.
@@ -3103,24 +3109,9 @@ fn graph_editor_panel(ui: &mut egui::Ui, theme: &Theme, app: &mut AppState) {
         }
         app.graph_retime = false; // selected layer isn't retimed footage
     }
-    let animated: Vec<TransformProp> = PROPS
-        .iter()
-        .map(|(p, _)| *p)
-        .filter(|p| layer.transform.get(*p).is_animated())
-        .collect();
-    let Some(&first) = animated.first() else {
-        hint_in_rect(
-            ui,
-            theme,
-            plot_rect,
-            "Click a stopwatch in the layer view to animate a property.",
-        );
-        return;
-    };
-    let current = app
-        .graph_prop
-        .filter(|p| animated.contains(p))
-        .unwrap_or(first);
+    // Any property is graphable (not only animated ones): a still property draws
+    // a flat line you can double-click to add the first keyframe to.
+    let current = app.graph_prop.unwrap_or(TransformProp::PositionX);
     app.graph_prop = Some(current);
     graph_plot(ui, theme, app, comp, layer, current, plot_rect);
 }
@@ -3434,8 +3425,13 @@ fn graph_plot(
     let rect = egui::Rect::from_min_max(egui::pos2(rect.left(), rect.top() + 22.0), rect.max);
 
     let slot = layer.transform.get(current);
-    let Animation::Keyframed(keys) = &slot.animation else {
-        return;
+    // A still (Static) property has no keys yet: graph a flat line at its value
+    // that you can double-click to add the first keyframe to (Mack).
+    let static_val = slot.value_at(0.0);
+    let empty_keys: Vec<Keyframe> = Vec::new();
+    let keys: &Vec<Keyframe> = match &slot.animation {
+        Animation::Keyframed(k) => k,
+        _ => &empty_keys,
     };
 
     // ---- plot geometry: x = layer time over the comp span, y = value ----
@@ -3444,6 +3440,10 @@ fn graph_plot(
     let (mut vmin, mut vmax) = keys.iter().fold((f64::MAX, f64::MIN), |(lo, hi), k| {
         (lo.min(k.value), hi.max(k.value))
     });
+    if keys.is_empty() {
+        vmin = static_val;
+        vmax = static_val;
+    }
     if let Some((_, _, v)) = app.graph_edit {
         vmin = vmin.min(v);
         vmax = vmax.max(v);
@@ -3487,11 +3487,11 @@ fn graph_plot(
     let sample_at = |t: f64| -> f64 {
         if app.graph_speed_view {
             let h = 0.5 / fps_est;
-            let a = kiriko_core::anim::evaluate(&shown, t - h).unwrap_or(0.0);
-            let b = kiriko_core::anim::evaluate(&shown, t + h).unwrap_or(0.0);
+            let a = kiriko_core::anim::evaluate(&shown, t - h).unwrap_or(static_val);
+            let b = kiriko_core::anim::evaluate(&shown, t + h).unwrap_or(static_val);
             (b - a) / (2.0 * h)
         } else {
-            kiriko_core::anim::evaluate(&shown, t).unwrap_or(0.0)
+            kiriko_core::anim::evaluate(&shown, t).unwrap_or(static_val)
         }
     };
     let values: Vec<(f64, f64)> = (0..=samples)
@@ -4205,6 +4205,7 @@ struct RowCtx<'a> {
     layer: &'a kiriko_core::model::Layer,
     lt: f64,
     off: f64,
+    fps: f64,
     track_left: f32,
     track_w: f32,
     duration: f64,
@@ -4290,6 +4291,7 @@ fn transform_property_rows(
         layer,
         lt: app.preview_frame as f64 / fps - layer.start_offset.0.to_f64(),
         off: layer.start_offset.0.to_f64(),
+        fps,
         track_left,
         track_w,
         duration,
@@ -4512,6 +4514,90 @@ fn stopwatch(
     }
 }
 
+/// AE-style keyframe navigator for an animated property, shown next to the
+/// stopwatch: ◄ jumps the playhead to the previous keyframe, the diamond adds a
+/// keyframe at the playhead (filled ◆ when one is already there — clicking then
+/// removes it), ► jumps to the next keyframe.
+fn keyframe_nav(
+    ui: &mut egui::Ui,
+    app: &mut AppState,
+    ctx: &RowCtx,
+    prop: kiriko_core::model::TransformProp,
+    slot: &kiriko_core::anim::Property,
+    pending: &mut Option<kiriko_core::Op>,
+) {
+    use kiriko_core::anim::Animation;
+    let Animation::Keyframed(keys) = &slot.animation else {
+        return;
+    };
+    let tol = 0.5 / ctx.fps.max(1.0); // within half a frame counts as "on" it
+    let small = |g: &str| egui::Button::new(egui::RichText::new(g).small()).frame(false);
+    let mut jump_to: Option<f64> = None;
+
+    let has_prev = keys.iter().any(|k| k.time.to_f64() < ctx.lt - tol);
+    if ui
+        .add_enabled(has_prev, small("◄"))
+        .on_hover_text("Previous keyframe")
+        .clicked()
+    {
+        jump_to = keys
+            .iter()
+            .rev()
+            .find(|k| k.time.to_f64() < ctx.lt - tol)
+            .map(|k| k.time.to_f64());
+    }
+
+    let on_key = keys.iter().any(|k| (k.time.to_f64() - ctx.lt).abs() < tol);
+    if ui
+        .add(small(if on_key { "◆" } else { "◇" }))
+        .on_hover_text(if on_key {
+            "Remove keyframe here"
+        } else {
+            "Add keyframe here"
+        })
+        .clicked()
+    {
+        let animation = if on_key {
+            let kept: Vec<_> = keys
+                .iter()
+                .filter(|k| (k.time.to_f64() - ctx.lt).abs() >= tol)
+                .cloned()
+                .collect();
+            if kept.is_empty() {
+                Animation::Static(slot.value_at(ctx.lt))
+            } else {
+                Animation::Keyframed(kept)
+            }
+        } else {
+            Animation::Keyframed(upsert_key(slot, ctx.lt, slot.value_at(ctx.lt)))
+        };
+        *pending = Some(kiriko_core::Op::SetTransformProperty {
+            comp: ctx.comp_id,
+            layer: ctx.layer.id,
+            prop,
+            animation,
+        });
+    }
+
+    let has_next = keys.iter().any(|k| k.time.to_f64() > ctx.lt + tol);
+    if ui
+        .add_enabled(has_next, small("►"))
+        .on_hover_text("Next keyframe")
+        .clicked()
+    {
+        jump_to = keys
+            .iter()
+            .find(|k| k.time.to_f64() > ctx.lt + tol)
+            .map(|k| k.time.to_f64());
+    }
+
+    if let Some(kt) = jump_to {
+        app.preview_frame = ((kt + ctx.off) * ctx.fps).round().max(0.0) as usize;
+        #[cfg(feature = "media")]
+        app.refresh_preview();
+    }
+}
+
 /// One generic property row.
 fn prop_row(
     ui: &mut egui::Ui,
@@ -4535,6 +4621,7 @@ fn prop_row(
             animation,
         });
     }
+    keyframe_nav(&mut c, app, ctx, prop, slot, pending);
     if c.add(
         egui::Label::new(egui::RichText::new(label).small().color(if is_graphed {
             ctx.theme.accent
