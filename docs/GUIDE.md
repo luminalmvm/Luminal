@@ -385,7 +385,9 @@ Two mechanisms make this safe, and you'll see them by name in the code:
   ending in a single "comp output". It is built bottom layer first, exactly the order the
   picture is stacked up. The neat part is *folding*: a layer with no masks gets no mask step, a
   footage layer with no retime gets no retime step, so the renderer never spends a moment on a
-  no-op. The diagram is rebuilt whenever you edit, and every render already in flight keeps the
+  no-op. It also shares work: two layers on the same footage compile to a *single* decode step
+  (keyed by the source, never the layer), so a duplicated clip is fetched once, not twice. The
+  diagram is rebuilt whenever you edit, and every render already in flight keeps the
   diagram it started with, so an edit can never half-apply to a frame mid-render. Today this
   builds the render's *shape* (tests prove the folding and the bottom-first order); turning each
   step into pixels on the GPU is the next slice. This is the front half of **Togi**.

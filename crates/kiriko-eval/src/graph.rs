@@ -11,13 +11,14 @@
 //! document changes and every in-flight render keeps the graph it started with.
 
 use kiriko_core::model::{BlendMode, Composition, LayerKind};
+use std::collections::HashMap;
 use uuid::Uuid;
 
 /// An index into an [`EvalGraph`]'s node list. Stable only within one graph.
 pub type NodeId = usize;
 
 /// What a [`NodeKind::Source`] fetches or rasterises (docs/06 §1.2 step 1).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum SourceRef {
     Footage(Uuid),
     Solid(Uuid),
@@ -31,8 +32,10 @@ pub enum SourceRef {
 /// render and its cache key depend on.
 #[derive(Debug, Clone, PartialEq)]
 pub enum NodeKind {
-    /// Fetch or rasterise a layer's source at the resolved source time.
-    Source { layer: Uuid, source: SourceRef },
+    /// Fetch or rasterise a source at the resolved source time. Keyed by the
+    /// source itself, not the layer, so two layers sharing a source share this
+    /// node and its decode pipeline (docs/06 §1.1: no instance identity).
+    Source { source: SourceRef },
     /// Frame-interpolation retime of a Footage source (present only when the
     /// layer carries a retime; otherwise folded away).
     Retime,
@@ -114,6 +117,9 @@ pub fn compile(comp: &Composition) -> EvalGraph {
         output: 0,
     };
     let mut acc: Option<NodeId> = None;
+    // Content-hash dedup of sources: two layers on the same footage/comp/solid
+    // share one Source node (docs/06 §1.1). Keyed by the source, not the layer.
+    let mut sources: HashMap<SourceRef, NodeId> = HashMap::new();
     for layer in comp.layers.iter().rev() {
         // An adjustment layer has no source of its own — it processes the
         // composite beneath it. With nothing below there is nothing to adjust.
@@ -136,13 +142,18 @@ pub fn compile(comp: &Composition) -> EvalGraph {
         let Some(source) = source_ref(&layer.kind) else {
             continue; // a camera contributes no pixels
         };
-        let mut top = g.push(
-            NodeKind::Source {
-                layer: layer.id,
-                source,
-            },
-            vec![],
-        );
+        let mut top = if let Some(&id) = sources.get(&source) {
+            id
+        } else {
+            let id = g.push(
+                NodeKind::Source {
+                    source: source.clone(),
+                },
+                vec![],
+            );
+            sources.insert(source, id);
+            id
+        };
         // Retime folds away unless this is a Footage layer carrying one.
         if matches!(
             layer.kind,
@@ -397,5 +408,37 @@ mod tests {
         // An adjustment with nothing beneath it has nothing to process.
         let g2 = compile(&comp_with(vec![layer(LayerKind::Adjustment, Vec::new())]));
         assert!(!g2.kinds().any(|k| matches!(k, NodeKind::Adjust { .. })));
+    }
+
+    #[test]
+    fn layers_on_the_same_source_share_one_source_node() {
+        let item = Uuid::now_v7();
+        let footage_on = |item| layer(LayerKind::Footage { item, retime: None }, Vec::new());
+        // Two footage layers on the same item.
+        let g = compile(&comp_with(vec![footage_on(item), footage_on(item)]));
+        let sources = g
+            .kinds()
+            .filter(|k| matches!(k, NodeKind::Source { .. }))
+            .count();
+        let composites = g
+            .kinds()
+            .filter(|k| matches!(k, NodeKind::Composite { .. }))
+            .count();
+        // One shared Source, but a Composite per layer (they place/blend apart).
+        assert_eq!(sources, 1);
+        assert_eq!(composites, 2);
+        // A layer on a different source adds a second Source node.
+        let other = Uuid::now_v7();
+        let g2 = compile(&comp_with(vec![
+            footage_on(item),
+            footage_on(item),
+            footage_on(other),
+        ]));
+        assert_eq!(
+            g2.kinds()
+                .filter(|k| matches!(k, NodeKind::Source { .. }))
+                .count(),
+            2
+        );
     }
 }
