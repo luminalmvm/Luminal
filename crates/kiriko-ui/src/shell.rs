@@ -1232,7 +1232,16 @@ fn timeline_panel(ui: &mut egui::Ui, theme: &Theme, app: &mut AppState) {
             }
             if resp.dragged() {
                 if let Some(pos) = resp.interact_pointer_pos() {
-                    app.trim_edit = Some((layer.id, out_edge, seconds_of(pos.x)));
+                    // Snap the trimmed edge to a nearby beat/marker (~6 px) so
+                    // clips cut on the beat.
+                    let threshold = 6.0 / track_w as f64 * duration;
+                    let secs = kiriko_core::markers::snap_time(
+                        rational_at(seconds_of(pos.x)),
+                        &comp.markers,
+                        rational_at(threshold),
+                    )
+                    .to_f64();
+                    app.trim_edit = Some((layer.id, out_edge, secs));
                 }
             }
             if resp.drag_stopped() {
