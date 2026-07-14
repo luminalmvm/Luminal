@@ -701,6 +701,10 @@ pub struct AppState {
     pub graph_prop: Option<kiriko_core::model::TransformProp>,
     /// In-flight keyframe drag: (key index, provisional layer-time, value).
     pub graph_edit: Option<(usize, f64, f64)>,
+    /// In-flight speed-graph drag: (key index, provisional speed in
+    /// value-units/second). Separate from `graph_edit` because the speed lens
+    /// edits a keyframe's tangent (K-070), not its value or time.
+    pub graph_speed_edit: Option<(usize, f64)>,
     /// Graph editor lens: false = value graph, true = speed graph
     /// (docs/01-GLOSSARY.md §3: two views of the same data, never separate).
     pub graph_speed_view: bool,
@@ -805,6 +809,7 @@ impl Default for AppState {
             selected_clip: None,
             graph_prop: None,
             graph_edit: None,
+            graph_speed_edit: None,
             graph_speed_view: false,
             preview_comp: None,
             comp_playback: None,
@@ -2235,6 +2240,7 @@ impl AppState {
             || self.prop_edit.is_some()
             || self.trim_edit.is_some()
             || self.graph_edit.is_some()
+            || self.graph_speed_edit.is_some()
             || self.mask_drag.is_some()
             || self.origin_drag.is_some()
             || self.shape_drag.is_some()

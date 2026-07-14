@@ -284,7 +284,11 @@ Two mechanisms make this safe, and you'll see them by name in the code:
   (Easy ease / Linear / Hold, or Delete). Each key's shape tells you its interpolation at a
   glance — a diamond is linear, a circle is eased (bezier), a square is a hold.
   The curve you see is sampled from the same evaluator that renders the comp, so what the
-  graph shows is exactly what plays.
+  graph shows is exactly what plays. There are two ways to look at any property: the **value**
+  view (the raw number over time) and the **speed** view (its rate of change — the
+  derivative). Both are editable, and they are the *same* data seen two ways (K-070): in the
+  speed view you drag a key up or down to set how fast the value is moving at that moment,
+  which is often the easier way to make motion feel right. Editing one view updates the other.
 - **Property rows in the Timeline** (K-072) — twirl a layer open and each of its animatable
   properties (Position, Scale, Rotation, Opacity, and the 3D ones) gets its own row: on the
   left a stopwatch to turn animation on or off, the property's name, and its current value;

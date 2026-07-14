@@ -2657,8 +2657,19 @@ fn key_shape(k: &kiriko_core::anim::Keyframe) -> KeyShape {
     }
 }
 
+/// A keyframe side's influence (bezier handle reach), defaulting to the AE
+/// easy-ease third for Linear/Hold sides that carry none.
+fn side_influence(side: kiriko_core::anim::SideInterp) -> f64 {
+    match side {
+        kiriko_core::anim::SideInterp::Bezier { influence, .. } => influence,
+        _ => 1.0 / 3.0,
+    }
+}
+
 /// Draw one keyframed property's value/speed curve inside `rect`, with a
-/// compact Value/Speed + Ease/Linear header and draggable keys.
+/// compact Value/Speed + Ease/Linear header and draggable keys. In the speed
+/// lens each key's tangent is draggable (K-070); the derivative curve updates
+/// live and the release writes bezier speeds back to the keyframes.
 fn graph_plot(
     ui: &mut egui::Ui,
     theme: &Theme,
@@ -2685,7 +2696,7 @@ fn graph_plot(
             app.graph_speed_view = false;
         }
         if h.selectable_label(app.graph_speed_view, "Speed")
-            .on_hover_text("The derivative view — editing here arrives with Retime")
+            .on_hover_text("The rate-of-change view — drag a key to set its speed (K-070)")
             .clicked()
         {
             app.graph_speed_view = true;
@@ -2739,6 +2750,18 @@ fn graph_plot(
         }
         shown.sort_by_key(|k| k.time);
     }
+    // A speed-lens drag re-tangents one key so the whole derivative curve moves
+    // live; the value/time are untouched (K-070 — a lens on the same store).
+    if let Some((idx, sp)) = app.graph_speed_edit {
+        if let Some(k) = shown.get_mut(idx) {
+            let side = SideInterp::Bezier {
+                speed: sp,
+                influence: side_influence(k.interp_out),
+            };
+            k.interp_in = side;
+            k.interp_out = side;
+        }
+    }
 
     // Curve polyline: value, or its derivative in the speed lens (central
     // difference at half-frame steps — display-first; exact closed forms
@@ -2761,21 +2784,34 @@ fn graph_plot(
             (t, sample_at(t))
         })
         .collect();
-    // The speed lens scales to its own sampled range.
-    let speed_y: Box<dyn Fn(f64) -> f32> = if app.graph_speed_view {
+    // The speed lens scales to its own sampled range; `speed_of` inverts the
+    // mapping so a dragged handle reads back as value-units/second.
+    let (s_lo, s_hi) = {
         let (mut lo, mut hi) = values.iter().fold((f64::MAX, f64::MIN), |(l, h), (_, v)| {
             (l.min(*v), h.max(*v))
         });
+        if let Some((_, sp)) = app.graph_speed_edit {
+            lo = lo.min(sp);
+            hi = hi.max(sp);
+        }
         let pad = ((hi - lo).abs().max(1.0)) * 0.15;
-        lo -= pad;
-        hi += pad;
-        Box::new(move |v: f64| rect.bottom() - (((v - lo) / (hi - lo)) as f32) * rect.height())
-    } else {
-        Box::new(y_of)
+        (lo - pad, hi + pad)
+    };
+    let speed_y =
+        move |v: f64| rect.bottom() - (((v - s_lo) / (s_hi - s_lo)) as f32) * rect.height();
+    let speed_of = move |y: f32| {
+        s_lo + ((rect.bottom() - y) / rect.height()).clamp(0.0, 1.0) as f64 * (s_hi - s_lo)
     };
     let points: Vec<egui::Pos2> = values
         .iter()
-        .map(|(t, v)| egui::pos2(x_of(*t), speed_y(*v)))
+        .map(|(t, v)| {
+            let y = if app.graph_speed_view {
+                speed_y(*v)
+            } else {
+                y_of(*v)
+            };
+            egui::pos2(x_of(*t), y)
+        })
         .collect();
     let stroke_colour = if app.graph_speed_view {
         theme.curve[1]
@@ -2798,20 +2834,64 @@ fn graph_plot(
         );
     }
 
-    // Keys: draggable squares (value lens); read-only ticks in the speed lens.
+    // Keys: draggable squares (value lens); draggable speed handles in the
+    // speed lens (K-070 — editing the tangent, round-tripping to the store).
     let mut pending: Option<Vec<Keyframe>> = None;
     if app.graph_speed_view {
-        for key in keys {
+        for (idx, key) in keys.iter().enumerate() {
             let x = x_of(key.time.to_f64());
             ui.painter().line_segment(
                 [egui::pos2(x, rect.top()), egui::pos2(x, rect.bottom())],
                 egui::Stroke::new(0.5_f32, theme.hairline_strong),
             );
+            // Where the handle rests: the key's bezier speed, or the sampled
+            // derivative for a Linear/Hold key that carries no single speed.
+            let rest = match (key.interp_out, key.interp_in) {
+                (SideInterp::Bezier { speed, .. }, _) => speed,
+                (_, SideInterp::Bezier { speed, .. }) => speed,
+                _ => sample_at(key.time.to_f64()),
+            };
+            let sp = match app.graph_speed_edit {
+                Some((i, s)) if i == idx => s,
+                _ => rest,
+            };
+            let pos = egui::pos2(x, speed_y(sp));
+            let resp = ui.interact(
+                egui::Rect::from_center_size(pos, egui::vec2(12.0, 12.0)),
+                ui.id().with(("gspd", layer_id, idx)),
+                egui::Sense::click_and_drag(),
+            );
+            let active = app.graph_speed_edit.is_some_and(|(i, _)| i == idx);
+            let colour = if resp.hovered() || active {
+                theme.accent
+            } else {
+                theme.curve[1]
+            };
+            ui.painter().circle_filled(pos, 4.0, colour);
+            if resp.dragged() {
+                if let Some(p) = resp.interact_pointer_pos() {
+                    app.graph_speed_edit = Some((idx, speed_of(p.y)));
+                }
+            }
+            if resp.drag_stopped() {
+                if let Some((i, s)) = app.graph_speed_edit.take() {
+                    if i == idx {
+                        let mut new_keys = keys.clone();
+                        let side = SideInterp::Bezier {
+                            speed: s,
+                            influence: side_influence(new_keys[i].interp_out),
+                        };
+                        new_keys[i].interp_in = side;
+                        new_keys[i].interp_out = side;
+                        pending = Some(new_keys);
+                    }
+                }
+            }
         }
     }
     for (idx, key) in keys.iter().enumerate() {
         if app.graph_speed_view {
-            break; // speed-lens editing arrives with Retime's segment model
+            break; // the speed lens is handled above; this loop is the value lens
         }
         let (kt, kv) = match app.graph_edit {
             Some((i, t, v)) if i == idx => (t, v),
@@ -5901,5 +5981,61 @@ mod dock_tests {
         assert_eq!(linked_scale(100.0, 50.0, 200.0), (200.0, 100.0)); // 2:1 kept
         assert_eq!(linked_scale(100.0, 100.0, 150.0), (150.0, 150.0)); // 1:1 kept
         assert_eq!(linked_scale(0.0, 50.0, 80.0), (80.0, 80.0)); // undefined → uniform
+    }
+
+    // A keyframe side reports its bezier influence, or the easy-ease third.
+    #[test]
+    fn side_influence_reads_bezier_or_defaults() {
+        use kiriko_core::anim::SideInterp;
+        assert_eq!(
+            side_influence(SideInterp::Bezier {
+                speed: 5.0,
+                influence: 0.5
+            }),
+            0.5
+        );
+        assert!((side_influence(SideInterp::Linear) - 1.0 / 3.0).abs() < 1e-9);
+        assert!((side_influence(SideInterp::Hold) - 1.0 / 3.0).abs() < 1e-9);
+    }
+
+    // K-070: setting a key's speed (what a speed-lens drag commits — both sides
+    // to Bezier{speed}) is what the derivative reads back. Guards the lossless
+    // round-trip promised for the speed lens.
+    #[test]
+    fn setting_key_speed_round_trips_through_the_derivative() {
+        use kiriko_core::anim::{evaluate, Keyframe, SideInterp};
+        let target = 40.0_f64; // value-units per second at the middle key
+        let side = SideInterp::Bezier {
+            speed: target,
+            influence: 1.0 / 3.0,
+        };
+        let keys = vec![
+            Keyframe {
+                time: rational_at(0.0),
+                value: 0.0,
+                interp_in: SideInterp::Linear,
+                interp_out: SideInterp::Linear,
+            },
+            Keyframe {
+                time: rational_at(1.0),
+                value: 50.0,
+                interp_in: side,
+                interp_out: side,
+            },
+            Keyframe {
+                time: rational_at(2.0),
+                value: 60.0,
+                interp_in: SideInterp::Linear,
+                interp_out: SideInterp::Linear,
+            },
+        ];
+        let h = 1.0 / 1000.0;
+        let a = evaluate(&keys, 1.0 - h).unwrap();
+        let b = evaluate(&keys, 1.0 + h).unwrap();
+        let measured = (b - a) / (2.0 * h);
+        assert!(
+            (measured - target).abs() < 1.0,
+            "derivative at the key was {measured}, expected ≈ {target}"
+        );
     }
 }

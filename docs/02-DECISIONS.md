@@ -388,7 +388,14 @@ for the property-row timeline restructure (07-UI-SPEC §5, K-070), from Mack (20
   current ratio and loses nothing, rather than discarding an axis — the combined row can
   represent any ratio, so the lossy rule was unnecessary; (b) keyframe-interpolation glyphs
   and live-preview while dragging a *speed* key are still outstanding (speed edits re-decode
-  on commit). Clicking a transform property's name graphs it; speed graphing is not wired yet.
+  on commit). Clicking a transform property's name graphs it.
+- **Speed-lens editing, increment 1 (2026-07-14):** the graph editor's Speed view is now
+  editable for transform properties (K-070) — dragging a key's handle sets its bezier tangent
+  (both sides), the derivative curve updates live, and the release writes back to the
+  keyframes; the derivative you set is the derivative you read back (round-trip test in
+  `kiriko-ui`). Still to come (increment 2): Retime wired as its own graph channel whose value
+  lens reads the resolved source position as timecode and whose derivative lens reads speed %,
+  with a Vegas-editor setting choosing the default lens (K-021).
 
 **K-073 · DECIDED · v1 shell is a fixed native-panel layout, not a dock.** The Viewer is a
 bare, full-bleed central area with **no tab bar**; the Project/effects panel (left), Scopes
