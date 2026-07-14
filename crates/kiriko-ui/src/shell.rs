@@ -779,6 +779,21 @@ fn icon_button(ui: &mut egui::Ui, theme: &Theme, icon: Icon, active: bool) -> eg
     resp
 }
 
+/// The identity glyph and §6.1 colour for a layer type — drawn on the layer's
+/// row so type reads at a glance (colour is never the only encoding: each type
+/// also carries its own glyph).
+fn layer_type_style(kind: &kiriko_core::model::LayerKind, theme: &Theme) -> (Icon, egui::Color32) {
+    use kiriko_core::model::LayerKind;
+    match kind {
+        LayerKind::Footage { .. } => (Icon::Footage, theme.layer.footage),
+        LayerKind::Sequence { .. } => (Icon::Sequence, theme.layer.sequence),
+        LayerKind::Precomp { .. } => (Icon::Comp, theme.layer.precomp),
+        LayerKind::Solid { .. } => (Icon::Solid, theme.layer.solid),
+        LayerKind::Text { .. } => (Icon::Text, theme.layer.text),
+        LayerKind::Camera { .. } => (Icon::Camera, theme.layer.camera),
+    }
+}
+
 /// One tree row (folders recurse). Rows are drag sources; folder rows are
 /// drop targets.
 #[allow(clippy::too_many_arguments)]
@@ -1390,7 +1405,20 @@ fn timeline_panel(ui: &mut egui::Ui, theme: &Theme, app: &mut AppState) {
         let td_r = slot(edge - 60.0, edge - 38.0);
         let blend_r = slot(edge - 124.0, edge - 64.0);
         let matte_r = slot(edge - 178.0, edge - 128.0);
-        let title_r = slot(row_rect.left() + 40.0, edge - 182.0);
+        let type_r = slot(row_rect.left() + 38.0, row_rect.left() + 56.0);
+        let title_r = slot(row_rect.left() + 58.0, edge - 182.0);
+        // Layer-type identity (15-DESIGN §6.1): a 3px colour tab on the row's
+        // left edge and the type glyph before the name, both in the type colour.
+        let (type_icon, type_col) = layer_type_style(&layer.kind, theme);
+        ui.painter().rect_filled(
+            egui::Rect::from_min_max(
+                egui::pos2(row_rect.left(), row_rect.top() + 1.0),
+                egui::pos2(row_rect.left() + 3.0, row_rect.bottom() - 1.0),
+            ),
+            0.0,
+            type_col,
+        );
+        crate::icons::paint(ui.painter(), type_r, type_icon, type_col, 1.4);
         let place = |ui: &mut egui::Ui, r: egui::Rect, add: &mut dyn FnMut(&mut egui::Ui)| {
             let mut child = ui.new_child(
                 egui::UiBuilder::new()

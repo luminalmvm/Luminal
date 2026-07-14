@@ -54,11 +54,17 @@ pub enum Icon {
     Comp,
     /// Solid item: a filled block of colour.
     Solid,
+    /// Sequence layer: clips cut back-to-back on a row.
+    Sequence,
+    /// Text layer: a capital T.
+    Text,
+    /// Camera layer: a video camera.
+    Camera,
 }
 
 impl Icon {
     /// Every variant, for exhaustive iteration (tests, palettes).
-    pub const ALL: [Icon; 19] = [
+    pub const ALL: [Icon; 22] = [
         Icon::Pointer,
         Icon::Move,
         Icon::Rectangle,
@@ -78,6 +84,9 @@ impl Icon {
         Icon::Footage,
         Icon::Comp,
         Icon::Solid,
+        Icon::Sequence,
+        Icon::Text,
+        Icon::Camera,
     ];
 }
 
@@ -232,6 +241,20 @@ pub fn paint(painter: &Painter, rect: Rect, icon: Icon, color: Color32, width: f
         }
         Icon::Solid => {
             painter.rect_filled(Rect::from_min_max(p(0.22, 0.22), p(0.78, 0.78)), 2.0, color);
+        }
+        Icon::Sequence => {
+            // Clips cut back-to-back on a row.
+            closed(&[(0.12, 0.32), (0.88, 0.32), (0.88, 0.68), (0.12, 0.68)]);
+            line(&[(0.38, 0.32), (0.38, 0.68)]);
+            line(&[(0.62, 0.32), (0.62, 0.68)]);
+        }
+        Icon::Text => {
+            line(&[(0.24, 0.28), (0.76, 0.28)]);
+            line(&[(0.5, 0.28), (0.5, 0.76)]);
+        }
+        Icon::Camera => {
+            closed(&[(0.12, 0.36), (0.62, 0.36), (0.62, 0.70), (0.12, 0.70)]);
+            closed(&[(0.62, 0.45), (0.84, 0.37), (0.84, 0.69), (0.62, 0.61)]);
         }
     }
 }
