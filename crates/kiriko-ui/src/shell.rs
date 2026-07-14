@@ -766,11 +766,13 @@ fn item_rows(
         return; // stale child id (deleted item): just don't draw it
     };
     let is_folder = matches!(item, ProjectItem::Folder(_));
-    let (kind, tag_colour) = match item {
-        ProjectItem::Footage(_) => ("footage", theme.text_muted),
-        ProjectItem::Folder(_) => ("folder", theme.text_muted),
-        ProjectItem::Composition(_) => ("comp", theme.accent),
-        ProjectItem::Solid(_) => ("solid", theme.text_muted),
+    // Type glyph + tint carried on the left of the row (replaces the old text
+    // tag): comps take the accent, the rest a muted tint (docs/15-DESIGN.md §5).
+    let (type_icon, tag_colour) = match item {
+        ProjectItem::Footage(_) => (Icon::Footage, theme.text_muted),
+        ProjectItem::Folder(_) => (Icon::Folder, theme.text_muted),
+        ProjectItem::Composition(_) => (Icon::Comp, theme.accent),
+        ProjectItem::Solid(_) => (Icon::Solid, theme.text_muted),
     };
     let selected = app.selected_item == Some(id);
     let open_id = ui.id().with(("folder-open", id));
@@ -791,17 +793,14 @@ fn item_rows(
                     open = !open;
                     ui.data_mut(|d| d.insert_temp(open_id, open));
                 }
+            } else {
+                ui.add_space(13.0); // align type glyphs under the folder rows'
             }
+            let (icon_rect, _) =
+                ui.allocate_exact_size(egui::vec2(15.0, 15.0), egui::Sense::hover());
+            crate::icons::paint(ui.painter(), icon_rect, type_icon, tag_colour, 1.4);
             let label = egui::RichText::new(item.name()).color(theme.text_secondary);
-            let resp = draggable_row(ui, ui.id().with(("row", id)), id, selected, label);
-            ui.painter().text(
-                ui.max_rect().right_center() + egui::vec2(-4.0, 0.0),
-                egui::Align2::RIGHT_CENTER,
-                kind,
-                egui::FontId::monospace(10.0),
-                tag_colour,
-            );
-            resp
+            draggable_row(ui, ui.id().with(("row", id)), id, selected, label)
         })
         .inner;
 
@@ -1887,22 +1886,38 @@ fn timeline_panel(ui: &mut egui::Ui, theme: &Theme, app: &mut AppState) {
                     }
                 });
             });
-            // Each animatable property as its own timeline row: stopwatch/name/
-            // value in the left column, that property's keyframes on the track
-            // to the right; click a row to graph it (K-072).
-            transform_property_rows(
-                ui,
-                theme,
-                app,
-                comp,
-                comp_id,
-                layer,
-                name_w,
-                track_left,
-                track_w,
-                duration,
-                &mut pending,
-            );
+            // Transform group: its own twirl (open by default) revealing each
+            // animatable property as a timeline row — stopwatch/name/value in
+            // the left column, that property's keyframes on the track to the
+            // right; click a row to graph it (K-072).
+            let tf_id = ui.id().with(("transform-group", layer.id));
+            if group_header_row(ui, theme, "Transform", tf_id, true) {
+                transform_property_rows(
+                    ui,
+                    theme,
+                    app,
+                    comp,
+                    comp_id,
+                    layer,
+                    name_w,
+                    track_left,
+                    track_w,
+                    duration,
+                    &mut pending,
+                );
+            }
+            // Effects group: the home for the layer's effect stack. The effects
+            // system itself lands later; the twirl is here so the shape is right.
+            let fx_id = ui.id().with(("effects-group", layer.id));
+            if group_header_row(ui, theme, "Effects", fx_id, false) {
+                ui.indent(("fx-empty", layer.id), |ui| {
+                    ui.label(
+                        egui::RichText::new("No effects yet — the effects system is on the way.")
+                            .small()
+                            .color(theme.text_disabled),
+                    );
+                });
+            }
         }
     }
     // Vertical separator + drag handle: resizes the left column (Mack).
@@ -1975,13 +1990,13 @@ fn timeline_panel(ui: &mut egui::Ui, theme: &Theme, app: &mut AppState) {
     timeline_mode_toggle(ui, theme, app);
 }
 
-/// Layer-view / graph-view switch, bottom-right of the Timeline (K-070). Small
-/// glyphs for now; the designed icons come later.
+/// Layer-view / graph-view switch, bottom-right of the Timeline (K-070). The
+/// node-graph view joins this row when the node system lands.
 fn timeline_mode_toggle(ui: &mut egui::Ui, theme: &Theme, app: &mut AppState) {
     let panel = ui.max_rect();
     let r = egui::Rect::from_min_max(
-        egui::pos2(panel.right() - 58.0, panel.bottom() - 22.0),
-        egui::pos2(panel.right() - 6.0, panel.bottom() - 4.0),
+        egui::pos2(panel.right() - 66.0, panel.bottom() - 26.0),
+        egui::pos2(panel.right() - 6.0, panel.bottom() - 2.0),
     );
     let mut child = ui.new_child(
         egui::UiBuilder::new()
@@ -1990,21 +2005,19 @@ fn timeline_mode_toggle(ui: &mut egui::Ui, theme: &Theme, app: &mut AppState) {
     );
     child.set_clip_rect(r);
     let graph = app.timeline_graph_mode;
-    if child
-        .selectable_label(graph, egui::RichText::new("〜").small())
+    // Right-to-left layout: the graph toggle is drawn first so it sits rightmost.
+    if icon_button(&mut child, theme, Icon::GraphCurve, graph)
         .on_hover_text("Graph editor")
         .clicked()
     {
         app.timeline_graph_mode = true;
     }
-    if child
-        .selectable_label(!graph, egui::RichText::new("▤").small())
+    if icon_button(&mut child, theme, Icon::TimelineBars, !graph)
         .on_hover_text("Layers")
         .clicked()
     {
         app.timeline_graph_mode = false;
     }
-    let _ = theme;
 }
 
 /// Footage preview: the frame fit to the surround, scrub bar, resolution picker.
@@ -3724,6 +3737,45 @@ fn linked_scale(old_x: f64, old_y: f64, new_x: f64) -> (f64, f64) {
     } else {
         (new_x, old_y * new_x / old_x)
     }
+}
+
+/// A collapsible sub-group header inside a layer's twirl-down ("Transform",
+/// "Effects", …): a disclosure triangle and label, indented under the layer and
+/// full width so it reads as a band. Persists and returns its open state.
+fn group_header_row(
+    ui: &mut egui::Ui,
+    theme: &Theme,
+    label: &str,
+    id: egui::Id,
+    default_open: bool,
+) -> bool {
+    let mut open = ui.data(|d| d.get_temp::<bool>(id)).unwrap_or(default_open);
+    let (rect, resp) =
+        ui.allocate_exact_size(egui::vec2(ui.available_width(), 18.0), egui::Sense::click());
+    if resp.clicked() {
+        open = !open;
+        ui.data_mut(|d| d.insert_temp(id, open));
+    }
+    if resp.hovered() {
+        ui.painter().rect_filled(rect, 0.0, theme.surface_1);
+    }
+    let cy = rect.center().y;
+    let tx = rect.left() + 22.0;
+    ui.painter().text(
+        egui::pos2(tx, cy),
+        egui::Align2::CENTER_CENTER,
+        if open { "▾" } else { "▸" },
+        egui::FontId::proportional(11.0),
+        theme.text_muted,
+    );
+    ui.painter().text(
+        egui::pos2(tx + 10.0, cy),
+        egui::Align2::LEFT_CENTER,
+        label,
+        egui::FontId::proportional(12.0),
+        theme.text_secondary,
+    );
+    open
 }
 
 /// The layer's transform properties as full-width timeline rows (K-072): each

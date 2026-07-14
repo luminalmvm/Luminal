@@ -38,15 +38,27 @@ pub enum Icon {
     Unlock,
     /// Chain link (linked values, e.g. linked scale).
     Link,
-    /// Folder.
+    /// Folder (a project folder).
     Folder,
-    /// Film frame (a composition).
+    /// Film frame (a composition — kept for the "new composition" button).
     Film,
+    /// Graph editor view: an animation curve.
+    GraphCurve,
+    /// Layer/timeline view: stacked bars.
+    TimelineBars,
+    /// Node graph view (the future node system).
+    Nodes,
+    /// Footage item: a media clip.
+    Footage,
+    /// Composition item: stacked layers.
+    Comp,
+    /// Solid item: a filled block of colour.
+    Solid,
 }
 
 impl Icon {
     /// Every variant, for exhaustive iteration (tests, palettes).
-    pub const ALL: [Icon; 13] = [
+    pub const ALL: [Icon; 19] = [
         Icon::Pointer,
         Icon::Move,
         Icon::Rectangle,
@@ -60,6 +72,12 @@ impl Icon {
         Icon::Link,
         Icon::Folder,
         Icon::Film,
+        Icon::GraphCurve,
+        Icon::TimelineBars,
+        Icon::Nodes,
+        Icon::Footage,
+        Icon::Comp,
+        Icon::Solid,
     ];
 }
 
@@ -173,6 +191,47 @@ pub fn paint(painter: &Painter, rect: Rect, icon: Icon, color: Color32, width: f
         Icon::Film => {
             closed(&[(0.16, 0.22), (0.84, 0.22), (0.84, 0.78), (0.16, 0.78)]);
             closed(&[(0.32, 0.34), (0.68, 0.34), (0.68, 0.66), (0.32, 0.66)]);
+        }
+        Icon::GraphCurve => {
+            // An ease S-curve, the graph editor's signature.
+            line(&[
+                (0.10, 0.80),
+                (0.30, 0.74),
+                (0.48, 0.50),
+                (0.66, 0.26),
+                (0.90, 0.20),
+            ]);
+        }
+        Icon::TimelineBars => {
+            closed(&[(0.14, 0.22), (0.64, 0.22), (0.64, 0.36), (0.14, 0.36)]);
+            closed(&[(0.14, 0.43), (0.86, 0.43), (0.86, 0.57), (0.14, 0.57)]);
+            closed(&[(0.14, 0.64), (0.50, 0.64), (0.50, 0.78), (0.14, 0.78)]);
+        }
+        Icon::Nodes => {
+            line(&[(0.28, 0.30), (0.5, 0.70)]);
+            line(&[(0.72, 0.28), (0.5, 0.70)]);
+            painter.add(Shape::circle_stroke(
+                p(0.28, 0.30),
+                b.width() * 0.12,
+                stroke,
+            ));
+            painter.add(Shape::circle_stroke(
+                p(0.72, 0.28),
+                b.width() * 0.12,
+                stroke,
+            ));
+            painter.add(Shape::circle_stroke(p(0.5, 0.72), b.width() * 0.12, stroke));
+        }
+        Icon::Footage => {
+            closed(&[(0.14, 0.24), (0.86, 0.24), (0.86, 0.76), (0.14, 0.76)]);
+            closed(&[(0.42, 0.37), (0.66, 0.5), (0.42, 0.63)]);
+        }
+        Icon::Comp => {
+            closed(&[(0.30, 0.16), (0.82, 0.16), (0.82, 0.54), (0.30, 0.54)]);
+            closed(&[(0.18, 0.46), (0.70, 0.46), (0.70, 0.84), (0.18, 0.84)]);
+        }
+        Icon::Solid => {
+            painter.rect_filled(Rect::from_min_max(p(0.22, 0.22), p(0.78, 0.78)), 2.0, color);
         }
     }
 }
