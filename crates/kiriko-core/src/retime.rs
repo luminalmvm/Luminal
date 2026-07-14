@@ -469,11 +469,14 @@ impl Retime {
 
     /// Split this retime at local time `t` into two retimes covering [0, t]
     /// and [t, D], each with its own domain starting at 0 (docs/04-RETIMING.md
-    /// §5.3, §8: cutting a clip partitions its retime exactly). Exact when the
-    /// segment at the cut is a Linear-ease Rate segment — constant speed or a
-    /// linear ramp, which is the montage workflow (cut first, ramp after).
-    /// Returns None for a cut outside (0, D), or one landing in an eased or
-    /// Map segment (those need the §5 conversion, not yet implemented).
+    /// §5.3, §8: cutting a clip partitions its retime exactly). A Linear-ease
+    /// Rate segment splits into two Rate segments (the montage workflow: cut
+    /// first, ramp after); an eased Rate segment or a polynomial MapSegment
+    /// splits via the §5.1/§5.3 exact conversion — both halves become
+    /// polynomial MapSegments and the source curve is unchanged. Returns None
+    /// for a cut outside (0, D) or one landing in a general-influence
+    /// MapSegment (the §5.3 numeric split of those is confined to AE import,
+    /// which is not present yet).
     pub fn split_at(&self, t: Rational) -> Option<(Retime, Retime)> {
         let d = self.boundaries.last()?.t;
         if t <= Rational::ZERO || t >= d {
@@ -482,20 +485,151 @@ impl Retime {
         // The segment [t_i, t_{i+1}) containing the cut.
         let i = (0..self.segments.len())
             .find(|&i| self.boundaries[i].t <= t && t < self.boundaries[i + 1].t)?;
-        let RetimeSegment::Rate(seg) = &self.segments[i] else {
-            return None;
-        };
-        if seg.ease != Ease::Linear {
-            return None;
+        // Fast path: a Linear-ease Rate segment stays two Rate segments.
+        match &self.segments[i] {
+            RetimeSegment::Rate(seg) if seg.ease == Ease::Linear => {
+                return self.split_linear_rate(i, t, seg.v0, seg.v1);
+            }
+            _ => {}
         }
+        self.split_general(i, t)
+    }
+
+    /// §5.3 general case: replace segment `i` with its §5.1 polynomial-Map
+    /// decomposition, split the piece containing `t` exactly (both halves are
+    /// polynomial MapSegments), and partition at the new boundary. Source
+    /// positions are absolute and never shift; only local times shift so the
+    /// right half starts at zero.
+    fn split_general(&self, i: usize, t: Rational) -> Option<(Retime, Retime)> {
+        let pieces = self.split_pieces(i)?;
+        let third = Rational::new(1, 3).ok()?;
+        let mut eb = self.boundaries[..=i].to_vec();
+        let mut es = self.segments[..i].to_vec();
+        let mut lo = self.boundaries[i].clone();
+        let mut cut_idx = None;
+        for (pmap, phi) in pieces {
+            if cut_idx.is_none() && lo.t <= t && t < phi.t {
+                let (s_cut, v_cut) = hermite_at(&lo, &phi, pmap.m0, pmap.m1, t).ok()?;
+                es.push(RetimeSegment::Map(MapSegment::new(
+                    pmap.m0, v_cut, third, third,
+                )));
+                eb.push(Boundary::new(t, s_cut));
+                cut_idx = Some(eb.len() - 1);
+                es.push(RetimeSegment::Map(MapSegment::new(
+                    v_cut, pmap.m1, third, third,
+                )));
+            } else {
+                es.push(RetimeSegment::Map(pmap));
+            }
+            eb.push(phi.clone());
+            lo = phi;
+        }
+        let cut_idx = cut_idx?;
+        es.extend(self.segments[i + 1..].iter().cloned());
+        eb.extend(self.boundaries[i + 2..].iter().cloned());
+
+        let mut left = Retime {
+            boundaries: eb[..=cut_idx].to_vec(),
+            segments: es[..cut_idx].to_vec(),
+            allow_reverse: self.allow_reverse,
+            interpolation: self.interpolation.clone(),
+            extra: serde_json::Map::new(),
+        };
+        let mut rb = vec![Boundary::new(Rational::ZERO, eb[cut_idx].s)];
+        for b in &eb[cut_idx + 1..] {
+            rb.push(Boundary::new(b.t.checked_sub(t).ok()?, b.s));
+        }
+        let mut right = Retime {
+            boundaries: rb,
+            segments: es[cut_idx..].to_vec(),
+            allow_reverse: self.allow_reverse,
+            interpolation: self.interpolation.clone(),
+            extra: serde_json::Map::new(),
+        };
+        // recompute keeps any downstream Rate boundaries consistent; MapSegment
+        // boundaries (which we set exactly) are authoritative and untouched.
+        left.recompute_boundaries().ok()?;
+        right.recompute_boundaries().ok()?;
+        Some((left, right))
+    }
+
+    /// The §5.1 polynomial-Map decomposition of segment `i`, as a list of
+    /// (segment, upper boundary); the lower boundary of the first is
+    /// `self.boundaries[i]`. One piece for Slow/Fast (and an already-polynomial
+    /// Map), two for Smooth/Sharp (split at u = 1/2, exact). None for a Linear
+    /// Rate segment (the caller keeps those as Rate) or a general-influence Map.
+    fn split_pieces(&self, i: usize) -> Option<Vec<(MapSegment, Boundary)>> {
+        let lo = self.boundaries[i].clone();
+        let hi = self.boundaries[i + 1].clone();
+        let third = Rational::new(1, 3).ok()?;
+        match &self.segments[i] {
+            RetimeSegment::Rate(seg) => match seg.ease {
+                Ease::Linear => None,
+                Ease::Slow | Ease::Fast => {
+                    Some(vec![(MapSegment::new(seg.v0, seg.v1, third, third), hi)])
+                }
+                Ease::Smooth | Ease::Sharp => {
+                    let half = Rational::new(1, 2).ok()?;
+                    let d_seg = hi.t.checked_sub(lo.t).ok()?;
+                    let mid_t = lo.t.checked_add(d_seg.checked_mul(half).ok()?).ok()?;
+                    // e(1/2) = 1/2 for both, so v(1/2) is the mean of the speeds.
+                    let vmid = seg.v0.checked_add(seg.v1).ok()?.checked_mul(half).ok()?;
+                    // E(1/2): Smooth 1/12, Sharp 1/6 (docs/04-RETIMING.md §4.1).
+                    let e_half = if seg.ease == Ease::Smooth {
+                        Rational::new(1, 12)
+                    } else {
+                        Rational::new(1, 6)
+                    }
+                    .ok()?;
+                    // s(1/2) = s_i + d·[v0·1/2 + (v1 − v0)·E(1/2)]  (§4.1).
+                    let s_mid = exact_or_flick(
+                        || {
+                            let dv = seg.v1.checked_sub(seg.v0)?;
+                            let inner = seg
+                                .v0
+                                .checked_mul(half)?
+                                .checked_add(dv.checked_mul(e_half)?)?;
+                            lo.s.checked_add(d_seg.checked_mul(inner)?)
+                        },
+                        lo.s.to_f64()
+                            + d_seg.to_f64()
+                                * (seg.v0.to_f64() * 0.5
+                                    + (seg.v1.to_f64() - seg.v0.to_f64()) * e_half.to_f64()),
+                    )
+                    .ok()?;
+                    let mid = Boundary::new(mid_t, s_mid);
+                    Some(vec![
+                        (MapSegment::new(seg.v0, vmid, third, third), mid),
+                        (MapSegment::new(vmid, seg.v1, third, third), hi),
+                    ])
+                }
+            },
+            RetimeSegment::Map(seg) => {
+                if is_one_third(seg.b0) && is_one_third(seg.b1) {
+                    Some(vec![(seg.clone(), hi)])
+                } else {
+                    None
+                }
+            }
+        }
+    }
+
+    /// The Linear-ease Rate split: both halves stay Rate, exact.
+    fn split_linear_rate(
+        &self,
+        i: usize,
+        t: Rational,
+        v0: Rational,
+        v1: Rational,
+    ) -> Option<(Retime, Retime)> {
         let ti = self.boundaries[i].t;
         let ti1 = self.boundaries[i + 1].t;
         let seg_d = ti1.checked_sub(ti).ok()?;
         let d_left = t.checked_sub(ti).ok()?;
         // Speed at the cut: v0 + (v1−v0)·(d_left / seg_d).
         let u = d_left.checked_div(seg_d).ok()?;
-        let dv = seg.v1.checked_sub(seg.v0).ok()?;
-        let v_at = seg.v0.checked_add(dv.checked_mul(u).ok()?).ok()?;
+        let dv = v1.checked_sub(v0).ok()?;
+        let v_at = v0.checked_add(dv.checked_mul(u).ok()?).ok()?;
 
         // Left: original boundaries/segments up to i, then a cut boundary and
         // the left half of segment i (Rate v0→v_at). recompute fills the s.
@@ -503,7 +637,7 @@ impl Retime {
         lb.push(Boundary::new(t, self.boundaries[i].s));
         let mut ls = self.segments[..i].to_vec();
         ls.push(RetimeSegment::Rate(RateSegment::new(
-            seg.v0,
+            v0,
             v_at,
             Ease::Linear,
         )));
@@ -524,7 +658,7 @@ impl Retime {
         }
         let mut rs = vec![RetimeSegment::Rate(RateSegment::new(
             v_at,
-            seg.v1,
+            v1,
             Ease::Linear,
         ))];
         rs.extend(self.segments[i + 1..].iter().cloned());
@@ -814,6 +948,91 @@ fn solve_u(x: &[f64; 4], t: f64) -> f64 {
     u
 }
 
+/// Take an exact rational computation, or — only if it overflows i64 — the
+/// f64 `approx` rounded onto the flick grid, per the §4.1 precision policy.
+/// This keeps splitting exact in every ordinary case and sub-nanosecond in
+/// the pathological one, never faulting (engine crates never panic).
+fn exact_or_flick(
+    exact: impl FnOnce() -> Result<Rational, TimeError>,
+    approx: f64,
+) -> Result<Rational, RetimeError> {
+    match exact() {
+        Ok(v) => Ok(v),
+        Err(TimeError::Overflow) => {
+            Rational::from_f64_on_grid(approx, Rational::FLICK_DEN).map_err(RetimeError::from)
+        }
+        Err(e) => Err(RetimeError::from(e)),
+    }
+}
+
+/// `c0 + c1·u + c2·u² + c3·u³` with exact integer coefficients — the basis
+/// evaluation behind the rational cubic-Hermite split.
+fn hpoly(c: [i64; 4], u: Rational, u2: Rational, u3: Rational) -> Result<Rational, TimeError> {
+    Rational::new(c[0], 1)?
+        .checked_add(Rational::new(c[1], 1)?.checked_mul(u)?)?
+        .checked_add(Rational::new(c[2], 1)?.checked_mul(u2)?)?
+        .checked_add(Rational::new(c[3], 1)?.checked_mul(u3)?)
+}
+
+/// Exact source position and speed at local time `t` inside a polynomial
+/// (b0 = b1 = 1/3) MapSegment spanning `lo`..`hi` with endpoint speeds
+/// `m0`, `m1` — the cubic Hermite of docs/04-RETIMING.md §4.2 polynomial
+/// subclass. `t` must lie in (lo.t, hi.t). Returns `(s, v)`, each exact or, on
+/// i64 overflow, rounded onto the flick grid (§4.1 precision policy).
+fn hermite_at(
+    lo: &Boundary,
+    hi: &Boundary,
+    m0: Rational,
+    m1: Rational,
+    t: Rational,
+) -> Result<(Rational, Rational), RetimeError> {
+    // Hermite basis in u: h00 = 1 − 3u² + 2u³, h10 = u − 2u² + u³,
+    // h01 = 3u² − 2u³, h11 = u³ − u²; and their u-derivatives for the speed.
+    let s_exact = || -> Result<Rational, TimeError> {
+        let d = hi.t.checked_sub(lo.t)?;
+        let u = t.checked_sub(lo.t)?.checked_div(d)?;
+        let (u2, u3) = (u.checked_mul(u)?, u.checked_mul(u)?.checked_mul(u)?);
+        let (dm0, dm1) = (d.checked_mul(m0)?, d.checked_mul(m1)?);
+        hpoly([1, 0, -3, 2], u, u2, u3)?
+            .checked_mul(lo.s)?
+            .checked_add(hpoly([0, 1, -2, 1], u, u2, u3)?.checked_mul(dm0)?)?
+            .checked_add(hpoly([0, 0, 3, -2], u, u2, u3)?.checked_mul(hi.s)?)?
+            .checked_add(hpoly([0, 0, -1, 1], u, u2, u3)?.checked_mul(dm1)?)
+    };
+    let v_exact = || -> Result<Rational, TimeError> {
+        let d = hi.t.checked_sub(lo.t)?;
+        let u = t.checked_sub(lo.t)?.checked_div(d)?;
+        let (u2, u3) = (u.checked_mul(u)?, u.checked_mul(u)?.checked_mul(u)?);
+        let (dm0, dm1) = (d.checked_mul(m0)?, d.checked_mul(m1)?);
+        // dy/du, then v = (dy/du)/d since t = t0 + d·u.
+        let dydu = hpoly([0, -6, 6, 0], u, u2, u3)?
+            .checked_mul(lo.s)?
+            .checked_add(hpoly([1, -4, 3, 0], u, u2, u3)?.checked_mul(dm0)?)?
+            .checked_add(hpoly([0, 6, -6, 0], u, u2, u3)?.checked_mul(hi.s)?)?
+            .checked_add(hpoly([0, -2, 3, 0], u, u2, u3)?.checked_mul(dm1)?)?;
+        dydu.checked_div(d)
+    };
+    // f64 fallbacks for the overflow branch.
+    let df = hi.t.to_f64() - lo.t.to_f64();
+    let uf = (t.to_f64() - lo.t.to_f64()) / df;
+    let (s0, s1, m0f, m1f) = (lo.s.to_f64(), hi.s.to_f64(), m0.to_f64(), m1.to_f64());
+    let hp = |c: [i64; 4]| {
+        c[0] as f64 + c[1] as f64 * uf + c[2] as f64 * uf * uf + c[3] as f64 * uf * uf * uf
+    };
+    let s_approx = hp([1, 0, -3, 2]) * s0
+        + hp([0, 1, -2, 1]) * df * m0f
+        + hp([0, 0, 3, -2]) * s1
+        + hp([0, 0, -1, 1]) * df * m1f;
+    let dydu_approx = hp([0, -6, 6, 0]) * s0
+        + hp([1, -4, 3, 0]) * df * m0f
+        + hp([0, 6, -6, 0]) * s1
+        + hp([0, -2, 3, 0]) * df * m1f;
+    Ok((
+        exact_or_flick(s_exact, s_approx)?,
+        exact_or_flick(v_exact, dydu_approx / df)?,
+    ))
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
@@ -958,11 +1177,80 @@ mod tests {
         assert!((rr.evaluate(0.0) - ramp.evaluate(2.0)).abs() < 1e-9);
         assert!((rr.evaluate(2.0) - ramp.evaluate(4.0)).abs() < 1e-9);
 
-        // Refuses out-of-range and eased/curved cuts (need §5 conversion).
+        // Refuses cuts outside the open domain (eased and Map cuts are the
+        // §5 tests below).
         assert!(r.split_at(rat(0, 1)).is_none());
         assert!(r.split_at(rat(4, 1)).is_none());
-        let eased = Retime::single_ramp(rat(4, 1), rat(0, 1), rat(1, 1), rat(3, 1), Ease::Smooth);
-        assert!(eased.split_at(rat(2, 1)).is_none());
+    }
+
+    /// Sample both halves of a split against the original: left on [0, cut],
+    /// right on [0, D − cut] compared to the original at cut + τ.
+    fn assert_split_preserves_curve(orig: &Retime, cut: Rational, dur: f64) {
+        let (l, r) = orig.split_at(cut).expect("split supported");
+        l.validate().unwrap();
+        r.validate().unwrap();
+        let cutf = cut.to_f64();
+        for k in 0..=25 {
+            let f = f64::from(k) / 25.0;
+            let tl = cutf * f;
+            assert!(
+                (l.evaluate(tl) - orig.evaluate(tl)).abs() < 1e-9,
+                "left @ {tl}"
+            );
+            let tr = (dur - cutf) * f;
+            assert!(
+                (r.evaluate(tr) - orig.evaluate(cutf + tr)).abs() < 1e-9,
+                "right @ {tr}"
+            );
+        }
+        // C0 at the cut: the two halves share the exact source position.
+        assert_eq!(l.boundaries.last().unwrap().s, r.boundaries[0].s);
+        // Both halves are polynomial MapSegments (§5.3).
+        assert!(l
+            .segments
+            .iter()
+            .all(|s| matches!(s, RetimeSegment::Map(_))));
+        assert!(r
+            .segments
+            .iter()
+            .all(|s| matches!(s, RetimeSegment::Map(_))));
+    }
+
+    #[test]
+    fn splitting_an_eased_ramp_preserves_the_curve() {
+        // A Slow-ease ramp 100%→300% over [0,4] is one cubic piece (§5.1).
+        let r = Retime::single_ramp(rat(4, 1), rat(0, 1), rat(1, 1), rat(3, 1), Ease::Slow);
+        assert_split_preserves_curve(&r, rat(3, 2), 4.0);
+        // Fast ease too.
+        let r = Retime::single_ramp(rat(4, 1), rat(0, 1), rat(1, 1), rat(3, 1), Ease::Fast);
+        assert_split_preserves_curve(&r, rat(5, 2), 4.0);
+    }
+
+    #[test]
+    fn splitting_a_smooth_ramp_works_either_side_of_the_midpoint() {
+        // Smooth/Sharp decompose into two pieces at t = D/2 = 2, so cuts at 1
+        // and 3 exercise both the first and second piece.
+        for ease in [Ease::Smooth, Ease::Sharp] {
+            let r = Retime::single_ramp(rat(4, 1), rat(0, 1), rat(1, 2), rat(2, 1), ease);
+            assert_split_preserves_curve(&r, rat(1, 1), 4.0);
+            assert_split_preserves_curve(&r, rat(3, 1), 4.0);
+        }
+    }
+
+    #[test]
+    fn splitting_a_polynomial_map_segment_preserves_the_curve() {
+        // A single polynomial MapSegment (b0 = b1 = 1/3), source 0→3 over [0,2].
+        let third = rat(1, 3);
+        let rt = store(
+            &[(rat(0, 1), rat(0, 1)), (rat(2, 1), rat(3, 1))],
+            vec![RetimeSegment::Map(MapSegment::new(
+                rat(1, 1),
+                rat(2, 1),
+                third,
+                third,
+            ))],
+        );
+        assert_split_preserves_curve(&rt, rat(1, 1), 2.0);
     }
 
     #[test]

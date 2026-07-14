@@ -171,6 +171,10 @@ Two mechanisms make this safe, and you'll see them by name in the code:
   speed ramps exactly partition the original, and neither clip moves (the beat-sync
   covenant). Crucially, a clip's first frame is always its own trim-in whatever its
   speed, so splitting and re-speeding the second half never shifts where it starts.
+  Cutting through a *curved* (eased) ramp works too: behind the scenes each half is converted
+  to the exact After Effects-style bezier curve form (docs/04-RETIMING.md §5.1/§5.3), so the
+  motion is preserved to the frame — only a constant-speed or straight linear ramp stays a
+  plain speed ramp after the cut.
   You can also **delete the clip under the playhead** (Composition → Delete clip at
   playhead), which leaves a gap — the Vegas surface allows gaps, and a gap simply renders
   transparent. **Click a clip to select it** (it highlights in clay) and set its **Clip speed
