@@ -1459,7 +1459,7 @@ fn timeline_panel(ui: &mut egui::Ui, theme: &Theme, app: &mut AppState) {
         });
         if is_footage {
             place(ui, mute_r, &mut |ui| {
-                mute_control(ui, comp_id, layer, &mut pending)
+                mute_control(ui, theme, comp_id, layer, &mut pending)
             });
         }
         if select_this {
@@ -3915,17 +3915,14 @@ fn visible_control(
     pending: &mut Option<kiriko_core::Op>,
 ) {
     let vis = layer.switches.visible;
-    let glyph = if vis { "◉" } else { "○" };
     let col = if vis {
         theme.text_secondary
     } else {
         theme.text_disabled
     };
-    if ui
-        .add(egui::Label::new(egui::RichText::new(glyph).color(col)).sense(egui::Sense::click()))
-        .on_hover_text("Show / hide this layer")
-        .clicked()
-    {
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::click());
+    crate::icons::paint(ui.painter(), rect, Icon::Eye, col, 1.4);
+    if resp.on_hover_text("Show / hide this layer").clicked() {
         *pending = Some(kiriko_core::Op::SetLayerVisible {
             comp: comp_id,
             layer: layer.id,
@@ -4074,13 +4071,20 @@ fn three_d_control(
 /// Mute subcolumn (footage layers).
 fn mute_control(
     ui: &mut egui::Ui,
+    theme: &Theme,
     comp_id: uuid::Uuid,
     layer: &kiriko_core::model::Layer,
     pending: &mut Option<kiriko_core::Op>,
 ) {
     let muted = !layer.switches.audible;
-    if ui
-        .selectable_label(muted, egui::RichText::new("Mute").small())
+    let (icon, col) = if muted {
+        (Icon::Mute, theme.text_muted)
+    } else {
+        (Icon::Audio, theme.text_secondary)
+    };
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::click());
+    crate::icons::paint(ui.painter(), rect, icon, col, 1.4);
+    if resp
         .on_hover_text("Silence this layer in playback and export")
         .clicked()
     {

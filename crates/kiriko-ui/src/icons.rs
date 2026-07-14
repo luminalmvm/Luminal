@@ -60,11 +60,17 @@ pub enum Icon {
     Text,
     /// Camera layer: a video camera.
     Camera,
+    /// Layer visibility switch: an eye.
+    Eye,
+    /// Audible layer: a speaker with sound waves.
+    Audio,
+    /// Muted layer: a speaker, struck through.
+    Mute,
 }
 
 impl Icon {
     /// Every variant, for exhaustive iteration (tests, palettes).
-    pub const ALL: [Icon; 22] = [
+    pub const ALL: [Icon; 25] = [
         Icon::Pointer,
         Icon::Move,
         Icon::Rectangle,
@@ -87,6 +93,9 @@ impl Icon {
         Icon::Sequence,
         Icon::Text,
         Icon::Camera,
+        Icon::Eye,
+        Icon::Audio,
+        Icon::Mute,
     ];
 }
 
@@ -255,6 +264,45 @@ pub fn paint(painter: &Painter, rect: Rect, icon: Icon, color: Color32, width: f
         Icon::Camera => {
             closed(&[(0.12, 0.36), (0.62, 0.36), (0.62, 0.70), (0.12, 0.70)]);
             closed(&[(0.62, 0.45), (0.84, 0.37), (0.84, 0.69), (0.62, 0.61)]);
+        }
+        Icon::Eye => {
+            // Almond outline with a pupil.
+            closed(&[
+                (0.10, 0.50),
+                (0.30, 0.32),
+                (0.50, 0.28),
+                (0.70, 0.32),
+                (0.90, 0.50),
+                (0.70, 0.68),
+                (0.50, 0.72),
+                (0.30, 0.68),
+            ]);
+            painter.add(Shape::circle_stroke(p(0.5, 0.5), b.width() * 0.13, stroke));
+        }
+        Icon::Audio => {
+            // Speaker box + cone, with two sound-wave arcs.
+            closed(&[
+                (0.14, 0.40),
+                (0.30, 0.40),
+                (0.46, 0.26),
+                (0.46, 0.74),
+                (0.30, 0.60),
+                (0.14, 0.60),
+            ]);
+            arc(0.46, 0.5, 0.20, -PI / 3.0, PI / 3.0);
+            arc(0.46, 0.5, 0.33, -PI / 3.0, PI / 3.0);
+        }
+        Icon::Mute => {
+            closed(&[
+                (0.14, 0.40),
+                (0.30, 0.40),
+                (0.46, 0.26),
+                (0.46, 0.74),
+                (0.30, 0.60),
+                (0.14, 0.60),
+            ]);
+            line(&[(0.58, 0.36), (0.86, 0.64)]);
+            line(&[(0.86, 0.36), (0.58, 0.64)]);
         }
     }
 }
