@@ -4136,17 +4136,14 @@ fn graph_plot(
     // multi_delta are computed above, before the y-range, so the range fits the
     // drawn curve including live bezier overshoots.)
 
-    // Curve polyline: value, or its derivative in the speed lens (central
-    // difference at half-frame steps — display-first; exact closed forms
-    // arrive with Retime's segment maths).
+    // Curve polyline: value, or its exact derivative in the speed lens (K-080).
     let samples = (rect.width() as usize / 2).max(16);
-    let fps_est = comp.frame_rate.fps().max(1.0);
     let sample_at = |t: f64| -> f64 {
         if app.graph_speed_view {
-            let h = 0.5 / fps_est;
-            let a = kiriko_core::anim::evaluate(&shown, t - h).unwrap_or(static_val);
-            let b = kiriko_core::anim::evaluate(&shown, t + h).unwrap_or(static_val);
-            (b - a) / (2.0 * h)
+            // The exact derivative of the value bezier, so the speed curve is
+            // precisely the slope of what the value lens draws (K-080) — the
+            // bezier shaping carries across, no finite-difference smearing.
+            kiriko_core::anim::evaluate_speed(&shown, t).unwrap_or(0.0)
         } else {
             kiriko_core::anim::evaluate(&shown, t).unwrap_or(static_val)
         }

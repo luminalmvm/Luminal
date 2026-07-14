@@ -509,3 +509,12 @@ over the whole comp duration and framed y purely by auto-fit, so neither axis sc
   on its right edge when a manual range doesn't cover the whole curve.
 Not yet done: relocating the layer list's own built-in scrollbar onto the outline's edge (it
 still sits at the far right); that needs a custom outline scrollbar and is deferred.
+
+**K-080 · DECIDED · The speed lens draws the exact derivative of the value bezier.** From Mack
+(2026-07-15). The speed (derivative) view sampled its curve by central finite difference at
+half-frame steps — a display stopgap that could smear the shape near steep handles. It now uses
+`anim::evaluate_speed`, the closed-form `dv/dt = y′(u)/x′(u)` of the value-lens cubic (with the
+`x′` floor at a 100%-influence handle), so the speed curve is precisely the slope of what the
+value lens draws: bezier easing in the value view shows as the matching smooth speed curve, a
+straight span as a flat speed, a Hold as zero. This is the value/speed "two views of one data"
+promise (K-070) made exact.

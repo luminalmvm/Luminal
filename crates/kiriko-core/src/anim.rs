@@ -93,6 +93,46 @@ pub fn evaluate(keys: &[Keyframe], t: f64) -> Option<f64> {
     Some(evaluate_span(a, b, t))
 }
 
+/// The instantaneous speed dv/dt at time `t` (value-units per second) — the
+/// exact derivative of what [`evaluate`] returns, so the speed lens draws the
+/// true derivative of the value bezier rather than a finite-difference guess
+/// (K-080). Held past the ends (the value is clamped there, so the slope is 0)
+/// and 0 across a Hold-out span. `None` only when the key list is empty.
+pub fn evaluate_speed(keys: &[Keyframe], t: f64) -> Option<f64> {
+    let first = keys.first()?;
+    let last = keys.last()?;
+    if t <= first.time.to_f64() || t >= last.time.to_f64() {
+        return Some(0.0);
+    }
+    let idx = keys
+        .windows(2)
+        .position(|w| t < w[1].time.to_f64())
+        .unwrap_or(keys.len() - 2);
+    let (a, b) = (&keys[idx], &keys[idx + 1]);
+    Some(evaluate_speed_span(a, b, t))
+}
+
+/// One span's slope, matching [`evaluate_span`]'s side handling: a Hold-out span
+/// is flat (0), a straight span is the chord slope, and a bezier span is the
+/// value curve's exact derivative.
+fn evaluate_speed_span(a: &Keyframe, b: &Keyframe, t: f64) -> f64 {
+    let (t1, t2) = (a.time.to_f64(), b.time.to_f64());
+    let dt = t2 - t1;
+    if dt <= 0.0 {
+        return 0.0;
+    }
+    match (a.interp_out, b.interp_in) {
+        (SideInterp::Hold, _) => 0.0,
+        (SideInterp::Linear, SideInterp::Linear) => (b.value - a.value) / dt,
+        (out_side, in_side) => {
+            let chord = (b.value - a.value) / dt;
+            let (s1, b1) = side_params(out_side, chord);
+            let (s2, b2) = side_params(in_side, chord);
+            CubicSpan::from_ae(t1, a.value, t2, b.value, s1, b1, s2, b2).speed_at(t)
+        }
+    }
+}
+
 /// One span, honouring the pair of adjacent sides. Hold-out wins the span
 /// (docs/impl/keyframe-eval.md §2).
 fn evaluate_span(a: &Keyframe, b: &Keyframe, t: f64) -> f64 {
@@ -199,6 +239,16 @@ impl CubicSpan {
     pub fn value_at(&self, t: f64) -> f64 {
         Self::bezier(&self.y, self.solve_u(t))
     }
+
+    /// The instantaneous slope dv/dt at time `t` — the value curve's derivative,
+    /// `y′(u)/x′(u)` at the parameter with `x(u) = t`. `x′` can touch zero at a
+    /// 100%-influence handle, so it is floored to keep the speed finite (the
+    /// curve is simply "very fast" there). This is what the speed lens draws so
+    /// its curve is the exact derivative of the value bezier (K-080).
+    pub fn speed_at(&self, t: f64) -> f64 {
+        let u = self.solve_u(t);
+        Self::bezier_deriv(&self.y, u) / Self::bezier_deriv(&self.x, u).max(1e-12)
+    }
 }
 
 /// An animatable scalar slot (docs/03-DATA-MODEL.md §6.1; the expression slot
@@ -262,6 +312,41 @@ mod tests {
             value: v,
             interp_in: side,
             interp_out: side,
+        }
+    }
+
+    #[test]
+    fn evaluate_speed_is_the_exact_derivative() {
+        // Linear span 0→10 over 1 s: constant slope 10; flat/held outside.
+        let lin = [
+            key(rat(0, 1), 0.0, SideInterp::Linear),
+            key(rat(1, 1), 10.0, SideInterp::Linear),
+        ];
+        assert!((evaluate_speed(&lin, 0.5).unwrap() - 10.0).abs() < 1e-9);
+        assert_eq!(evaluate_speed(&lin, -1.0), Some(0.0));
+        assert_eq!(evaluate_speed(&lin, 2.0), Some(0.0));
+
+        // Easy-ease span: speed ~0 at the keys, positive in the middle, and the
+        // analytic derivative agrees with a central finite difference of value.
+        let ease = [
+            key(rat(0, 1), 0.0, EASY_EASE),
+            key(rat(1, 1), 10.0, EASY_EASE),
+        ];
+        let (start, middle) = (
+            evaluate_speed(&ease, 0.02).unwrap(),
+            evaluate_speed(&ease, 0.5).unwrap(),
+        );
+        assert!((0.0..2.0).contains(&start) && start < middle * 0.2); // slow start
+        assert!((middle - 15.0).abs() < 1e-6); // fast middle (peak of easy-ease)
+        for &t in &[0.15_f64, 0.4, 0.6, 0.85] {
+            let h = 1e-4;
+            let fd =
+                (evaluate(&ease, t + h).unwrap() - evaluate(&ease, t - h).unwrap()) / (2.0 * h);
+            assert!(
+                (evaluate_speed(&ease, t).unwrap() - fd).abs() < 1e-3,
+                "at t={t}: analytic {} vs finite {fd}",
+                evaluate_speed(&ease, t).unwrap()
+            );
         }
     }
 

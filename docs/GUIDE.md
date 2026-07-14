@@ -309,6 +309,9 @@ Two mechanisms make this safe, and you'll see them by name in the code:
   derivative). Both are editable, and they are the *same* data seen two ways (K-070): in the
   speed view you drag a key up or down to set how fast the value is moving at that moment,
   which is often the easier way to make motion feel right. Editing one view updates the other.
+  The speed curve is the *exact* derivative of the value curve (K-080), so any bezier shaping you
+  give a key in the value view carries straight across: an eased key that starts and ends slow
+  shows in the speed view as a smooth hump, a straight run shows as a flat line, a hold as zero.
   The value/speed switch lives in the timeline's **bottom bar** (its own little group next to
   the zoom buttons, shown only in graph mode) rather than in each curve's header, because it
   is one setting shared by every curve. The plot also carries a small **y-axis**: a few faint
