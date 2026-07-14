@@ -282,8 +282,13 @@ Two mechanisms make this safe, and you'll see them by name in the code:
   made them. It's built by `waveform_peaks` (in `kiriko-audio::mix`), which buckets the mono
   mixdown into (min, max) pairs — a pure, tested down-sample — computed once when the comp's
   audio is mixed for playback.
-- The **graph editor** (tabbed with the Timeline) — click a layer, and its animated
-  properties draw as live curves: drag the keyframes (value and time together, one
+- The **graph editor** — a toggle in the Timeline's bottom-right corner, like After
+  Effects' graph button. Switching it on does not replace the timeline: the layer outline
+  on the left, the ruler, the scrollbars and the bottom bar all stay exactly where they
+  were, and only the lane area on the right (where the layer bars normally sit) swaps to
+  the selected property's live curve. Twirl a layer open and click a property's name to
+  choose what the curve shows (a retimed footage layer's "Speed %" row graphs its Retime
+  channel); on the curve you drag the keyframes (value and time together, one
   undo per drag), double-click the background to add a key, right-click a key for a menu
   (Easy ease / Linear / Hold, or Delete). Each key's shape tells you its interpolation at a
   glance — a diamond is linear, a circle is eased (bezier), a square is a hold.
