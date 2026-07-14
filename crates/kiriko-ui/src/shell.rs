@@ -1320,795 +1320,858 @@ fn timeline_panel(ui: &mut egui::Ui, theme: &Theme, app: &mut AppState) {
         return;
     }
 
-    for layer in &comp.layers {
-        let (row_rect, row_resp) =
-            ui.allocate_exact_size(egui::vec2(ui.available_width(), 20.0), egui::Sense::click());
-        if row_resp.clicked() {
-            app.selected_layer = Some(layer.id);
-        }
-        // Right-click a layer to add things (the house pattern: right-click or
-        // menu, never scattered buttons).
-        let mut ctx_op: Option<kiriko_core::Op> = None;
-        let mut convert_layer = false;
-        let mut trim_to_source = false;
-        row_resp.context_menu(|ui| {
-            ui.menu_button("Add mask", |ui| {
-                let (w, h) = mask_space(layer, app, comp);
-                let mut new_mask = None;
-                if ui.button("Rectangle").clicked() {
-                    new_mask = Some(kiriko_core::mask::Mask::rectangle(
-                        w * 0.25,
-                        h * 0.25,
-                        w * 0.5,
-                        h * 0.5,
-                    ));
-                    ui.close_menu();
+    // Lanes scroll vertically when there are more layers than fit. Full-width clip
+    // inside so `place` (which re-clips each outline column) sees the viewport.
+    ui.set_clip_rect(saved_clip);
+    egui::ScrollArea::vertical()
+        .auto_shrink([false, false])
+        .id_salt(("timeline-lanes", comp_id))
+        .show(ui, |ui| {
+            // The scroll viewport (full width). Lane content clips to lane_area ∩ it;
+            // outline columns clip to their own x but this viewport's y (never bleeding
+            // above the ruler when a row is half-scrolled).
+            let viewport = ui.clip_rect();
+            ui.set_clip_rect(viewport.intersect(lane_area));
+            for layer in &comp.layers {
+                let (row_rect, row_resp) = ui.allocate_exact_size(
+                    egui::vec2(ui.available_width(), 20.0),
+                    egui::Sense::click(),
+                );
+                if row_resp.clicked() {
+                    app.selected_layer = Some(layer.id);
                 }
-                if ui.button("Ellipse").clicked() {
-                    new_mask = Some(kiriko_core::mask::Mask::ellipse(
-                        w * 0.5,
-                        h * 0.5,
-                        w * 0.3,
-                        h * 0.3,
-                    ));
-                    ui.close_menu();
+                // Right-click a layer to add things (the house pattern: right-click or
+                // menu, never scattered buttons).
+                let mut ctx_op: Option<kiriko_core::Op> = None;
+                let mut convert_layer = false;
+                let mut trim_to_source = false;
+                row_resp.context_menu(|ui| {
+                    ui.menu_button("Add mask", |ui| {
+                        let (w, h) = mask_space(layer, app, comp);
+                        let mut new_mask = None;
+                        if ui.button("Rectangle").clicked() {
+                            new_mask = Some(kiriko_core::mask::Mask::rectangle(
+                                w * 0.25,
+                                h * 0.25,
+                                w * 0.5,
+                                h * 0.5,
+                            ));
+                            ui.close_menu();
+                        }
+                        if ui.button("Ellipse").clicked() {
+                            new_mask = Some(kiriko_core::mask::Mask::ellipse(
+                                w * 0.5,
+                                h * 0.5,
+                                w * 0.3,
+                                h * 0.3,
+                            ));
+                            ui.close_menu();
+                        }
+                        if ui.button("Star").clicked() {
+                            new_mask = Some(kiriko_core::mask::Mask::star(
+                                w * 0.5,
+                                h * 0.5,
+                                w * 0.32,
+                                w * 0.14,
+                                5,
+                            ));
+                            ui.close_menu();
+                        }
+                        if let Some(m) = new_mask {
+                            let mut masks = layer.masks.clone();
+                            masks.push(m);
+                            ctx_op = Some(kiriko_core::Op::SetLayerMasks {
+                                comp: comp_id,
+                                layer: layer.id,
+                                masks,
+                            });
+                        }
+                    });
+                    // Footage → sequenced layer (K-071).
+                    if matches!(layer.kind, kiriko_core::model::LayerKind::Footage { .. })
+                        && ui.button("Convert to sequenced layer").clicked()
+                    {
+                        convert_layer = true;
+                        ui.close_menu();
+                    }
+                    // Trim to source end (K-022) — only offered for a retimed clip.
+                    if matches!(
+                        layer.kind,
+                        kiriko_core::model::LayerKind::Footage {
+                            retime: Some(_),
+                            ..
+                        }
+                    ) && ui.button("Trim to source end").clicked()
+                    {
+                        trim_to_source = true;
+                        ui.close_menu();
+                    }
+                });
+                if ctx_op.is_some() {
+                    pending = ctx_op;
+                    app.selected_layer = Some(layer.id);
                 }
-                if ui.button("Star").clicked() {
-                    new_mask = Some(kiriko_core::mask::Mask::star(
-                        w * 0.5,
-                        h * 0.5,
-                        w * 0.32,
-                        w * 0.14,
-                        5,
-                    ));
-                    ui.close_menu();
+                if trim_to_source {
+                    app.selected_layer = Some(layer.id);
+                    #[cfg(feature = "media")]
+                    app.trim_selected_to_source_end();
                 }
-                if let Some(m) = new_mask {
-                    let mut masks = layer.masks.clone();
-                    masks.push(m);
-                    ctx_op = Some(kiriko_core::Op::SetLayerMasks {
-                        comp: comp_id,
-                        layer: layer.id,
-                        masks,
+                if convert_layer {
+                    app.selected_layer = Some(layer.id);
+                    app.convert_to_sequenced_layer();
+                }
+                // Outline glyphs draw left of the lanes, so they paint through a
+                // viewport-clipped painter, not the lane clip (which would hide
+                // them). Child-UI columns (place/row_frame) already clip this way.
+                let outline_painter = ui.painter().with_clip_rect(viewport);
+                // Disclosure twirl: layer options hide until opened (AE behaviour).
+                let twirl_id = ui.id().with(("twirl", layer.id));
+                let mut expanded = ui.data(|d| d.get_temp::<bool>(twirl_id).unwrap_or(false));
+                let tri = egui::Rect::from_min_size(
+                    egui::pos2(row_rect.left() + 2.0, row_rect.top()),
+                    egui::vec2(16.0, row_rect.height()),
+                );
+                let tri_resp = ui.interact(tri, twirl_id.with("hit"), egui::Sense::click());
+                if tri_resp.clicked() {
+                    expanded = !expanded;
+                    ui.data_mut(|d| d.insert_temp(twirl_id, expanded));
+                }
+                crate::icons::disclosure(&outline_painter, tri, expanded, theme.text_muted);
+                if app.selected_layer == Some(layer.id) {
+                    outline_painter.rect_filled(
+                        egui::Rect::from_min_max(
+                            row_rect.min,
+                            egui::pos2(row_rect.left() + name_w - 4.0, row_rect.bottom()),
+                        ),
+                        3.0,
+                        theme.surface_2,
+                    );
+                }
+                // Left-column subcolumns (Mack): [visibility][title…][matte][blend][3D]
+                // [mute]. Switches are right-anchored so they align across every row;
+                // the title flexes and truncates. Each is clipped to its slot, so a
+                // narrow column just crops controls off the edge.
+                let top = row_rect.top();
+                let bot = row_rect.bottom();
+                let edge = track_left - 6.0;
+                let slot = |x0: f32, x1: f32| {
+                    egui::Rect::from_min_max(
+                        egui::pos2(x0.max(row_rect.left() + 18.0), top),
+                        egui::pos2(x1.max(x0 + 1.0), bot),
+                    )
+                };
+                let is_footage =
+                    matches!(layer.kind, kiriko_core::model::LayerKind::Footage { .. });
+                let eye_r = slot(row_rect.left() + 18.0, row_rect.left() + 36.0);
+                let mute_r = slot(edge - 34.0, edge);
+                let td_r = slot(edge - 60.0, edge - 38.0);
+                let blend_r = slot(edge - 124.0, edge - 64.0);
+                let matte_r = slot(edge - 178.0, edge - 128.0);
+                let type_r = slot(row_rect.left() + 38.0, row_rect.left() + 56.0);
+                let title_r = slot(row_rect.left() + 58.0, edge - 182.0);
+                // Layer-type identity (15-DESIGN §6.1): a 3px colour tab on the row's
+                // left edge and the type glyph before the name, both in the type colour.
+                let (type_icon, type_col) = layer_type_style(&layer.kind, theme);
+                outline_painter.rect_filled(
+                    egui::Rect::from_min_max(
+                        egui::pos2(row_rect.left(), row_rect.top() + 1.0),
+                        egui::pos2(row_rect.left() + 3.0, row_rect.bottom() - 1.0),
+                    ),
+                    0.0,
+                    type_col,
+                );
+                crate::icons::paint(&outline_painter, type_r, type_icon, type_col, 1.4);
+                let place =
+                    |ui: &mut egui::Ui, r: egui::Rect, add: &mut dyn FnMut(&mut egui::Ui)| {
+                        let mut child = ui.new_child(
+                            egui::UiBuilder::new()
+                                .max_rect(r)
+                                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                        );
+                        // Clip to the column's own x but the scroll viewport's y, so an
+                        // outline column in a half-scrolled row doesn't bleed past the ruler.
+                        child.set_clip_rect(r.intersect(viewport));
+                        add(&mut child);
+                    };
+                let mut select_this = false;
+                place(ui, eye_r, &mut |ui| {
+                    visible_control(ui, theme, comp_id, layer, &mut pending)
+                });
+                place(ui, title_r, &mut |ui| {
+                    if ui
+                        .add(
+                            egui::Label::new(
+                                egui::RichText::new(trim_title(&layer.name))
+                                    .small()
+                                    .color(theme.text_secondary),
+                            )
+                            .truncate()
+                            .sense(egui::Sense::click()),
+                        )
+                        .clicked()
+                    {
+                        select_this = true;
+                    }
+                });
+                place(ui, matte_r, &mut |ui| {
+                    matte_control(ui, theme, comp, comp_id, layer, &mut pending)
+                });
+                place(ui, blend_r, &mut |ui| {
+                    blend_control(ui, comp_id, layer, &mut pending)
+                });
+                place(ui, td_r, &mut |ui| {
+                    three_d_control(ui, comp_id, layer, &mut pending)
+                });
+                if is_footage {
+                    place(ui, mute_r, &mut |ui| {
+                        mute_control(ui, theme, comp_id, layer, &mut pending)
                     });
                 }
-            });
-            // Footage → sequenced layer (K-071).
-            if matches!(layer.kind, kiriko_core::model::LayerKind::Footage { .. })
-                && ui.button("Convert to sequenced layer").clicked()
-            {
-                convert_layer = true;
-                ui.close_menu();
-            }
-            // Trim to source end (K-022) — only offered for a retimed clip.
-            if matches!(
-                layer.kind,
-                kiriko_core::model::LayerKind::Footage {
-                    retime: Some(_),
-                    ..
+                if select_this {
+                    app.selected_layer = Some(layer.id);
                 }
-            ) && ui.button("Trim to source end").clicked()
-            {
-                trim_to_source = true;
-                ui.close_menu();
-            }
-        });
-        if ctx_op.is_some() {
-            pending = ctx_op;
-            app.selected_layer = Some(layer.id);
-        }
-        if trim_to_source {
-            app.selected_layer = Some(layer.id);
-            #[cfg(feature = "media")]
-            app.trim_selected_to_source_end();
-        }
-        if convert_layer {
-            app.selected_layer = Some(layer.id);
-            app.convert_to_sequenced_layer();
-        }
-        // Disclosure twirl: layer options hide until opened (AE behaviour).
-        let twirl_id = ui.id().with(("twirl", layer.id));
-        let mut expanded = ui.data(|d| d.get_temp::<bool>(twirl_id).unwrap_or(false));
-        let tri = egui::Rect::from_min_size(
-            egui::pos2(row_rect.left() + 2.0, row_rect.top()),
-            egui::vec2(16.0, row_rect.height()),
-        );
-        let tri_resp = ui.interact(tri, twirl_id.with("hit"), egui::Sense::click());
-        if tri_resp.clicked() {
-            expanded = !expanded;
-            ui.data_mut(|d| d.insert_temp(twirl_id, expanded));
-        }
-        crate::icons::disclosure(ui.painter(), tri, expanded, theme.text_muted);
-        if app.selected_layer == Some(layer.id) {
-            ui.painter().rect_filled(
-                egui::Rect::from_min_max(
-                    row_rect.min,
-                    egui::pos2(row_rect.left() + name_w - 4.0, row_rect.bottom()),
-                ),
-                3.0,
-                theme.surface_2,
-            );
-        }
-        // Left-column subcolumns (Mack): [visibility][title…][matte][blend][3D]
-        // [mute]. Switches are right-anchored so they align across every row;
-        // the title flexes and truncates. Each is clipped to its slot, so a
-        // narrow column just crops controls off the edge.
-        let top = row_rect.top();
-        let bot = row_rect.bottom();
-        let edge = track_left - 6.0;
-        let slot = |x0: f32, x1: f32| {
-            egui::Rect::from_min_max(
-                egui::pos2(x0.max(row_rect.left() + 18.0), top),
-                egui::pos2(x1.max(x0 + 1.0), bot),
-            )
-        };
-        let is_footage = matches!(layer.kind, kiriko_core::model::LayerKind::Footage { .. });
-        let eye_r = slot(row_rect.left() + 18.0, row_rect.left() + 36.0);
-        let mute_r = slot(edge - 34.0, edge);
-        let td_r = slot(edge - 60.0, edge - 38.0);
-        let blend_r = slot(edge - 124.0, edge - 64.0);
-        let matte_r = slot(edge - 178.0, edge - 128.0);
-        let type_r = slot(row_rect.left() + 38.0, row_rect.left() + 56.0);
-        let title_r = slot(row_rect.left() + 58.0, edge - 182.0);
-        // Layer-type identity (15-DESIGN §6.1): a 3px colour tab on the row's
-        // left edge and the type glyph before the name, both in the type colour.
-        let (type_icon, type_col) = layer_type_style(&layer.kind, theme);
-        ui.painter().rect_filled(
-            egui::Rect::from_min_max(
-                egui::pos2(row_rect.left(), row_rect.top() + 1.0),
-                egui::pos2(row_rect.left() + 3.0, row_rect.bottom() - 1.0),
-            ),
-            0.0,
-            type_col,
-        );
-        crate::icons::paint(ui.painter(), type_r, type_icon, type_col, 1.4);
-        let place = |ui: &mut egui::Ui, r: egui::Rect, add: &mut dyn FnMut(&mut egui::Ui)| {
-            let mut child = ui.new_child(
-                egui::UiBuilder::new()
-                    .max_rect(r)
-                    .layout(egui::Layout::left_to_right(egui::Align::Center)),
-            );
-            child.set_clip_rect(r);
-            add(&mut child);
-        };
-        let mut select_this = false;
-        place(ui, eye_r, &mut |ui| {
-            visible_control(ui, theme, comp_id, layer, &mut pending)
-        });
-        place(ui, title_r, &mut |ui| {
-            if ui
-                .add(
-                    egui::Label::new(
-                        egui::RichText::new(trim_title(&layer.name))
-                            .small()
-                            .color(theme.text_secondary),
-                    )
-                    .truncate()
-                    .sense(egui::Sense::click()),
-                )
-                .clicked()
-            {
-                select_this = true;
-            }
-        });
-        place(ui, matte_r, &mut |ui| {
-            matte_control(ui, theme, comp, comp_id, layer, &mut pending)
-        });
-        place(ui, blend_r, &mut |ui| {
-            blend_control(ui, comp_id, layer, &mut pending)
-        });
-        place(ui, td_r, &mut |ui| {
-            three_d_control(ui, comp_id, layer, &mut pending)
-        });
-        if is_footage {
-            place(ui, mute_r, &mut |ui| {
-                mute_control(ui, theme, comp_id, layer, &mut pending)
-            });
-        }
-        if select_this {
-            app.selected_layer = Some(layer.id);
-        }
-        // A whole-layer move (dragging the bar body) slides the bar for preview;
-        // the snapped landing is what draws.
-        let move_dx = match app.move_edit {
-            Some((id, raw_in)) if id == layer.id => {
-                let thr = 6.0 / track_w as f64 * duration;
-                let snapped = kiriko_core::markers::snap_time(
-                    rational_at(raw_in.max(0.0)),
-                    &comp.markers,
-                    rational_at(thr),
-                )
-                .to_f64();
-                snapped - layer.in_point.0.to_f64()
-            }
-            _ => 0.0,
-        };
-        let bar = egui::Rect::from_min_max(
-            egui::pos2(
-                x_of(layer.in_point.0.to_f64() + move_dx),
-                row_rect.top() + 2.0,
-            ),
-            egui::pos2(
-                x_of(layer.out_point.0.to_f64() + move_dx),
-                row_rect.bottom() - 2.0,
-            ),
-        );
-        ui.painter().rect(
-            bar,
-            3.0,
-            theme.surface_3,
-            egui::Stroke::new(1.0_f32, theme.hairline_strong),
-            egui::StrokeKind::Inside,
-        );
-        if layer.matte.is_some() {
-            ui.painter().text(
-                egui::pos2(bar.right() - 4.0, bar.center().y),
-                egui::Align2::RIGHT_CENTER,
-                "matte",
-                egui::FontId::monospace(8.0),
-                theme.text_muted,
-            );
-        }
-        // Overrun (K-022): a retimed clip that outruns its source holds the
-        // last frame — mark where and hatch the held tail in warning kraft
-        // (never a red alarm — house rule). Boundaries never move on their own.
-        #[cfg(feature = "media")]
-        if let kiriko_core::model::LayerKind::Footage {
-            item,
-            retime: Some(rt),
-        } = &layer.kind
-        {
-            use crate::app_state::media::MediaStatus;
-            if let Some(MediaStatus::Ready { probe, frames, .. }) = app.media.map.get(item) {
-                if let Some(v) = probe.video.as_ref() {
-                    let src_dur = *frames as f64 / v.fps().max(1.0);
-                    if let Some(ot) = rt.overrun_local_time(rational_at(src_dur)) {
-                        let ox = x_of(layer.start_offset.0.to_f64() + ot);
-                        if ox > bar.left() && ox < bar.right() - 0.5 {
-                            let hatch = theme.warning.gamma_multiply(0.5);
-                            let mut hx = ox;
-                            while hx < bar.right() {
-                                ui.painter().line_segment(
-                                    [
-                                        egui::pos2(hx, bar.top()),
-                                        egui::pos2((hx + 6.0).min(bar.right()), bar.bottom()),
-                                    ],
-                                    egui::Stroke::new(1.0_f32, hatch),
-                                );
-                                hx += 6.0;
+                // A whole-layer move (dragging the bar body) slides the bar for preview;
+                // the snapped landing is what draws.
+                let move_dx = match app.move_edit {
+                    Some((id, raw_in)) if id == layer.id => {
+                        let thr = 6.0 / track_w as f64 * duration;
+                        let snapped = kiriko_core::markers::snap_time(
+                            rational_at(raw_in.max(0.0)),
+                            &comp.markers,
+                            rational_at(thr),
+                        )
+                        .to_f64();
+                        snapped - layer.in_point.0.to_f64()
+                    }
+                    _ => 0.0,
+                };
+                let bar = egui::Rect::from_min_max(
+                    egui::pos2(
+                        x_of(layer.in_point.0.to_f64() + move_dx),
+                        row_rect.top() + 2.0,
+                    ),
+                    egui::pos2(
+                        x_of(layer.out_point.0.to_f64() + move_dx),
+                        row_rect.bottom() - 2.0,
+                    ),
+                );
+                ui.painter().rect(
+                    bar,
+                    3.0,
+                    theme.surface_3,
+                    egui::Stroke::new(1.0_f32, theme.hairline_strong),
+                    egui::StrokeKind::Inside,
+                );
+                if layer.matte.is_some() {
+                    ui.painter().text(
+                        egui::pos2(bar.right() - 4.0, bar.center().y),
+                        egui::Align2::RIGHT_CENTER,
+                        "matte",
+                        egui::FontId::monospace(8.0),
+                        theme.text_muted,
+                    );
+                }
+                // Overrun (K-022): a retimed clip that outruns its source holds the
+                // last frame — mark where and hatch the held tail in warning kraft
+                // (never a red alarm — house rule). Boundaries never move on their own.
+                #[cfg(feature = "media")]
+                if let kiriko_core::model::LayerKind::Footage {
+                    item,
+                    retime: Some(rt),
+                } = &layer.kind
+                {
+                    use crate::app_state::media::MediaStatus;
+                    if let Some(MediaStatus::Ready { probe, frames, .. }) = app.media.map.get(item)
+                    {
+                        if let Some(v) = probe.video.as_ref() {
+                            let src_dur = *frames as f64 / v.fps().max(1.0);
+                            if let Some(ot) = rt.overrun_local_time(rational_at(src_dur)) {
+                                let ox = x_of(layer.start_offset.0.to_f64() + ot);
+                                if ox > bar.left() && ox < bar.right() - 0.5 {
+                                    let hatch = theme.warning.gamma_multiply(0.5);
+                                    let mut hx = ox;
+                                    while hx < bar.right() {
+                                        ui.painter().line_segment(
+                                            [
+                                                egui::pos2(hx, bar.top()),
+                                                egui::pos2(
+                                                    (hx + 6.0).min(bar.right()),
+                                                    bar.bottom(),
+                                                ),
+                                            ],
+                                            egui::Stroke::new(1.0_f32, hatch),
+                                        );
+                                        hx += 6.0;
+                                    }
+                                    ui.painter().line_segment(
+                                        [egui::pos2(ox, bar.top()), egui::pos2(ox, bar.bottom())],
+                                        egui::Stroke::new(1.5_f32, theme.warning),
+                                    );
+                                }
                             }
-                            ui.painter().line_segment(
-                                [egui::pos2(ox, bar.top()), egui::pos2(ox, bar.bottom())],
-                                egui::Stroke::new(1.5_f32, theme.warning),
-                            );
                         }
                     }
                 }
-            }
-        }
-        // Keyframe glyphs: a clay diamond on the bar at each keyframed time
-        // (across the layer's animated properties). Only when collapsed — when
-        // expanded, each property shows its own keys on its own row (K-072).
-        // Times are layer-local, so comp time = start_offset + keyframe time.
-        if !expanded {
-            let off = layer.start_offset.0.to_f64();
-            let cy = bar.center().y;
-            for kt in layer_keyframe_times(layer) {
-                let x = x_of(off + kt);
-                if x >= bar.left() - 1.0 && x <= bar.right() + 1.0 {
-                    let d = 3.5;
-                    ui.painter().add(egui::Shape::convex_polygon(
-                        vec![
-                            egui::pos2(x, cy - d),
-                            egui::pos2(x + d, cy),
-                            egui::pos2(x, cy + d),
-                            egui::pos2(x - d, cy),
-                        ],
-                        theme.accent,
-                        egui::Stroke::new(1.0_f32, theme.surface_0),
-                    ));
+                // Keyframe glyphs: a clay diamond on the bar at each keyframed time
+                // (across the layer's animated properties). Only when collapsed — when
+                // expanded, each property shows its own keys on its own row (K-072).
+                // Times are layer-local, so comp time = start_offset + keyframe time.
+                if !expanded {
+                    let off = layer.start_offset.0.to_f64();
+                    let cy = bar.center().y;
+                    for kt in layer_keyframe_times(layer) {
+                        let x = x_of(off + kt);
+                        if x >= bar.left() - 1.0 && x <= bar.right() + 1.0 {
+                            let d = 3.5;
+                            ui.painter().add(egui::Shape::convex_polygon(
+                                vec![
+                                    egui::pos2(x, cy - d),
+                                    egui::pos2(x + d, cy),
+                                    egui::pos2(x, cy + d),
+                                    egui::pos2(x - d, cy),
+                                ],
+                                theme.accent,
+                                egui::Stroke::new(1.0_f32, theme.surface_0),
+                            ));
+                        }
+                    }
                 }
-            }
-        }
-        // Sequence layers show their clips as sub-bars; gaps show the darker
-        // base bar; each edit point gets a clay tick.
-        if let kiriko_core::model::LayerKind::Sequence { clips } = &layer.kind {
-            let off = layer.start_offset.0.to_f64();
-            for clip in clips {
-                let cs = x_of(off + clip.place_start.to_f64());
-                let ce = x_of(off + clip.place_end().to_f64());
-                let crect = egui::Rect::from_min_max(
-                    egui::pos2(cs, bar.top() + 1.0),
-                    egui::pos2(ce, bar.bottom() - 1.0),
-                );
-                // Click a clip to select it (for per-clip speed editing).
-                let cresp =
-                    ui.interact(crect, ui.id().with(("clip", clip.id)), egui::Sense::click());
-                if cresp.clicked() {
-                    app.selected_clip = Some(clip.id);
-                    app.selected_layer = Some(layer.id);
-                }
-                let sel = app.selected_clip == Some(clip.id);
-                ui.painter().rect(
-                    crect,
-                    2.0,
-                    if sel {
-                        theme.surface_3
-                    } else {
-                        theme.surface_2
-                    },
-                    egui::Stroke::new(
-                        if sel { 1.5_f32 } else { 1.0_f32 },
-                        if sel {
-                            theme.accent
-                        } else {
-                            theme.hairline_strong
-                        },
-                    ),
-                    egui::StrokeKind::Inside,
-                );
-                // A non-100% clip shows its speed.
-                if let Some(sp) = clip.constant_speed() {
-                    if (sp - 1.0).abs() > 1e-6 && ce - cs > 24.0 {
-                        ui.painter().text(
-                            crect.center(),
-                            egui::Align2::CENTER_CENTER,
-                            format!("{:.0}%", sp * 100.0),
-                            egui::FontId::monospace(8.0),
-                            theme.text_secondary,
+                // Sequence layers show their clips as sub-bars; gaps show the darker
+                // base bar; each edit point gets a clay tick.
+                if let kiriko_core::model::LayerKind::Sequence { clips } = &layer.kind {
+                    let off = layer.start_offset.0.to_f64();
+                    for clip in clips {
+                        let cs = x_of(off + clip.place_start.to_f64());
+                        let ce = x_of(off + clip.place_end().to_f64());
+                        let crect = egui::Rect::from_min_max(
+                            egui::pos2(cs, bar.top() + 1.0),
+                            egui::pos2(ce, bar.bottom() - 1.0),
+                        );
+                        // Click a clip to select it (for per-clip speed editing).
+                        let cresp = ui.interact(
+                            crect,
+                            ui.id().with(("clip", clip.id)),
+                            egui::Sense::click(),
+                        );
+                        if cresp.clicked() {
+                            app.selected_clip = Some(clip.id);
+                            app.selected_layer = Some(layer.id);
+                        }
+                        let sel = app.selected_clip == Some(clip.id);
+                        ui.painter().rect(
+                            crect,
+                            2.0,
+                            if sel {
+                                theme.surface_3
+                            } else {
+                                theme.surface_2
+                            },
+                            egui::Stroke::new(
+                                if sel { 1.5_f32 } else { 1.0_f32 },
+                                if sel {
+                                    theme.accent
+                                } else {
+                                    theme.hairline_strong
+                                },
+                            ),
+                            egui::StrokeKind::Inside,
+                        );
+                        // A non-100% clip shows its speed.
+                        if let Some(sp) = clip.constant_speed() {
+                            if (sp - 1.0).abs() > 1e-6 && ce - cs > 24.0 {
+                                ui.painter().text(
+                                    crect.center(),
+                                    egui::Align2::CENTER_CENTER,
+                                    format!("{:.0}%", sp * 100.0),
+                                    egui::FontId::monospace(8.0),
+                                    theme.text_secondary,
+                                );
+                            }
+                        }
+                        // Edit point (clip boundary) — the beat-sync landmark.
+                        ui.painter().line_segment(
+                            [egui::pos2(ce, bar.top()), egui::pos2(ce, bar.bottom())],
+                            egui::Stroke::new(1.0_f32, theme.accent),
                         );
                     }
                 }
-                // Edit point (clip boundary) — the beat-sync landmark.
-                ui.painter().line_segment(
-                    [egui::pos2(ce, bar.top()), egui::pos2(ce, bar.bottom())],
-                    egui::Stroke::new(1.0_f32, theme.accent),
-                );
-            }
-        }
 
-        // Only bars visible in the (possibly zoomed/scrolled) lane area take
-        // pointer interaction, so an off-screen bar can't steal outline clicks.
-        let bar_visible = bar.right() > track_left + 0.5 && bar.left() < panel_right;
-        // Edge handles: drag to trim in/out (one SetLayerSpan op per release).
-        for out_edge in [false, true] {
-            if !bar_visible {
-                continue;
-            }
-            let edge_x = if out_edge { bar.right() } else { bar.left() };
-            let handle = egui::Rect::from_center_size(
-                egui::pos2(edge_x, bar.center().y),
-                egui::vec2(8.0, bar.height()),
-            );
-            let resp = ui.interact(
-                handle,
-                ui.id().with(("trim", layer.id, out_edge)),
-                egui::Sense::drag(),
-            );
-            if resp.hovered() || resp.dragged() {
-                ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
-            }
-            if resp.dragged() {
-                if let Some(pos) = resp.interact_pointer_pos() {
-                    // Snap the trimmed edge to a nearby beat/marker (~6 px) so
-                    // clips cut on the beat.
-                    let threshold = 6.0 / track_w as f64 * duration;
-                    let secs = kiriko_core::markers::snap_time(
-                        rational_at(seconds_of(pos.x)),
-                        &comp.markers,
-                        rational_at(threshold),
-                    )
-                    .to_f64();
-                    app.trim_edit = Some((layer.id, out_edge, secs));
-                }
-            }
-            if resp.drag_stopped() {
-                if let Some((id, is_out, secs)) = app.trim_edit.take() {
-                    if id == layer.id && is_out == out_edge {
-                        let (mut new_in, mut new_out) =
-                            (layer.in_point.0.to_f64(), layer.out_point.0.to_f64());
-                        if is_out {
-                            new_out = secs;
-                        } else {
-                            new_in = secs;
-                        }
-                        let min_len = 1.0 / comp.frame_rate.fps().max(1.0);
-                        if new_out - new_in >= min_len {
-                            pending = Some(kiriko_core::Op::SetLayerSpan {
-                                comp: comp_id,
-                                layer: layer.id,
-                                in_point: kiriko_core::time::CompTime(rational_at(new_in)),
-                                out_point: kiriko_core::time::CompTime(rational_at(new_out)),
-                                start_offset: layer.start_offset,
-                            });
-                        }
+                // Only bars visible in the (possibly zoomed/scrolled) lane area take
+                // pointer interaction, so an off-screen bar can't steal outline clicks.
+                let bar_visible = bar.right() > track_left + 0.5 && bar.left() < panel_right;
+                // Edge handles: drag to trim in/out (one SetLayerSpan op per release).
+                for out_edge in [false, true] {
+                    if !bar_visible {
+                        continue;
                     }
-                }
-            }
-        }
-        // Body drag: move the whole layer in comp time — shift in/out and
-        // start_offset together so the bar and its content move as one. Sequence
-        // layers keep their bodies for clip selection.
-        if bar_visible && !matches!(layer.kind, kiriko_core::model::LayerKind::Sequence { .. }) {
-            let body = bar.shrink2(egui::vec2(6.0, 0.0));
-            if body.width() > 2.0 {
-                let resp = ui.interact(
-                    body,
-                    ui.id().with(("move", layer.id)),
-                    egui::Sense::click_and_drag(),
-                );
-                if resp.dragged() {
-                    ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
-                } else if resp.hovered() {
-                    ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
-                }
-                if resp.clicked() {
-                    app.selected_layer = Some(layer.id);
-                }
-                if resp.dragged() {
-                    let dx_secs = resp.drag_delta().x as f64 / track_w as f64 * duration;
-                    let base = match app.move_edit {
-                        Some((id, s)) if id == layer.id => s,
-                        _ => layer.in_point.0.to_f64(),
-                    };
-                    app.move_edit = Some((layer.id, (base + dx_secs).max(0.0)));
-                }
-                if resp.drag_stopped() {
-                    if let Some((id, raw_in)) = app.move_edit.take() {
-                        if id == layer.id {
-                            let thr = 6.0 / track_w as f64 * duration;
-                            let snapped = kiriko_core::markers::snap_time(
-                                rational_at(raw_in.max(0.0)),
+                    let edge_x = if out_edge { bar.right() } else { bar.left() };
+                    let handle = egui::Rect::from_center_size(
+                        egui::pos2(edge_x, bar.center().y),
+                        egui::vec2(8.0, bar.height()),
+                    );
+                    let resp = ui.interact(
+                        handle,
+                        ui.id().with(("trim", layer.id, out_edge)),
+                        egui::Sense::drag(),
+                    );
+                    if resp.hovered() || resp.dragged() {
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+                    }
+                    if resp.dragged() {
+                        if let Some(pos) = resp.interact_pointer_pos() {
+                            // Snap the trimmed edge to a nearby beat/marker (~6 px) so
+                            // clips cut on the beat.
+                            let threshold = 6.0 / track_w as f64 * duration;
+                            let secs = kiriko_core::markers::snap_time(
+                                rational_at(seconds_of(pos.x)),
                                 &comp.markers,
-                                rational_at(thr),
+                                rational_at(threshold),
                             )
                             .to_f64();
-                            let delta = snapped - layer.in_point.0.to_f64();
-                            if delta.abs() > 1e-9 {
-                                let (in_point, out_point, start_offset) = moved_span(
-                                    layer.in_point,
-                                    layer.out_point,
-                                    layer.start_offset,
-                                    delta,
-                                );
-                                pending = Some(kiriko_core::Op::SetLayerSpan {
-                                    comp: comp_id,
-                                    layer: layer.id,
-                                    in_point,
-                                    out_point,
-                                    start_offset,
-                                });
+                            app.trim_edit = Some((layer.id, out_edge, secs));
+                        }
+                    }
+                    if resp.drag_stopped() {
+                        if let Some((id, is_out, secs)) = app.trim_edit.take() {
+                            if id == layer.id && is_out == out_edge {
+                                let (mut new_in, mut new_out) =
+                                    (layer.in_point.0.to_f64(), layer.out_point.0.to_f64());
+                                if is_out {
+                                    new_out = secs;
+                                } else {
+                                    new_in = secs;
+                                }
+                                let min_len = 1.0 / comp.frame_rate.fps().max(1.0);
+                                if new_out - new_in >= min_len {
+                                    pending = Some(kiriko_core::Op::SetLayerSpan {
+                                        comp: comp_id,
+                                        layer: layer.id,
+                                        in_point: kiriko_core::time::CompTime(rational_at(new_in)),
+                                        out_point: kiriko_core::time::CompTime(rational_at(
+                                            new_out,
+                                        )),
+                                        start_offset: layer.start_offset,
+                                    });
+                                }
                             }
                         }
                     }
                 }
-            }
-        }
-        // Live trim feedback: provisional edge drawn in clay.
-        if let Some((id, _is_out, secs)) = app.trim_edit {
-            if id == layer.id {
-                let x = x_of(secs);
-                ui.painter().line_segment(
-                    [egui::pos2(x, bar.top()), egui::pos2(x, bar.bottom())],
-                    egui::Stroke::new(2.0_f32, theme.accent),
-                );
-            }
-        }
-        if expanded {
-            // Layer options live in the left column only — the track area to
-            // the right of the separator stays for the bar and keyframes.
-            ui.scope(|ui| {
-                ui.set_max_width(name_w - 10.0);
-                ui.indent(("layer-opts", layer.id), |ui| {
-                    // Masks only appear once the layer has one (add via right-click or
-                    // the toolbar's mask tool).
-                    if !layer.masks.is_empty() {
-                        ui.horizontal_wrapped(|ui| {
-                            ui.label(egui::RichText::new("Masks").small().color(theme.text_muted));
-                            for (mi, mask) in layer.masks.iter().enumerate() {
-                                let mut masks = layer.masks.clone();
-                                if ui
-                                    .selectable_label(
-                                        mask.inverted,
-                                        egui::RichText::new(format!("{} inv", mask.name)).small(),
+                // Body drag: move the whole layer in comp time — shift in/out and
+                // start_offset together so the bar and its content move as one. Sequence
+                // layers keep their bodies for clip selection.
+                if bar_visible
+                    && !matches!(layer.kind, kiriko_core::model::LayerKind::Sequence { .. })
+                {
+                    let body = bar.shrink2(egui::vec2(6.0, 0.0));
+                    if body.width() > 2.0 {
+                        let resp = ui.interact(
+                            body,
+                            ui.id().with(("move", layer.id)),
+                            egui::Sense::click_and_drag(),
+                        );
+                        if resp.dragged() {
+                            ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+                        } else if resp.hovered() {
+                            ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+                        }
+                        if resp.clicked() {
+                            app.selected_layer = Some(layer.id);
+                        }
+                        if resp.dragged() {
+                            let dx_secs = resp.drag_delta().x as f64 / track_w as f64 * duration;
+                            let base = match app.move_edit {
+                                Some((id, s)) if id == layer.id => s,
+                                _ => layer.in_point.0.to_f64(),
+                            };
+                            app.move_edit = Some((layer.id, (base + dx_secs).max(0.0)));
+                        }
+                        if resp.drag_stopped() {
+                            if let Some((id, raw_in)) = app.move_edit.take() {
+                                if id == layer.id {
+                                    let thr = 6.0 / track_w as f64 * duration;
+                                    let snapped = kiriko_core::markers::snap_time(
+                                        rational_at(raw_in.max(0.0)),
+                                        &comp.markers,
+                                        rational_at(thr),
                                     )
-                                    .clicked()
-                                {
-                                    masks[mi].inverted = !masks[mi].inverted;
-                                    pending = Some(kiriko_core::Op::SetLayerMasks {
-                                        comp: comp_id,
-                                        layer: layer.id,
-                                        masks,
-                                    });
-                                } else if ui
-                                    .small_button("×")
-                                    .on_hover_text("Remove mask")
-                                    .clicked()
-                                {
-                                    masks.remove(mi);
-                                    pending = Some(kiriko_core::Op::SetLayerMasks {
-                                        comp: comp_id,
-                                        layer: layer.id,
-                                        masks,
-                                    });
+                                    .to_f64();
+                                    let delta = snapped - layer.in_point.0.to_f64();
+                                    if delta.abs() > 1e-9 {
+                                        let (in_point, out_point, start_offset) = moved_span(
+                                            layer.in_point,
+                                            layer.out_point,
+                                            layer.start_offset,
+                                            delta,
+                                        );
+                                        pending = Some(kiriko_core::Op::SetLayerSpan {
+                                            comp: comp_id,
+                                            layer: layer.id,
+                                            in_point,
+                                            out_point,
+                                            start_offset,
+                                        });
+                                    }
                                 }
                             }
-                        });
+                        }
                     }
-                });
-                if let kiriko_core::model::LayerKind::Text { document } = &layer.kind {
-                    ui.indent(("text", layer.id), |ui| {
-                        ui.horizontal(|ui| {
-                            ui.label(egui::RichText::new("Text").small().color(theme.text_muted));
-                            let mut text = document.text.clone();
-                            let resp =
-                                ui.add(egui::TextEdit::singleline(&mut text).desired_width(180.0));
-                            let mut size = document.size;
-                            let size_resp = ui.add(
-                                egui::DragValue::new(&mut size)
-                                    .speed(1.0)
-                                    .range(4.0..=512.0)
-                                    .suffix(" px"),
-                            );
-                            if (resp.lost_focus() && text != document.text)
-                                || (size_resp.drag_stopped() || size_resp.lost_focus())
-                                    && (size - document.size).abs() > f64::EPSILON
-                            {
-                                let mut doc_new = document.clone();
-                                doc_new.text = text;
-                                doc_new.size = size;
-                                pending = Some(kiriko_core::Op::SetTextDocument {
-                                    comp: comp_id,
-                                    layer: layer.id,
-                                    document: doc_new,
-                                });
-                            }
-                        });
-                    });
                 }
-                if let kiriko_core::model::LayerKind::Camera { zoom } = &layer.kind {
-                    ui.indent(("camera", layer.id), |ui| {
-                        ui.horizontal(|ui| {
-                            ui.label(
-                                egui::RichText::new("Zoom px")
-                                    .small()
-                                    .color(theme.text_muted),
-                            );
-                            let fps = comp.frame_rate.fps().max(1.0);
-                            let lt = app.preview_frame as f64 / fps - layer.start_offset.0.to_f64();
-                            let committed = zoom.value_at(lt);
-                            let id = egui::Id::new(("zoom_edit", layer.id));
-                            let mut value = ui.data(|d| d.get_temp::<f64>(id)).unwrap_or(committed);
-                            let resp = ui.add(
-                                egui::DragValue::new(&mut value)
-                                    .speed(4.0)
-                                    .range(1.0..=100_000.0)
-                                    .max_decimals(1),
-                            );
-                            if resp.dragged() || resp.has_focus() {
-                                ui.data_mut(|d| d.insert_temp(id, value));
-                            }
-                            if resp.drag_stopped() || resp.lost_focus() {
-                                if (value - committed).abs() > f64::EPSILON {
-                                    let animation = if zoom.is_animated() {
-                                        Animation::Keyframed(upsert_key(zoom, lt, value))
-                                    } else {
-                                        Animation::Static(value)
-                                    };
-                                    pending = Some(kiriko_core::Op::SetCameraZoom {
-                                        comp: comp_id,
-                                        layer: layer.id,
-                                        animation,
-                                    });
-                                }
-                                ui.data_mut(|d| d.remove::<f64>(id));
-                            }
-                        });
-                    });
+                // Live trim feedback: provisional edge drawn in clay.
+                if let Some((id, _is_out, secs)) = app.trim_edit {
+                    if id == layer.id {
+                        let x = x_of(secs);
+                        ui.painter().line_segment(
+                            [egui::pos2(x, bar.top()), egui::pos2(x, bar.bottom())],
+                            egui::Stroke::new(2.0_f32, theme.accent),
+                        );
+                    }
                 }
-                // Per-clip speed for the selected clip in a Sequence layer.
-                if let kiriko_core::model::LayerKind::Sequence { clips } = &layer.kind {
-                    if let Some(cid) = app.selected_clip {
-                        if let Some(clip) = clips.iter().find(|c| c.id == cid) {
-                            ui.indent(("clipspeed", layer.id), |ui| {
-                                // Speed ramp: start % → end % with an ease (equal
-                                // ends = constant speed). The montage gesture.
-                                ui.horizontal(|ui| {
-                                    use kiriko_core::retime::Ease;
+                if expanded {
+                    // Layer options live in the left column only — the track area to
+                    // the right of the separator stays for the bar and keyframes.
+                    ui.scope(|ui| {
+                        ui.set_max_width(name_w - 10.0);
+                        ui.indent(("layer-opts", layer.id), |ui| {
+                            // Masks only appear once the layer has one (add via right-click or
+                            // the toolbar's mask tool).
+                            if !layer.masks.is_empty() {
+                                ui.horizontal_wrapped(|ui| {
                                     ui.label(
-                                        egui::RichText::new("Speed %")
+                                        egui::RichText::new("Masks")
                                             .small()
                                             .color(theme.text_muted),
                                     );
-                                    let (rv0, rv1, rease) = clip
-                                        .ramp_view()
-                                        .map(|(a, b, e)| (a * 100.0, b * 100.0, e))
-                                        .unwrap_or((100.0, 100.0, Ease::Linear));
-                                    let id0 = egui::Id::new(("clipv0", cid));
-                                    let mut s0 = ui.data(|d| d.get_temp::<f64>(id0)).unwrap_or(rv0);
-                                    let r0 = ui.add(
-                                        egui::DragValue::new(&mut s0)
-                                            .speed(1.0)
-                                            .range(-800.0..=800.0),
-                                    );
-                                    if r0.dragged() || r0.has_focus() {
-                                        ui.data_mut(|d| d.insert_temp(id0, s0));
-                                    }
-                                    ui.label(egui::RichText::new("→").small());
-                                    let id1 = egui::Id::new(("clipv1", cid));
-                                    let mut s1 = ui.data(|d| d.get_temp::<f64>(id1)).unwrap_or(rv1);
-                                    let r1 = ui.add(
-                                        egui::DragValue::new(&mut s1)
-                                            .speed(1.0)
-                                            .range(-800.0..=800.0)
-                                            .suffix(" %"),
-                                    );
-                                    if r1.dragged() || r1.has_focus() {
-                                        ui.data_mut(|d| d.insert_temp(id1, s1));
-                                    }
-                                    let mut new_ease = rease;
-                                    bare_dropdown(ui, ease_label(rease), |ui| {
-                                        for e in [
-                                            Ease::Linear,
-                                            Ease::Slow,
-                                            Ease::Fast,
-                                            Ease::Smooth,
-                                            Ease::Sharp,
-                                        ] {
-                                            if ui
-                                                .selectable_label(e == rease, ease_label(e))
-                                                .clicked()
-                                            {
-                                                new_ease = e;
-                                                ui.close_menu();
-                                            }
+                                    for (mi, mask) in layer.masks.iter().enumerate() {
+                                        let mut masks = layer.masks.clone();
+                                        if ui
+                                            .selectable_label(
+                                                mask.inverted,
+                                                egui::RichText::new(format!("{} inv", mask.name))
+                                                    .small(),
+                                            )
+                                            .clicked()
+                                        {
+                                            masks[mi].inverted = !masks[mi].inverted;
+                                            pending = Some(kiriko_core::Op::SetLayerMasks {
+                                                comp: comp_id,
+                                                layer: layer.id,
+                                                masks,
+                                            });
+                                        } else if ui
+                                            .small_button("×")
+                                            .on_hover_text("Remove mask")
+                                            .clicked()
+                                        {
+                                            masks.remove(mi);
+                                            pending = Some(kiriko_core::Op::SetLayerMasks {
+                                                comp: comp_id,
+                                                layer: layer.id,
+                                                masks,
+                                            });
                                         }
-                                    });
-                                    let released = r0.drag_stopped()
-                                        || r0.lost_focus()
-                                        || r1.drag_stopped()
-                                        || r1.lost_focus();
-                                    if released
-                                        && ((s0 - rv0).abs() > 1e-6 || (s1 - rv1).abs() > 1e-6)
-                                    {
-                                        clip_ramp_edit = Some((s0, s1, rease));
-                                        ui.data_mut(|d| {
-                                            d.remove::<f64>(id0);
-                                            d.remove::<f64>(id1);
-                                        });
-                                    }
-                                    if new_ease != rease {
-                                        clip_ramp_edit = Some((s0, s1, new_ease));
                                     }
                                 });
+                            }
+                        });
+                        if let kiriko_core::model::LayerKind::Text { document } = &layer.kind {
+                            ui.indent(("text", layer.id), |ui| {
                                 ui.horizontal(|ui| {
-                                    use kiriko_core::retime::{FlowParams, Interpolation};
+                                    ui.label(
+                                        egui::RichText::new("Text").small().color(theme.text_muted),
+                                    );
+                                    let mut text = document.text.clone();
+                                    let resp = ui.add(
+                                        egui::TextEdit::singleline(&mut text).desired_width(180.0),
+                                    );
+                                    let mut size = document.size;
+                                    let size_resp = ui.add(
+                                        egui::DragValue::new(&mut size)
+                                            .speed(1.0)
+                                            .range(4.0..=512.0)
+                                            .suffix(" px"),
+                                    );
+                                    if (resp.lost_focus() && text != document.text)
+                                        || (size_resp.drag_stopped() || size_resp.lost_focus())
+                                            && (size - document.size).abs() > f64::EPSILON
+                                    {
+                                        let mut doc_new = document.clone();
+                                        doc_new.text = text;
+                                        doc_new.size = size;
+                                        pending = Some(kiriko_core::Op::SetTextDocument {
+                                            comp: comp_id,
+                                            layer: layer.id,
+                                            document: doc_new,
+                                        });
+                                    }
+                                });
+                            });
+                        }
+                        if let kiriko_core::model::LayerKind::Camera { zoom } = &layer.kind {
+                            ui.indent(("camera", layer.id), |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.label(
+                                        egui::RichText::new("Zoom px")
+                                            .small()
+                                            .color(theme.text_muted),
+                                    );
+                                    let fps = comp.frame_rate.fps().max(1.0);
+                                    let lt = app.preview_frame as f64 / fps
+                                        - layer.start_offset.0.to_f64();
+                                    let committed = zoom.value_at(lt);
+                                    let id = egui::Id::new(("zoom_edit", layer.id));
+                                    let mut value =
+                                        ui.data(|d| d.get_temp::<f64>(id)).unwrap_or(committed);
+                                    let resp = ui.add(
+                                        egui::DragValue::new(&mut value)
+                                            .speed(4.0)
+                                            .range(1.0..=100_000.0)
+                                            .max_decimals(1),
+                                    );
+                                    if resp.dragged() || resp.has_focus() {
+                                        ui.data_mut(|d| d.insert_temp(id, value));
+                                    }
+                                    if resp.drag_stopped() || resp.lost_focus() {
+                                        if (value - committed).abs() > f64::EPSILON {
+                                            let animation = if zoom.is_animated() {
+                                                Animation::Keyframed(upsert_key(zoom, lt, value))
+                                            } else {
+                                                Animation::Static(value)
+                                            };
+                                            pending = Some(kiriko_core::Op::SetCameraZoom {
+                                                comp: comp_id,
+                                                layer: layer.id,
+                                                animation,
+                                            });
+                                        }
+                                        ui.data_mut(|d| d.remove::<f64>(id));
+                                    }
+                                });
+                            });
+                        }
+                        // Per-clip speed for the selected clip in a Sequence layer.
+                        if let kiriko_core::model::LayerKind::Sequence { clips } = &layer.kind {
+                            if let Some(cid) = app.selected_clip {
+                                if let Some(clip) = clips.iter().find(|c| c.id == cid) {
+                                    ui.indent(("clipspeed", layer.id), |ui| {
+                                        // Speed ramp: start % → end % with an ease (equal
+                                        // ends = constant speed). The montage gesture.
+                                        ui.horizontal(|ui| {
+                                            use kiriko_core::retime::Ease;
+                                            ui.label(
+                                                egui::RichText::new("Speed %")
+                                                    .small()
+                                                    .color(theme.text_muted),
+                                            );
+                                            let (rv0, rv1, rease) = clip
+                                                .ramp_view()
+                                                .map(|(a, b, e)| (a * 100.0, b * 100.0, e))
+                                                .unwrap_or((100.0, 100.0, Ease::Linear));
+                                            let id0 = egui::Id::new(("clipv0", cid));
+                                            let mut s0 =
+                                                ui.data(|d| d.get_temp::<f64>(id0)).unwrap_or(rv0);
+                                            let r0 = ui.add(
+                                                egui::DragValue::new(&mut s0)
+                                                    .speed(1.0)
+                                                    .range(-800.0..=800.0),
+                                            );
+                                            if r0.dragged() || r0.has_focus() {
+                                                ui.data_mut(|d| d.insert_temp(id0, s0));
+                                            }
+                                            ui.label(egui::RichText::new("→").small());
+                                            let id1 = egui::Id::new(("clipv1", cid));
+                                            let mut s1 =
+                                                ui.data(|d| d.get_temp::<f64>(id1)).unwrap_or(rv1);
+                                            let r1 = ui.add(
+                                                egui::DragValue::new(&mut s1)
+                                                    .speed(1.0)
+                                                    .range(-800.0..=800.0)
+                                                    .suffix(" %"),
+                                            );
+                                            if r1.dragged() || r1.has_focus() {
+                                                ui.data_mut(|d| d.insert_temp(id1, s1));
+                                            }
+                                            let mut new_ease = rease;
+                                            bare_dropdown(ui, ease_label(rease), |ui| {
+                                                for e in [
+                                                    Ease::Linear,
+                                                    Ease::Slow,
+                                                    Ease::Fast,
+                                                    Ease::Smooth,
+                                                    Ease::Sharp,
+                                                ] {
+                                                    if ui
+                                                        .selectable_label(e == rease, ease_label(e))
+                                                        .clicked()
+                                                    {
+                                                        new_ease = e;
+                                                        ui.close_menu();
+                                                    }
+                                                }
+                                            });
+                                            let released = r0.drag_stopped()
+                                                || r0.lost_focus()
+                                                || r1.drag_stopped()
+                                                || r1.lost_focus();
+                                            if released
+                                                && ((s0 - rv0).abs() > 1e-6
+                                                    || (s1 - rv1).abs() > 1e-6)
+                                            {
+                                                clip_ramp_edit = Some((s0, s1, rease));
+                                                ui.data_mut(|d| {
+                                                    d.remove::<f64>(id0);
+                                                    d.remove::<f64>(id1);
+                                                });
+                                            }
+                                            if new_ease != rease {
+                                                clip_ramp_edit = Some((s0, s1, new_ease));
+                                            }
+                                        });
+                                        ui.horizontal(|ui| {
+                                            use kiriko_core::retime::{FlowParams, Interpolation};
+                                            ui.label(
+                                                egui::RichText::new("Frames")
+                                                    .small()
+                                                    .color(theme.text_muted),
+                                            );
+                                            for (label, val, active) in [
+                                                (
+                                                    "Nearest",
+                                                    Interpolation::Nearest,
+                                                    matches!(
+                                                        clip.interpolation,
+                                                        Interpolation::Nearest
+                                                    ),
+                                                ),
+                                                (
+                                                    "Blend",
+                                                    Interpolation::Blend,
+                                                    matches!(
+                                                        clip.interpolation,
+                                                        Interpolation::Blend
+                                                    ),
+                                                ),
+                                                (
+                                                    "Flow",
+                                                    Interpolation::Flow(FlowParams::default()),
+                                                    matches!(
+                                                        clip.interpolation,
+                                                        Interpolation::Flow(_)
+                                                    ),
+                                                ),
+                                            ] {
+                                                if ui.selectable_label(active, label).clicked()
+                                                    && !active
+                                                {
+                                                    clip_interp_edit = Some(val);
+                                                }
+                                            }
+                                        });
+                                    });
+                                }
+                            }
+                        }
+                    });
+
+                    // Transform label sits in the left column; the properties (and, for
+                    // footage, the keyframable Speed row) are full-width rows below.
+                    ui.scope(|ui| {
+                        ui.set_max_width(name_w - 10.0);
+                        ui.indent(("txlabel", layer.id), |ui| {
+                            ui.label(
+                                egui::RichText::new("Transform")
+                                    .small()
+                                    .color(theme.text_muted),
+                            );
+                            // Frame interpolation for a retimed footage clip (K-021):
+                            // Nearest is crisp; Blend crossfades neighbours for smoother
+                            // slow motion (optical flow comes later).
+                            if let kiriko_core::model::LayerKind::Footage {
+                                retime: Some(rt), ..
+                            } = &layer.kind
+                            {
+                                use kiriko_core::retime::{FlowParams, Interpolation};
+                                ui.horizontal(|ui| {
                                     ui.label(
                                         egui::RichText::new("Frames")
                                             .small()
                                             .color(theme.text_muted),
                                     );
+                                    let mut set: Option<Interpolation> = None;
                                     for (label, val, active) in [
                                         (
                                             "Nearest",
                                             Interpolation::Nearest,
-                                            matches!(clip.interpolation, Interpolation::Nearest),
+                                            matches!(rt.interpolation, Interpolation::Nearest),
                                         ),
                                         (
                                             "Blend",
                                             Interpolation::Blend,
-                                            matches!(clip.interpolation, Interpolation::Blend),
+                                            matches!(rt.interpolation, Interpolation::Blend),
                                         ),
                                         (
                                             "Flow",
                                             Interpolation::Flow(FlowParams::default()),
-                                            matches!(clip.interpolation, Interpolation::Flow(_)),
+                                            matches!(rt.interpolation, Interpolation::Flow(_)),
                                         ),
                                     ] {
                                         if ui.selectable_label(active, label).clicked() && !active {
-                                            clip_interp_edit = Some(val);
+                                            set = Some(val);
                                         }
                                     }
-                                });
-                            });
-                        }
-                    }
-                }
-            });
-
-            // Transform label sits in the left column; the properties (and, for
-            // footage, the keyframable Speed row) are full-width rows below.
-            ui.scope(|ui| {
-                ui.set_max_width(name_w - 10.0);
-                ui.indent(("txlabel", layer.id), |ui| {
-                    ui.label(
-                        egui::RichText::new("Transform")
-                            .small()
-                            .color(theme.text_muted),
-                    );
-                    // Frame interpolation for a retimed footage clip (K-021):
-                    // Nearest is crisp; Blend crossfades neighbours for smoother
-                    // slow motion (optical flow comes later).
-                    if let kiriko_core::model::LayerKind::Footage {
-                        retime: Some(rt), ..
-                    } = &layer.kind
-                    {
-                        use kiriko_core::retime::{FlowParams, Interpolation};
-                        ui.horizontal(|ui| {
-                            ui.label(
-                                egui::RichText::new("Frames")
-                                    .small()
-                                    .color(theme.text_muted),
-                            );
-                            let mut set: Option<Interpolation> = None;
-                            for (label, val, active) in [
-                                (
-                                    "Nearest",
-                                    Interpolation::Nearest,
-                                    matches!(rt.interpolation, Interpolation::Nearest),
-                                ),
-                                (
-                                    "Blend",
-                                    Interpolation::Blend,
-                                    matches!(rt.interpolation, Interpolation::Blend),
-                                ),
-                                (
-                                    "Flow",
-                                    Interpolation::Flow(FlowParams::default()),
-                                    matches!(rt.interpolation, Interpolation::Flow(_)),
-                                ),
-                            ] {
-                                if ui.selectable_label(active, label).clicked() && !active {
-                                    set = Some(val);
-                                }
-                            }
-                            if let Some(interp) = set {
-                                let mut r = rt.clone();
-                                r.interpolation = interp;
-                                pending = Some(kiriko_core::Op::SetLayerRetime {
-                                    comp: comp_id,
-                                    layer: layer.id,
-                                    retime: Some(r),
+                                    if let Some(interp) = set {
+                                        let mut r = rt.clone();
+                                        r.interpolation = interp;
+                                        pending = Some(kiriko_core::Op::SetLayerRetime {
+                                            comp: comp_id,
+                                            layer: layer.id,
+                                            retime: Some(r),
+                                        });
+                                    }
                                 });
                             }
                         });
+                    });
+                    // Transform group: its own twirl (open by default) revealing each
+                    // animatable property as a timeline row — stopwatch/name/value in
+                    // the left column, that property's keyframes on the track to the
+                    // right; click a row to graph it (K-072).
+                    let tf_id = ui.id().with(("transform-group", layer.id));
+                    if group_header_row(ui, theme, "Transform", tf_id, true, viewport) {
+                        transform_property_rows(
+                            ui,
+                            theme,
+                            app,
+                            comp,
+                            comp_id,
+                            layer,
+                            name_w,
+                            track_left,
+                            track_w,
+                            duration,
+                            viewport,
+                            &mut pending,
+                        );
                     }
-                });
-            });
-            // Transform group: its own twirl (open by default) revealing each
-            // animatable property as a timeline row — stopwatch/name/value in
-            // the left column, that property's keyframes on the track to the
-            // right; click a row to graph it (K-072).
-            let tf_id = ui.id().with(("transform-group", layer.id));
-            if group_header_row(ui, theme, "Transform", tf_id, true) {
-                transform_property_rows(
-                    ui,
-                    theme,
-                    app,
-                    comp,
-                    comp_id,
-                    layer,
-                    name_w,
-                    track_left,
-                    track_w,
-                    duration,
-                    &mut pending,
-                );
+                    // Effects group: the home for the layer's effect stack. The effects
+                    // system itself lands later; the twirl is here so the shape is right.
+                    let fx_id = ui.id().with(("effects-group", layer.id));
+                    if group_header_row(ui, theme, "Effects", fx_id, false, viewport) {
+                        ui.indent(("fx-empty", layer.id), |ui| {
+                            ui.label(
+                                egui::RichText::new(
+                                    "No effects yet — the effects system is on the way.",
+                                )
+                                .small()
+                                .color(theme.text_disabled),
+                            );
+                        });
+                    }
+                }
             }
-            // Effects group: the home for the layer's effect stack. The effects
-            // system itself lands later; the twirl is here so the shape is right.
-            let fx_id = ui.id().with(("effects-group", layer.id));
-            if group_header_row(ui, theme, "Effects", fx_id, false) {
-                ui.indent(("fx-empty", layer.id), |ui| {
-                    ui.label(
-                        egui::RichText::new("No effects yet — the effects system is on the way.")
-                            .small()
-                            .color(theme.text_disabled),
-                    );
-                });
-            }
-        }
-    }
+        });
+    // Time-positioned overlays (marker guides, playhead) re-clip to the lane area.
+    ui.set_clip_rect(saved_clip.intersect(lane_area));
     // Vertical separator + drag handle: resizes the left column (Mack).
     let sep_bottom = ui.cursor().top();
     // Faint marker guide lines through the track rows, so beats line up across
@@ -4258,6 +4321,9 @@ struct RowCtx<'a> {
     lt: f64,
     off: f64,
     fps: f64,
+    /// The lane scroll viewport, so property-row outlines clip to their own x
+    /// but the viewport's y (no vertical bleed when a row is half-scrolled).
+    viewport: egui::Rect,
     track_left: f32,
     track_w: f32,
     duration: f64,
@@ -4283,22 +4349,26 @@ fn group_header_row(
     label: &str,
     id: egui::Id,
     default_open: bool,
+    viewport: egui::Rect,
 ) -> bool {
     let mut open = ui.data(|d| d.get_temp::<bool>(id)).unwrap_or(default_open);
     let (rect, resp) =
         ui.allocate_exact_size(egui::vec2(ui.available_width(), 18.0), egui::Sense::click());
+    // A group header sits in the outline column (left of the lanes), so it paints
+    // through a viewport-clipped painter rather than the lane clip.
+    let p = ui.painter().with_clip_rect(viewport);
+    if resp.hovered() {
+        p.rect_filled(rect, 0.0, theme.surface_1);
+    }
     if resp.clicked() {
         open = !open;
         ui.data_mut(|d| d.insert_temp(id, open));
     }
-    if resp.hovered() {
-        ui.painter().rect_filled(rect, 0.0, theme.surface_1);
-    }
     let cy = rect.center().y;
     let tx = rect.left() + 22.0;
     let tri = egui::Rect::from_center_size(egui::pos2(tx, cy), egui::vec2(12.0, 12.0));
-    crate::icons::disclosure(ui.painter(), tri, open, theme.text_muted);
-    ui.painter().text(
+    crate::icons::disclosure(&p, tri, open, theme.text_muted);
+    p.text(
         egui::pos2(tx + 10.0, cy),
         egui::Align2::LEFT_CENTER,
         label,
@@ -4325,6 +4395,7 @@ fn transform_property_rows(
     track_left: f32,
     track_w: f32,
     duration: f64,
+    viewport: egui::Rect,
     pending: &mut Option<kiriko_core::Op>,
 ) {
     use kiriko_core::model::{LayerKind, TransformProp};
@@ -4339,6 +4410,7 @@ fn transform_property_rows(
         lt: app.preview_frame as f64 / fps - layer.start_offset.0.to_f64(),
         off: layer.start_offset.0.to_f64(),
         fps,
+        viewport,
         track_left,
         track_w,
         duration,
@@ -4475,7 +4547,8 @@ fn row_frame(ui: &mut egui::Ui, ctx: &RowCtx, highlight: bool) -> (egui::Rect, e
     let (row_rect, _resp) =
         ui.allocate_exact_size(egui::vec2(ui.available_width(), 18.0), egui::Sense::hover());
     if highlight {
-        ui.painter().rect_filled(
+        // Left of the lanes → viewport clip, not the lane clip (which would hide it).
+        ui.painter().with_clip_rect(ctx.viewport).rect_filled(
             egui::Rect::from_min_max(
                 row_rect.min,
                 egui::pos2(ctx.track_left - 6.0, row_rect.bottom()),
@@ -4496,7 +4569,9 @@ fn row_frame(ui: &mut egui::Ui, ctx: &RowCtx, highlight: bool) -> (egui::Rect, e
             .max_rect(left_rect)
             .layout(egui::Layout::left_to_right(egui::Align::Center)),
     );
-    c.set_clip_rect(left_rect);
+    // Clip to the outline column, but bounded by the scroll viewport's y so a
+    // half-scrolled property row doesn't bleed past the ruler.
+    c.set_clip_rect(left_rect.intersect(ctx.viewport));
     (row_rect, c)
 }
 
