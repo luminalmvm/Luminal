@@ -2310,6 +2310,11 @@ fn timeline_panel(ui: &mut egui::Ui, theme: &Theme, app: &mut AppState) {
     if app.timeline_graph_mode {
         let plot_rect = graph_lane_rect(track_left, track_w, rows_top, ui.max_rect().bottom());
         graph_lane_plot(ui, theme, app, comp, plot_rect);
+    } else {
+        // No plot on screen: drop any in-flight band and keyframe selection
+        // (a selection must never outlive the curve it was made on).
+        app.graph_marquee = None;
+        app.graph_selection = None;
     }
     ui.set_clip_rect(saved_clip); // release the lane clip for the bottom bar
     timeline_bottom_bar(
@@ -3254,10 +3259,14 @@ fn graph_lane_plot(
 
     // The curve for the selected layer / property.
     let Some(layer_id) = app.selected_layer else {
+        app.graph_marquee = None;
+        app.graph_selection = None;
         hint_in_rect(ui, theme, plot_rect, "Select a layer to edit its curves.");
         return;
     };
     let Some(layer) = comp.layers.iter().find(|l| l.id == layer_id) else {
+        app.graph_marquee = None;
+        app.graph_selection = None;
         hint_in_rect(ui, theme, plot_rect, "The selected layer is gone.");
         return;
     };
@@ -3285,6 +3294,10 @@ fn graph_lane_plot(
                 .unwrap_or_else(|| comp.frame_rate.fps());
             #[cfg(not(feature = "media"))]
             let src_fps = comp.frame_rate.fps();
+            // The marquee lives on transform-property curves only; a keyframe
+            // selection lives only while its channel is the one graphed.
+            app.graph_marquee = None;
+            app.graph_selection = None;
             graph_plot_retime(ui, theme, app, comp, layer, rt, src_fps, plot_rect);
             return;
         }
@@ -3627,6 +3640,65 @@ fn side_influence(side: kiriko_core::anim::SideInterp) -> f64 {
     }
 }
 
+/// Indices of the plotted keyframe points that fall inside a marquee band.
+fn keys_in_band(points: &[egui::Pos2], band: egui::Rect) -> Vec<usize> {
+    points
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| band.contains(**p))
+        .map(|(i, _)| i)
+        .collect()
+}
+
+/// Add `delta` to the value of every selected keyframe (the relative
+/// multi-drag). Out-of-range indices are ignored, never a panic.
+fn nudge_selected_values(
+    keys: &mut [kiriko_core::anim::Keyframe],
+    selection: &[usize],
+    delta: f64,
+) {
+    for &i in selection {
+        if let Some(k) = keys.get_mut(i) {
+            k.value += delta;
+        }
+    }
+}
+
+/// Set every selected keyframe to exactly `value` (the typed absolute set).
+/// Returns whether anything changed; out-of-range indices are ignored.
+fn set_selected_values(
+    keys: &mut [kiriko_core::anim::Keyframe],
+    selection: &[usize],
+    value: f64,
+) -> bool {
+    let mut changed = false;
+    for &i in selection {
+        if let Some(k) = keys.get_mut(i) {
+            if k.value != value {
+                k.value = value;
+                changed = true;
+            }
+        }
+    }
+    changed
+}
+
+/// The validated marquee multi-selection (two or more keys) for exactly this
+/// layer + property, or `None`. The outline value field's typed commit
+/// applies to these indices; anything stale reads as no selection.
+fn graph_multi_selection(
+    app: &AppState,
+    layer: uuid::Uuid,
+    prop: kiriko_core::model::TransformProp,
+    keys: &[kiriko_core::anim::Keyframe],
+) -> Option<Vec<usize>> {
+    let s = app.graph_selection.as_ref()?;
+    if s.layer != layer || s.prop != prop {
+        return None;
+    }
+    s.indices_for(keys).filter(|sel| sel.len() >= 2)
+}
+
 /// Draw one keyframed property's value/speed curve inside `rect`, with a
 /// compact Ease/Linear header and draggable keys (the Value/Speed lens toggle
 /// lives in the timeline's bottom bar). In the speed lens each key's tangent
@@ -3680,6 +3752,28 @@ fn graph_plot(
         _ => &empty_keys,
     };
 
+    // The marquee selection for this channel. A selection made on any other
+    // layer/property, or one whose time pins no longer line up with the keys
+    // (something edited them underneath), clears here rather than risk ever
+    // touching the wrong keyframes.
+    let selection: Vec<usize> = match &app.graph_selection {
+        Some(s) if s.layer == layer_id && s.prop == current => match s.indices_for(keys) {
+            Some(sel) => sel,
+            None => {
+                app.graph_selection = None;
+                Vec::new()
+            }
+        },
+        Some(_) => {
+            app.graph_selection = None;
+            Vec::new()
+        }
+        None => Vec::new(),
+    };
+    // Two or more selected keys make drags relative multi-edits; a single
+    // selected key keeps today's free drag exactly.
+    let multi = selection.len() >= 2;
+
     // ---- plot geometry: x = layer time over the comp span, y = value ----
     ui.painter().rect_filled(rect, 0.0, theme.surface_0);
     let duration = comp.duration.0.to_f64().max(1e-6);
@@ -3703,9 +3797,81 @@ fn graph_plot(
         vmin + ((rect.bottom() - y) / rect.height()).clamp(0.0, 1.0) as f64 * (vmax - vmin)
     };
 
+    // The plot background: a press-and-drag on empty space rubber-bands a
+    // marquee; a plain click clears the selection; a double-click adds a key.
+    // The small key handles win the hit-test over this full-rect widget, so
+    // a drag starting on a keyframe never opens a marquee.
+    let mut pending: Option<Vec<Keyframe>> = None;
+    let bg = ui.interact(
+        rect,
+        ui.id().with(("graph-bg", layer_id)),
+        egui::Sense::click_and_drag(),
+    );
+    if app.graph_speed_view {
+        // No marquee in the speed lens for now: its handles edit tangents,
+        // while the multi-edit acts on values. Dropping an abandoned band
+        // here also keeps `is_interacting` from sticking on a lens switch.
+        app.graph_marquee = None;
+    } else {
+        if bg.drag_started() {
+            if let Some(p) = bg.interact_pointer_pos() {
+                app.graph_marquee = Some((p, p));
+            }
+        } else if bg.dragged() {
+            if let Some(p) = bg.interact_pointer_pos() {
+                if let Some(band) = &mut app.graph_marquee {
+                    band.1 = p;
+                }
+            }
+        }
+        if bg.drag_stopped() {
+            if let Some((a, b)) = app.graph_marquee.take() {
+                let band = egui::Rect::from_two_pos(a, b);
+                let points: Vec<egui::Pos2> = keys
+                    .iter()
+                    .map(|k| egui::pos2(x_of(k.time.to_f64()), y_of(k.value)))
+                    .collect();
+                let hit = keys_in_band(&points, band);
+                app.graph_selection = (!hit.is_empty()).then(|| crate::app_state::GraphSelection {
+                    layer: layer_id,
+                    prop: current,
+                    keys: hit.into_iter().map(|i| (i, keys[i].time)).collect(),
+                });
+            }
+        } else if !bg.dragged() && app.graph_marquee.is_some() {
+            app.graph_marquee = None; // abandoned mid-drag (channel switched)
+        }
+    }
+    if bg.clicked() {
+        app.graph_selection = None;
+    }
+    if bg.double_clicked() {
+        if let Some(p) = bg.interact_pointer_pos() {
+            let mut new_keys = keys.clone();
+            new_keys.push(Keyframe {
+                time: rational_at(t_of(p.x)),
+                value: v_of(p.y),
+                interp_in: SideInterp::Linear,
+                interp_out: SideInterp::Linear,
+            });
+            new_keys.sort_by_key(|k| k.time);
+            app.graph_selection = None; // indices shift under an insert
+            pending = Some(new_keys);
+        }
+    }
+
+    // Live multi-drag: a selected key mid-drag previews the same value delta
+    // on every selected key (times stay put — the multi-edit is value-only).
+    let multi_delta: Option<f64> = match app.graph_edit {
+        Some((i, _, v)) if multi && selection.contains(&i) => keys.get(i).map(|k| v - k.value),
+        _ => None,
+    };
+
     // Provisional keys during a drag (visual only until release).
     let mut shown: Vec<Keyframe> = keys.clone();
-    if let Some((idx, kt, kv)) = app.graph_edit {
+    if let Some(delta) = multi_delta {
+        nudge_selected_values(&mut shown, &selection, delta);
+    } else if let Some((idx, kt, kv)) = app.graph_edit {
         if let Some(k) = shown.get_mut(idx) {
             k.time = rational_at(kt);
             k.value = kv;
@@ -3812,7 +3978,6 @@ fn graph_plot(
 
     // Keys: draggable squares (value lens); draggable speed handles in the
     // speed lens (K-070 — editing the tangent, round-tripping to the store).
-    let mut pending: Option<Vec<Keyframe>> = None;
     if app.graph_speed_view {
         for (idx, key) in keys.iter().enumerate() {
             let x = x_of(key.time.to_f64());
@@ -3869,9 +4034,14 @@ fn graph_plot(
         if app.graph_speed_view {
             break; // the speed lens is handled above; this loop is the value lens
         }
+        let selected = selection.contains(&idx);
         let (kt, kv) = match app.graph_edit {
             Some((i, t, v)) if i == idx => (t, v),
-            _ => (key.time.to_f64(), key.value),
+            _ => match multi_delta {
+                // The rest of the selection previews the dragged key's delta.
+                Some(d) if selected => (key.time.to_f64(), key.value + d),
+                _ => (key.time.to_f64(), key.value),
+            },
         };
         let pos = egui::pos2(x_of(kt), y_of(kv));
         let hit = egui::Rect::from_center_size(pos, egui::vec2(12.0, 12.0));
@@ -3880,11 +4050,18 @@ fn graph_plot(
             ui.id().with(("gkey", layer_id, idx)),
             egui::Sense::click_and_drag(),
         );
-        let colour = if resp.hovered() || app.graph_edit.is_some_and(|(i, ..)| i == idx) {
+        let colour = if resp.hovered() || selected || app.graph_edit.is_some_and(|(i, ..)| i == idx)
+        {
             theme.accent
         } else {
             theme.text_secondary
         };
+        // A selected key wears an accent ring on top of its glyph, so the
+        // marquee's catch is obvious at a glance.
+        if selected {
+            ui.painter()
+                .circle_stroke(pos, 6.5, egui::Stroke::new(1.5_f32, theme.accent));
+        }
         match key_shape(key) {
             KeyShape::Square => {
                 ui.painter().rect_filled(
@@ -3912,17 +4089,46 @@ fn graph_plot(
         }
         if resp.dragged() {
             if let Some(p) = resp.interact_pointer_pos() {
-                app.graph_edit = Some((idx, t_of(p.x), v_of(p.y)));
+                if multi && selected {
+                    // The whole selection rides this drag: value-only, the
+                    // dragged key's time stays locked.
+                    app.graph_edit = Some((idx, key.time.to_f64(), v_of(p.y)));
+                } else {
+                    app.graph_edit = Some((idx, t_of(p.x), v_of(p.y)));
+                    if !selected {
+                        // Dragging an unselected key collapses the selection
+                        // to just it (today's single-key drag, plus select).
+                        app.graph_selection = Some(crate::app_state::GraphSelection {
+                            layer: layer_id,
+                            prop: current,
+                            keys: vec![(idx, key.time)],
+                        });
+                    }
+                }
             }
         }
         if resp.drag_stopped() {
             if let Some((i, kt, kv)) = app.graph_edit.take() {
                 if i == idx {
                     let mut new_keys = keys.clone();
-                    new_keys[i].time = rational_at(kt.max(0.0));
-                    new_keys[i].value = kv;
-                    new_keys.sort_by_key(|k| k.time);
-                    new_keys.dedup_by(|a, b| a.time == b.time);
+                    if multi && selected {
+                        // One op moves every selected key by the same value
+                        // delta — a single undo step; times are untouched.
+                        nudge_selected_values(&mut new_keys, &selection, kv - key.value);
+                    } else {
+                        let nt = rational_at(kt.max(0.0));
+                        new_keys[i].time = nt;
+                        new_keys[i].value = kv;
+                        new_keys.sort_by_key(|k| k.time);
+                        new_keys.dedup_by(|a, b| a.time == b.time);
+                        // The dragged key stays selected where it landed.
+                        let ni = new_keys.iter().position(|k| k.time == nt);
+                        app.graph_selection = ni.map(|n| crate::app_state::GraphSelection {
+                            layer: layer_id,
+                            prop: current,
+                            keys: vec![(n, nt)],
+                        });
+                    }
                     pending = Some(new_keys);
                 }
             }
@@ -3956,27 +4162,23 @@ fn graph_plot(
             } else if delete {
                 let mut new_keys = keys.clone();
                 new_keys.remove(idx);
+                app.graph_selection = None; // indices shift under a removal
                 pending = Some(new_keys);
             }
         });
     }
-    let bg = ui.interact(
-        rect,
-        ui.id().with(("graph-bg", layer_id)),
-        egui::Sense::click(),
-    );
-    if bg.double_clicked() {
-        if let Some(p) = bg.interact_pointer_pos() {
-            let mut new_keys = keys.clone();
-            new_keys.push(Keyframe {
-                time: rational_at(t_of(p.x)),
-                value: v_of(p.y),
-                interp_in: SideInterp::Linear,
-                interp_out: SideInterp::Linear,
-            });
-            new_keys.sort_by_key(|k| k.time);
-            pending = Some(new_keys);
-        }
+
+    // The in-flight marquee band: translucent accent fill, hairline outline.
+    if let Some((a, b)) = app.graph_marquee {
+        let band = egui::Rect::from_two_pos(a, b).intersect(rect);
+        ui.painter()
+            .rect_filled(band, 0.0, theme.accent.gamma_multiply(0.12));
+        ui.painter().rect_stroke(
+            band,
+            0.0,
+            egui::Stroke::new(1.0_f32, theme.accent),
+            egui::StrokeKind::Inside,
+        );
     }
 
     if let Some(sides) = set_sides {
@@ -4986,7 +5188,31 @@ fn prop_row(
             app.prop_edit = Some((ctx.layer.id, prop, value));
         }
         if resp.drag_stopped() || resp.lost_focus() {
-            if (value - committed).abs() > f64::EPSILON {
+            // A typed value (the field was focused, not dragged) with a
+            // marquee multi-selection on this exact channel sets every
+            // selected keyframe to that value — absolute, one undo step.
+            // Dragging the field keeps its usual single-value behaviour.
+            let multi_set = if resp.drag_stopped() {
+                None
+            } else if let Animation::Keyframed(keys) = &slot.animation {
+                graph_multi_selection(app, ctx.layer.id, prop, keys).map(|sel| {
+                    let mut new_keys = keys.clone();
+                    let changed = set_selected_values(&mut new_keys, &sel, value);
+                    (new_keys, changed)
+                })
+            } else {
+                None
+            };
+            if let Some((new_keys, changed)) = multi_set {
+                if changed {
+                    *pending = Some(kiriko_core::Op::SetTransformProperty {
+                        comp: ctx.comp_id,
+                        layer: ctx.layer.id,
+                        prop,
+                        animation: Animation::Keyframed(new_keys),
+                    });
+                }
+            } else if (value - committed).abs() > f64::EPSILON {
                 let animation = if slot.is_animated() {
                     Animation::Keyframed(upsert_key(slot, ctx.lt, value))
                 } else {
@@ -7623,6 +7849,85 @@ mod dock_tests {
         assert_eq!(prop_unit(P::ScaleX), "%");
         assert_eq!(prop_unit(P::Rotation), "°");
         assert_eq!(prop_unit(P::PositionX), "");
+    }
+
+    /// A keyframe at (t, v) with linear sides, for the marquee tests.
+    fn marquee_key(t: f64, v: f64) -> kiriko_core::anim::Keyframe {
+        use kiriko_core::anim::{Keyframe, SideInterp};
+        Keyframe {
+            time: rational_at(t),
+            value: v,
+            interp_in: SideInterp::Linear,
+            interp_out: SideInterp::Linear,
+        }
+    }
+
+    // Marquee selection: exactly the plotted points inside the band are hit.
+    #[test]
+    fn marquee_selects_only_the_points_inside_the_band() {
+        let points = vec![
+            egui::pos2(10.0, 10.0),
+            egui::pos2(50.0, 50.0),
+            egui::pos2(90.0, 10.0),
+        ];
+        let band = egui::Rect::from_min_max(egui::pos2(40.0, 40.0), egui::pos2(60.0, 60.0));
+        assert_eq!(keys_in_band(&points, band), vec![1]);
+        let all = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(100.0, 100.0));
+        assert_eq!(keys_in_band(&points, all), vec![0, 1, 2]);
+        let none = egui::Rect::from_min_max(egui::pos2(0.0, 90.0), egui::pos2(5.0, 95.0));
+        assert!(keys_in_band(&points, none).is_empty());
+    }
+
+    // The relative multi-drag: one delta on the selected keys, nothing else
+    // touched, and a stale (out-of-range) index is a no-op — never a panic.
+    #[test]
+    fn nudge_moves_only_the_selected_keys_and_ignores_stale_indices() {
+        let mut keys = vec![
+            marquee_key(0.0, 10.0),
+            marquee_key(1.0, 20.0),
+            marquee_key(2.0, 30.0),
+        ];
+        nudge_selected_values(&mut keys, &[0, 2, 99], 5.0);
+        assert_eq!(keys[0].value, 15.0);
+        assert_eq!(keys[1].value, 20.0); // unselected: untouched
+        assert_eq!(keys[2].value, 35.0);
+        assert_eq!(keys[0].time, rational_at(0.0)); // times never move
+    }
+
+    // The absolute set (a typed value in the property row): every selected
+    // key lands on exactly that value, and the change flag skips no-op ops.
+    #[test]
+    fn set_all_sets_the_exact_value_and_reports_whether_anything_changed() {
+        let mut keys = vec![marquee_key(0.0, 10.0), marquee_key(1.0, 20.0)];
+        assert!(set_selected_values(&mut keys, &[0, 1], 42.0));
+        assert_eq!(keys[0].value, 42.0);
+        assert_eq!(keys[1].value, 42.0);
+        assert!(!set_selected_values(&mut keys, &[0, 1], 42.0)); // already there
+        assert!(!set_selected_values(&mut keys, &[7], 1.0)); // stale index: no-op
+    }
+
+    // A selection pins each index to its key's time: removing or inserting a
+    // key breaks the pins and the whole selection reads as stale (None), so
+    // it can never edit the wrong keyframes.
+    #[test]
+    fn a_selection_reads_stale_once_the_keys_change_underneath() {
+        use crate::app_state::GraphSelection;
+        let keys = vec![marquee_key(0.0, 1.0), marquee_key(1.0, 2.0)];
+        let sel = GraphSelection {
+            layer: uuid::Uuid::nil(),
+            prop: kiriko_core::model::TransformProp::PositionX,
+            keys: vec![(0, keys[0].time), (1, keys[1].time)],
+        };
+        assert_eq!(sel.indices_for(&keys), Some(vec![0, 1]));
+        // A key removed: index 1 is gone.
+        assert_eq!(sel.indices_for(&keys[..1]), None);
+        // A key inserted between them shifts index 1 onto the wrong key.
+        let shifted = vec![keys[0], marquee_key(0.5, 9.0), keys[1]];
+        assert_eq!(sel.indices_for(&shifted), None);
+        // Value edits keep the pins intact (times unchanged).
+        let mut revalued = keys.clone();
+        assert!(set_selected_values(&mut revalued, &[0, 1], 7.0));
+        assert_eq!(sel.indices_for(&revalued), Some(vec![0, 1]));
     }
 
     // Moving a layer shifts in/out AND start_offset by the same delta — a move,

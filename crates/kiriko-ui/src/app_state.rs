@@ -636,6 +636,33 @@ pub struct PendingRecovery {
 #[cfg(feature = "media")]
 type BeatMsg = (Uuid, f64, Vec<(f64, f32)>);
 
+/// A marquee selection in the graph editor: which keyframes of which channel
+/// are selected. In plain terms: the box you drag over a curve remembers its
+/// keys here, and every entry is pinned to both its index *and* the time the
+/// key had when it was selected — if any other edit inserts, removes or
+/// re-orders keys, the pins no longer line up and the whole selection reads
+/// as stale (and clears) instead of ever editing the wrong keyframes.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GraphSelection {
+    /// The layer whose curve the selection was made on.
+    pub layer: Uuid,
+    /// The transform property (channel) the indices refer to.
+    pub prop: kiriko_core::model::TransformProp,
+    /// (keyframe index, its time when selected), ascending by index.
+    pub keys: Vec<(usize, Rational)>,
+}
+
+impl GraphSelection {
+    /// The selected indices, if every pin still lines up with `keys`; `None`
+    /// means the selection is stale (the keyframe list changed underneath).
+    pub fn indices_for(&self, keys: &[kiriko_core::anim::Keyframe]) -> Option<Vec<usize>> {
+        self.keys
+            .iter()
+            .map(|&(i, t)| keys.get(i).filter(|k| k.time == t).map(|_| i))
+            .collect()
+    }
+}
+
 pub struct AppState {
     pub store: DocumentStore,
     pub path: Option<PathBuf>,
@@ -716,6 +743,13 @@ pub struct AppState {
     pub graph_prop: Option<kiriko_core::model::TransformProp>,
     /// In-flight keyframe drag: (key index, provisional layer-time, value).
     pub graph_edit: Option<(usize, f64, f64)>,
+    /// In-flight marquee (rubber-band) drag on the graph's background:
+    /// (press anchor, current corner) in screen points. `Some` only while the
+    /// mouse button is down; on release it becomes a `graph_selection`.
+    pub graph_marquee: Option<(egui::Pos2, egui::Pos2)>,
+    /// Keyframes selected in the graph editor — by the marquee, or the last
+    /// dragged key. Pinned to one channel; see `GraphSelection`.
+    pub graph_selection: Option<GraphSelection>,
     /// In-flight speed-graph drag: (key index, provisional speed in
     /// value-units/second). Separate from `graph_edit` because the speed lens
     /// edits a keyframe's tangent (K-070), not its value or time.
@@ -847,6 +881,8 @@ impl Default for AppState {
             selected_clip: None,
             graph_prop: None,
             graph_edit: None,
+            graph_marquee: None,
+            graph_selection: None,
             graph_speed_edit: None,
             graph_speed_view: false,
             graph_retime: false,
@@ -2403,6 +2439,7 @@ impl AppState {
             || self.trim_edit.is_some()
             || self.move_edit.is_some()
             || self.graph_edit.is_some()
+            || self.graph_marquee.is_some()
             || self.graph_speed_edit.is_some()
             || self.graph_retime_edit.is_some()
             || self.mask_drag.is_some()

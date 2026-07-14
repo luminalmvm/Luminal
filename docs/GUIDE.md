@@ -292,6 +292,17 @@ Two mechanisms make this safe, and you'll see them by name in the code:
   undo per drag), double-click the background to add a key, right-click a key for a menu
   (Easy ease / Linear / Hold, or Delete). Each key's shape tells you its interpolation at a
   glance — a diamond is linear, a circle is eased (bezier), a square is a hold.
+  You can also edit **several keyframes at once**: drag a box over the curve's empty
+  background (a *marquee*) and every key inside it is selected, shown with a ring around it.
+  Dragging any selected key then moves the whole selection up or down by the same amount —
+  values only, times stay put — as one undo step; dragging a key outside the selection
+  drops the selection and moves just that key, as before. With two or more keys selected,
+  *typing* a number into that property's value field in the layer outline sets every
+  selected key to exactly that value (dragging the field keeps its usual one-value
+  behaviour). A plain click on the graph's background, or switching to another curve,
+  clears the selection. Under the bonnet the selection remembers each key by its position
+  *and* its time, so if anything else edits the curve underneath, the selection simply
+  clears rather than ever grabbing the wrong keys.
   The curve you see is sampled from the same evaluator that renders the comp, so what the
   graph shows is exactly what plays. There are two ways to look at any property: the **value**
   view (the raw number over time) and the **speed** view (its rate of change — the
