@@ -5500,6 +5500,98 @@ fn speed_property_row(
         }
     }
 
+    // Keyframe navigator (◄ ◆ ►), like every other property row — shown once the
+    // channel is keyed. ◄ ► jump the playhead between this lens's keys; the
+    // diamond adds a key at the playhead, or removes an interior one (the
+    // structural start/end keys stay, shown as a disabled ◆).
+    let nav_on = if speed_lens { animated } else { time_enabled };
+    if nav_on {
+        let tol = 0.5 / fps.max(1.0);
+        let small = |g: &str| egui::Button::new(egui::RichText::new(g).small()).frame(false);
+        let key_times: Vec<f64> = if speed_lens {
+            keys.as_ref()
+                .map(|k| k.iter().map(|(t, _)| t.to_f64()).collect())
+                .unwrap_or_default()
+        } else {
+            value_keys
+                .as_ref()
+                .map(|k| k.iter().map(|(t, _)| t.to_f64()).collect())
+                .unwrap_or_default()
+        };
+        let mut jump_to: Option<f64> = None;
+
+        let has_prev = key_times.iter().any(|&t| t < ctx.lt - tol);
+        if c.add_enabled(has_prev, small("◄"))
+            .on_hover_text("Previous keyframe")
+            .clicked()
+        {
+            jump_to = key_times
+                .iter()
+                .copied()
+                .filter(|&t| t < ctx.lt - tol)
+                .reduce(f64::max);
+        }
+
+        let on_key = key_times.iter().any(|&t| (t - ctx.lt).abs() < tol);
+        let at_endpoint = ctx.lt <= tol || (dur.to_f64() - ctx.lt).abs() < tol;
+        let removable = on_key && !at_endpoint;
+        let diamond = c
+            .add_enabled(!on_key || removable, small(if on_key { "◆" } else { "◇" }))
+            .on_hover_text(if on_key {
+                "Remove keyframe here"
+            } else {
+                "Add keyframe here"
+            });
+        if diamond.clicked() {
+            let new_retime = if speed_lens {
+                if on_key {
+                    let kept: Vec<(Rational, Rational)> = keys
+                        .clone()
+                        .unwrap_or_default()
+                        .into_iter()
+                        .filter(|(t, _)| (t.to_f64() - ctx.lt).abs() >= tol)
+                        .collect();
+                    kiriko_core::retime::Retime::from_speed_keyframes(Rational::ZERO, &kept)
+                } else {
+                    speed_with_key(retime, dur, ctx.lt, to_speed(current))
+                }
+            } else if on_key {
+                let mut kv = value_keys.clone().unwrap_or_default();
+                kv.retain(|(t, _)| (t.to_f64() - ctx.lt).abs() >= tol);
+                kiriko_core::retime::Retime::from_value_keyframes(&kv)
+            } else {
+                let mut kv = value_keys
+                    .clone()
+                    .unwrap_or_else(|| vec![(Rational::ZERO, Rational::ZERO), (dur, dur)]);
+                upsert_value_key(&mut kv, ctx.lt, src_now, dur, fps);
+                kiriko_core::retime::Retime::from_value_keyframes(&kv)
+            };
+            *pending = Some(kiriko_core::Op::SetLayerRetime {
+                comp: ctx.comp_id,
+                layer: ctx.layer.id,
+                retime: new_retime,
+            });
+        }
+
+        let has_next = key_times.iter().any(|&t| t > ctx.lt + tol);
+        if c.add_enabled(has_next, small("►"))
+            .on_hover_text("Next keyframe")
+            .clicked()
+        {
+            jump_to = key_times
+                .iter()
+                .copied()
+                .filter(|&t| t > ctx.lt + tol)
+                .reduce(f64::min);
+        }
+
+        if let Some(kt) = jump_to {
+            app.preview_frame = ((kt + ctx.off) * ctx.fps).round().max(0.0) as usize;
+            #[cfg(feature = "media")]
+            app.refresh_preview();
+        }
+    }
+
     // "Time" in the value lens, "Velocity" in the derivative lens (K-076).
     let channel_name = if speed_lens { "Velocity" } else { "Time" };
     if c.add(
