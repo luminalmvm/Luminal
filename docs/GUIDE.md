@@ -398,7 +398,19 @@ Two mechanisms make this safe, and you'll see them by name in the code:
   keeps their ratio as you drag; the 🔓 button unlocks them into two separate rows for
   independent editing, and 🔗 re-locks. (Re-locking keeps whatever ratio the two currently
   have and loses nothing — a small, friendlier deviation from the original "relinking may
-  discard one axis" idea.) A selected sequence clip's **Speed %** is a full ramp — a start
+  discard one axis" idea.)
+  **Position and Anchor come linked by default too, but in a different sense**: one
+  "Position" row (and one "Anchor" row) carries *two* value boxes, x then y, exactly as
+  After Effects shows a 2D position. Unlike Scale there is no ratio lock — dragging x never
+  moves y; the link only merges the row's furniture. The shared stopwatch animates or
+  freezes both axes together as a single undo step, the shared keyframe navigator walks the
+  union of both axes' keys (its diamond adds a key to *both* axes at the playhead, or clears
+  whatever keys sit there on either axis), clicking the name opens the x channel in the
+  graph, and the lane shows both axes' diamonds. The chain button splits them into the old
+  separate "Position x" / "Position y" rows when you want to walk one axis's keys on its
+  own, and a "Link position" row underneath joins them back up. The choice is remembered
+  per layer for the session, and nothing about the project file changes either way — it is
+  purely how the rows are drawn. A selected sequence clip's **Speed %** is a full ramp — a start
   and end speed with an ease (Linear/Slow/Fast/Smooth/Sharp), equal ends being a plain
   constant — so a single clip can rush in and settle; cut a clip into pieces and ramp each to
   build the classic ramp-freeze-ramp velocity edit, edit points staying on the beat

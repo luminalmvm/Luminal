@@ -5460,7 +5460,9 @@ fn group_header_row(
 /// row shows its stopwatch/name/value in the left column and its own keyframes
 /// as diamonds on the track to the right; clicking a row's name graphs it.
 /// Scale x/y share one row with a ratio lock (default on); unlocking splits
-/// them into two independent rows with a relink control.
+/// them into two independent rows with a relink control. Anchor and Position
+/// x/y are linked by default too, but only as row furniture — one row carries
+/// two independent values (AE-style), never coupling them like Scale's ratio.
 #[allow(clippy::too_many_arguments)]
 fn transform_property_rows(
     ui: &mut egui::Ui,
@@ -5503,42 +5505,28 @@ fn transform_property_rows(
         speed_property_row(ui, app, &ctx, retime, pending);
     }
 
+    // Anchor and Position: x and y share one row by default, AE-style. Unlike
+    // Scale's ratio lock the two values never couple — linking only merges the
+    // row furniture (one stopwatch, one navigator, one lane). The chain
+    // button splits them into today's separate rows, per layer.
     if !is_camera {
-        prop_row(
+        linked_pair_block(
             ui,
             app,
             &ctx,
-            "Anchor x",
-            TransformProp::AnchorX,
-            1.0,
-            pending,
-        );
-        prop_row(
-            ui,
-            app,
-            &ctx,
-            "Anchor y",
-            TransformProp::AnchorY,
-            1.0,
+            "anchor-unlink",
+            "Anchor",
+            (TransformProp::AnchorX, TransformProp::AnchorY),
             pending,
         );
     }
-    prop_row(
+    linked_pair_block(
         ui,
         app,
         &ctx,
-        "Position x",
-        TransformProp::PositionX,
-        1.0,
-        pending,
-    );
-    prop_row(
-        ui,
-        app,
-        &ctx,
-        "Position y",
-        TransformProp::PositionY,
-        1.0,
+        "pos-unlink",
+        "Position",
+        (TransformProp::PositionX, TransformProp::PositionY),
         pending,
     );
 
@@ -5565,7 +5553,12 @@ fn transform_property_rows(
             0.5,
             pending,
         );
-        if link_toggle_row(ui, &ctx) {
+        if link_toggle_row(
+            ui,
+            &ctx,
+            "Link scale",
+            "Re-lock the x:y ratio and edit scale as one value",
+        ) {
             unlinked = false;
         }
     } else {
@@ -5620,6 +5613,42 @@ fn transform_property_rows(
             pending,
         );
     }
+}
+
+/// One linked-by-default x/y pair (Anchor, Position): a single two-value row,
+/// or — once unlinked via the chain button — two independent rows plus a
+/// relink control. The choice is per layer, kept in ui temp data under
+/// `(key, layer.id)`, and purely presentational: no document state changes.
+fn linked_pair_block(
+    ui: &mut egui::Ui,
+    app: &mut AppState,
+    ctx: &RowCtx,
+    key: &'static str,
+    label: &str,
+    props: (
+        luminal_core::model::TransformProp,
+        luminal_core::model::TransformProp,
+    ),
+    pending: &mut Option<luminal_core::Op>,
+) {
+    let id = ui.id().with((key, ctx.layer.id));
+    let mut unlinked = ui.data(|d| d.get_temp::<bool>(id)).unwrap_or(false);
+    let lower = label.to_lowercase();
+    if unlinked {
+        prop_row(ui, app, ctx, &format!("{label} x"), props.0, 1.0, pending);
+        prop_row(ui, app, ctx, &format!("{label} y"), props.1, 1.0, pending);
+        if link_toggle_row(
+            ui,
+            ctx,
+            &format!("Link {lower}"),
+            &format!("Rejoin {lower} x and y on one row (values stay independent)"),
+        ) {
+            unlinked = false;
+        }
+    } else {
+        linked_pair_row(ui, app, ctx, label, props, pending, &mut unlinked);
+    }
+    ui.data_mut(|d| d.insert_temp(id, unlinked));
 }
 
 /// Allocate one 18px timeline row and return (row_rect, left-column child ui).
@@ -5870,89 +5899,173 @@ fn prop_row(
         app.graph_retime = false; // switching to a transform property
         app.graph_view_y = None; // re-fit for the newly graphed channel
     }
-    {
-        let committed = slot.value_at(ctx.lt);
-        let mut value = match app.prop_edit {
-            Some((l, p, v)) if l == ctx.layer.id && p == prop => v,
-            _ => committed,
-        };
-        let resp = c.add(
-            egui::DragValue::new(&mut value)
-                .speed(speed)
-                .max_decimals(2),
-        );
-        if resp.dragged() || resp.has_focus() {
-            app.prop_edit = Some((ctx.layer.id, prop, value));
-        }
-        if resp.drag_stopped() || resp.lost_focus() {
-            // A typed value (the field was focused, not dragged) with a
-            // marquee multi-selection on this exact channel sets every
-            // selected keyframe to that value — absolute, one undo step.
-            // Dragging the field keeps its usual single-value behaviour.
-            let multi_set = if resp.drag_stopped() {
-                None
-            } else if let Animation::Keyframed(keys) = &slot.animation {
-                graph_multi_selection(app, ctx.layer.id, prop, keys).map(|sel| {
-                    let mut new_keys = keys.clone();
-                    let changed = set_selected_values(&mut new_keys, &sel, value);
-                    (new_keys, changed)
-                })
-            } else {
-                None
-            };
-            if let Some((new_keys, changed)) = multi_set {
-                if changed {
-                    *pending = Some(luminal_core::Op::SetTransformProperty {
-                        comp: ctx.comp_id,
-                        layer: ctx.layer.id,
-                        prop,
-                        animation: Animation::Keyframed(new_keys),
-                    });
-                }
-            } else if (value - committed).abs() > f64::EPSILON {
-                let animation = if slot.is_animated() {
-                    Animation::Keyframed(upsert_key(slot, ctx.lt, value))
-                } else {
-                    Animation::Static(value)
-                };
-                *pending = Some(luminal_core::Op::SetTransformProperty {
-                    comp: ctx.comp_id,
-                    layer: ctx.layer.id,
-                    prop,
-                    animation,
-                });
-            }
-            app.prop_edit = None;
-        }
-    }
+    axis_drag_value(&mut c, app, ctx, prop, speed, pending);
     if let Animation::Keyframed(keys) = &slot.animation {
         draw_key_diamonds(ui, ctx, row_rect, keys);
     }
 }
 
-/// A Batch op setting both scale axes as one undo step.
-fn scale_batch(
+/// One axis's value box with the shared commit rules (prop_row and the linked
+/// Anchor/Position rows both use it): dragging edits live through
+/// `app.prop_edit`; on release, a typed value with a marquee multi-selection
+/// on this exact channel sets every selected keyframe to that value —
+/// absolute, one undo step — while any other commit upserts a key at the
+/// playhead (animated) or replaces the static value.
+fn axis_drag_value(
+    c: &mut egui::Ui,
+    app: &mut AppState,
+    ctx: &RowCtx,
+    prop: luminal_core::model::TransformProp,
+    speed: f64,
+    pending: &mut Option<luminal_core::Op>,
+) {
+    use luminal_core::anim::Animation;
+    let slot = ctx.layer.transform.get(prop);
+    let committed = slot.value_at(ctx.lt);
+    let mut value = match app.prop_edit {
+        Some((l, p, v)) if l == ctx.layer.id && p == prop => v,
+        _ => committed,
+    };
+    let resp = c.add(
+        egui::DragValue::new(&mut value)
+            .speed(speed)
+            .max_decimals(2),
+    );
+    if resp.dragged() || resp.has_focus() {
+        app.prop_edit = Some((ctx.layer.id, prop, value));
+    }
+    if resp.drag_stopped() || resp.lost_focus() {
+        // A typed value (the field was focused, not dragged) with a
+        // marquee multi-selection on this exact channel sets every
+        // selected keyframe to that value — absolute, one undo step.
+        // Dragging the field keeps its usual single-value behaviour.
+        let multi_set = if resp.drag_stopped() {
+            None
+        } else if let Animation::Keyframed(keys) = &slot.animation {
+            graph_multi_selection(app, ctx.layer.id, prop, keys).map(|sel| {
+                let mut new_keys = keys.clone();
+                let changed = set_selected_values(&mut new_keys, &sel, value);
+                (new_keys, changed)
+            })
+        } else {
+            None
+        };
+        if let Some((new_keys, changed)) = multi_set {
+            if changed {
+                *pending = Some(luminal_core::Op::SetTransformProperty {
+                    comp: ctx.comp_id,
+                    layer: ctx.layer.id,
+                    prop,
+                    animation: Animation::Keyframed(new_keys),
+                });
+            }
+        } else if (value - committed).abs() > f64::EPSILON {
+            let animation = if slot.is_animated() {
+                Animation::Keyframed(upsert_key(slot, ctx.lt, value))
+            } else {
+                Animation::Static(value)
+            };
+            *pending = Some(luminal_core::Op::SetTransformProperty {
+                comp: ctx.comp_id,
+                layer: ctx.layer.id,
+                prop,
+                animation,
+            });
+        }
+        app.prop_edit = None;
+    }
+}
+
+/// A Batch op setting two transform properties as one undo step — how every
+/// linked two-axis row (Scale, Position, Anchor) commits both axes together.
+fn two_prop_batch(
     comp: uuid::Uuid,
     layer: uuid::Uuid,
-    x: luminal_core::anim::Animation,
-    y: luminal_core::anim::Animation,
+    x: (
+        luminal_core::model::TransformProp,
+        luminal_core::anim::Animation,
+    ),
+    y: (
+        luminal_core::model::TransformProp,
+        luminal_core::anim::Animation,
+    ),
 ) -> luminal_core::Op {
-    use luminal_core::model::TransformProp;
     luminal_core::Op::Batch {
         ops: vec![
             luminal_core::Op::SetTransformProperty {
                 comp,
                 layer,
-                prop: TransformProp::ScaleX,
-                animation: x,
+                prop: x.0,
+                animation: x.1,
             },
             luminal_core::Op::SetTransformProperty {
                 comp,
                 layer,
-                prop: TransformProp::ScaleY,
-                animation: y,
+                prop: y.0,
+                animation: y.1,
             },
         ],
+    }
+}
+
+/// Sorted key times (seconds, layer-local) across both axes of a linked row,
+/// de-duplicated within `tol` — the navigator and its diamond work on this
+/// union, so a key on either axis counts.
+fn union_key_times(
+    a: &luminal_core::anim::Property,
+    b: &luminal_core::anim::Property,
+    tol: f64,
+) -> Vec<f64> {
+    use luminal_core::anim::Animation;
+    let mut times: Vec<f64> = Vec::new();
+    for slot in [a, b] {
+        if let Animation::Keyframed(keys) = &slot.animation {
+            times.extend(keys.iter().map(|k| k.time.to_f64()));
+        }
+    }
+    times.sort_by(f64::total_cmp);
+    times.dedup_by(|p, q| (*p - *q).abs() < tol);
+    times
+}
+
+/// Where a navigator can go from local time `lt` over sorted key `times`:
+/// (previous key time, whether a key sits at the playhead, next key time).
+/// The half-frame tolerance matches `keyframe_nav`.
+fn key_nav_targets(times: &[f64], lt: f64, tol: f64) -> (Option<f64>, bool, Option<f64>) {
+    let prev = times.iter().rev().find(|t| **t < lt - tol).copied();
+    let on_key = times.iter().any(|t| (t - lt).abs() < tol);
+    let next = times.iter().find(|t| **t > lt + tol).copied();
+    (prev, on_key, next)
+}
+
+/// One axis's share of the linked row's diamond click. Removing strips this
+/// axis's keys at the playhead — freezing the axis to its current value if
+/// none remain, leaving a Static axis untouched. Adding upserts a key at the
+/// playhead with the axis's current value, so both axes always key together.
+fn toggle_key_at(
+    slot: &luminal_core::anim::Property,
+    lt: f64,
+    tol: f64,
+    remove: bool,
+) -> luminal_core::anim::Animation {
+    use luminal_core::anim::Animation;
+    if !remove {
+        return Animation::Keyframed(upsert_key(slot, lt, slot.value_at(lt)));
+    }
+    match &slot.animation {
+        Animation::Keyframed(keys) => {
+            let kept: Vec<_> = keys
+                .iter()
+                .filter(|k| (k.time.to_f64() - lt).abs() >= tol)
+                .cloned()
+                .collect();
+            if kept.is_empty() {
+                Animation::Static(slot.value_at(lt))
+            } else {
+                Animation::Keyframed(kept)
+            }
+        }
+        Animation::Static(v) => Animation::Static(*v),
     }
 }
 
@@ -5997,7 +6110,12 @@ fn combined_scale_row(
                 Animation::Keyframed(upsert_key(sy, ctx.lt, sy.value_at(ctx.lt))),
             )
         };
-        *pending = Some(scale_batch(ctx.comp_id, ctx.layer.id, ax, ay));
+        *pending = Some(two_prop_batch(
+            ctx.comp_id,
+            ctx.layer.id,
+            (TransformProp::ScaleX, ax),
+            (TransformProp::ScaleY, ay),
+        ));
     }
     if c.add(
         egui::Label::new(egui::RichText::new("Scale %").small().color(if is_graphed {
@@ -6048,7 +6166,12 @@ fn combined_scale_row(
                 } else {
                     Animation::Static(ny)
                 };
-                *pending = Some(scale_batch(ctx.comp_id, ctx.layer.id, ax, ay));
+                *pending = Some(two_prop_batch(
+                    ctx.comp_id,
+                    ctx.layer.id,
+                    (TransformProp::ScaleX, ax),
+                    (TransformProp::ScaleY, ay),
+                ));
             }
             app.prop_edit = None;
             app.scale_preview = None;
@@ -6064,18 +6187,158 @@ fn combined_scale_row(
     draw_key_diamonds(ui, ctx, row_rect, &keys);
 }
 
-/// A thin row holding the "link scale" button; true when clicked.
-fn link_toggle_row(ui: &mut egui::Ui, ctx: &RowCtx) -> bool {
+/// A thin row holding a relink button ("Link scale", "Link position", …);
+/// true when clicked.
+fn link_toggle_row(ui: &mut egui::Ui, ctx: &RowCtx, label: &str, hover: &str) -> bool {
     let (_row_rect, mut c) = row_frame(ui, ctx, false);
     let clicked = icon_button(&mut c, ctx.theme, Icon::Link, false)
-        .on_hover_text("Re-lock the x:y ratio and edit scale as one value")
+        .on_hover_text(hover)
         .clicked();
     c.label(
-        egui::RichText::new("Link scale")
+        egui::RichText::new(label)
             .small()
             .color(ctx.theme.text_muted),
     );
     clicked
+}
+
+/// One linked Anchor/Position row: two independent value boxes (x then y) on
+/// a single row, AE-style. Unlike Scale's ratio lock, nothing couples the
+/// values — the link only merges the row furniture: one stopwatch animates or
+/// freezes both axes as one undo step, one navigator walks the union of both
+/// axes' keys (its diamond keys or clears both at the playhead), the name
+/// graphs the x channel, and the lane shows both axes' diamonds. The chain
+/// button sets `*unlinked` = true to split into separate rows.
+fn linked_pair_row(
+    ui: &mut egui::Ui,
+    app: &mut AppState,
+    ctx: &RowCtx,
+    label: &str,
+    props: (
+        luminal_core::model::TransformProp,
+        luminal_core::model::TransformProp,
+    ),
+    pending: &mut Option<luminal_core::Op>,
+    unlinked: &mut bool,
+) {
+    use luminal_core::anim::Animation;
+    let (px, py) = props;
+    let sx = ctx.layer.transform.get(px);
+    let sy = ctx.layer.transform.get(py);
+    let lower = label.to_lowercase();
+    let is_graphed = app.selected_layer == Some(ctx.layer.id)
+        && !app.graph_retime
+        && (app.graph_prop == Some(px) || app.graph_prop == Some(py));
+    let (row_rect, mut c) = row_frame(ui, ctx, is_graphed);
+
+    // Stopwatch drives both axes together as one undo step.
+    let animated = sx.is_animated() || sy.is_animated();
+    let hover = if animated {
+        "Remove animation".to_owned()
+    } else {
+        format!("Animate both {lower} axes")
+    };
+    if stopwatch_button(&mut c, ctx.theme, animated, &hover) {
+        let (ax, ay) = if animated {
+            (
+                Animation::Static(sx.value_at(ctx.lt)),
+                Animation::Static(sy.value_at(ctx.lt)),
+            )
+        } else {
+            (
+                Animation::Keyframed(upsert_key(sx, ctx.lt, sx.value_at(ctx.lt))),
+                Animation::Keyframed(upsert_key(sy, ctx.lt, sy.value_at(ctx.lt))),
+            )
+        };
+        *pending = Some(two_prop_batch(
+            ctx.comp_id,
+            ctx.layer.id,
+            (px, ax),
+            (py, ay),
+        ));
+    }
+
+    // The keyframe navigator over the union of both axes' keys: the arrows
+    // jump to the nearest key on either axis; the diamond keys or clears both
+    // axes at the playhead in one undo step.
+    let tol = 0.5 / ctx.fps.max(1.0); // within half a frame counts as "on" it
+    let times = union_key_times(sx, sy, tol);
+    if !times.is_empty() {
+        let (prev, on_key, next) = key_nav_targets(&times, ctx.lt, tol);
+        let small = |i: Icon| egui::Button::new(crate::icons::text(i, 11.0)).frame(false);
+        let mut jump_to: Option<f64> = None;
+        if c.add_enabled(prev.is_some(), small(Icon::PrevKeyframe))
+            .on_hover_text("Previous keyframe")
+            .clicked()
+        {
+            jump_to = prev;
+        }
+        if c.add(small(if on_key {
+            Icon::Keyframe
+        } else {
+            Icon::KeyframeAdd
+        }))
+        .on_hover_text(if on_key {
+            "Remove keyframe here (both axes)"
+        } else {
+            "Add keyframe here (both axes)"
+        })
+        .clicked()
+        {
+            *pending = Some(two_prop_batch(
+                ctx.comp_id,
+                ctx.layer.id,
+                (px, toggle_key_at(sx, ctx.lt, tol, on_key)),
+                (py, toggle_key_at(sy, ctx.lt, tol, on_key)),
+            ));
+        }
+        if c.add_enabled(next.is_some(), small(Icon::NextKeyframe))
+            .on_hover_text("Next keyframe")
+            .clicked()
+        {
+            jump_to = next;
+        }
+        if let Some(kt) = jump_to {
+            app.preview_frame = ((kt + ctx.off) * ctx.fps).round().max(0.0) as usize;
+            #[cfg(feature = "media")]
+            app.refresh_preview();
+        }
+    }
+
+    // The name graphs the x channel (like Scale graphs ScaleX).
+    if c.add(
+        egui::Label::new(egui::RichText::new(label).small().color(if is_graphed {
+            ctx.theme.accent
+        } else {
+            ctx.theme.text_muted
+        }))
+        .sense(egui::Sense::click()),
+    )
+    .clicked()
+    {
+        app.selected_layer = Some(ctx.layer.id);
+        app.graph_prop = Some(px);
+        app.graph_retime = false; // switching to a transform property
+        app.graph_view_y = None; // re-fit for the newly graphed channel
+    }
+    if icon_button(&mut c, ctx.theme, Icon::Link, true)
+        .on_hover_text(format!("Unlink {lower} (x and y on separate rows)"))
+        .clicked()
+    {
+        *unlinked = true;
+    }
+    // Two independent value boxes: x then y, each editing only its own axis.
+    axis_drag_value(&mut c, app, ctx, px, 1.0, pending);
+    axis_drag_value(&mut c, app, ctx, py, 1.0, pending);
+
+    // Lane: the union of both axes' keys.
+    let mut keys: Vec<luminal_core::anim::Keyframe> = Vec::new();
+    for slot in [sx, sy] {
+        if let Animation::Keyframed(k) = &slot.animation {
+            keys.extend(k.iter().cloned());
+        }
+    }
+    draw_key_diamonds(ui, ctx, row_rect, &keys);
 }
 
 /// Insert or replace a speed keyframe at local time `lt` (seconds) with `speed`
@@ -8673,6 +8936,136 @@ mod dock_tests {
         assert_eq!(linked_scale(100.0, 50.0, 200.0), (200.0, 100.0)); // 2:1 kept
         assert_eq!(linked_scale(100.0, 100.0, 150.0), (150.0, 150.0)); // 1:1 kept
         assert_eq!(linked_scale(0.0, 50.0, 80.0), (80.0, 80.0)); // undefined → uniform
+    }
+
+    /// A keyframed test property (linear keys at the given (time, value)s).
+    fn keyed(keys: &[(f64, f64)]) -> luminal_core::anim::Property {
+        use luminal_core::anim::{Animation, Keyframe, Property, SideInterp};
+        let mut p = Property::fixed(0.0);
+        p.animation = Animation::Keyframed(
+            keys.iter()
+                .map(|(t, v)| Keyframe {
+                    time: rational_at(*t),
+                    value: *v,
+                    interp_in: SideInterp::Linear,
+                    interp_out: SideInterp::Linear,
+                })
+                .collect(),
+        );
+        p
+    }
+
+    // Every linked two-axis row (Scale, Position, Anchor) commits both axes
+    // as ONE undo step: a Batch of two SetTransformProperty ops, x then y,
+    // each addressing its own channel — values stay independent.
+    #[test]
+    fn two_prop_batch_sets_both_axes_in_one_undo_step() {
+        use luminal_core::anim::Animation;
+        use luminal_core::model::TransformProp;
+        let comp = uuid::Uuid::from_u128(0xC0);
+        let layer = uuid::Uuid::from_u128(0x1A);
+        let op = two_prop_batch(
+            comp,
+            layer,
+            (TransformProp::PositionX, Animation::Static(10.0)),
+            (TransformProp::PositionY, Animation::Static(20.0)),
+        );
+        assert_eq!(
+            op,
+            luminal_core::Op::Batch {
+                ops: vec![
+                    luminal_core::Op::SetTransformProperty {
+                        comp,
+                        layer,
+                        prop: TransformProp::PositionX,
+                        animation: Animation::Static(10.0),
+                    },
+                    luminal_core::Op::SetTransformProperty {
+                        comp,
+                        layer,
+                        prop: TransformProp::PositionY,
+                        animation: Animation::Static(20.0),
+                    },
+                ],
+            }
+        );
+    }
+
+    // The linked row's navigator works the union of both axes' keys: times
+    // merge sorted, near-coincident keys count once, static axes add nothing.
+    #[test]
+    fn union_key_times_merges_sorted_and_dedupes() {
+        use luminal_core::anim::Property;
+        let tol = 0.5 / 30.0; // half a frame at 30 fps
+        let x = keyed(&[(0.0, 1.0), (2.0, 3.0)]);
+        let y = keyed(&[(1.0, 5.0), (2.001, 6.0)]); // 2.001 ≈ 2.0 within tol
+        let times = union_key_times(&x, &y, tol);
+        assert_eq!(times.len(), 3);
+        assert!((times[0] - 0.0).abs() < 1e-9);
+        assert!((times[1] - 1.0).abs() < 1e-9);
+        assert!((times[2] - 2.0).abs() < 1e-3);
+        // A static axis contributes nothing; two statics mean no navigator.
+        let s = Property::fixed(7.0);
+        assert_eq!(union_key_times(&x, &s, tol).len(), 2);
+        assert!(union_key_times(&s, &s, tol).is_empty());
+    }
+
+    // Walking that union from the playhead: previous strictly before, next
+    // strictly after, and "on a key" within the half-frame tolerance.
+    #[test]
+    fn key_nav_targets_walks_the_union() {
+        let tol = 0.5 / 30.0;
+        let times = [0.0, 1.0, 2.0];
+        // On the middle key: prev is 0, next is 2.
+        let (prev, on, next) = key_nav_targets(&times, 1.0, tol);
+        assert_eq!(prev, Some(0.0));
+        assert!(on);
+        assert_eq!(next, Some(2.0));
+        // Between keys: nearest each side, not "on" anything.
+        let (prev, on, next) = key_nav_targets(&times, 0.5, tol);
+        assert_eq!(prev, Some(0.0));
+        assert!(!on);
+        assert_eq!(next, Some(1.0));
+        // At the ends there is nowhere further to go.
+        let (prev, _, _) = key_nav_targets(&times, 0.0, tol);
+        assert_eq!(prev, None);
+        let (_, _, next) = key_nav_targets(&times, 2.0, tol);
+        assert_eq!(next, None);
+    }
+
+    // The linked diamond's per-axis toggle: adding upserts a key at the
+    // playhead on each axis; removing strips only keys at the playhead,
+    // freezing an axis when its last key goes and never touching a static one.
+    #[test]
+    fn toggle_key_at_keys_or_clears_one_axis() {
+        use luminal_core::anim::{Animation, Property};
+        let tol = 0.5 / 30.0;
+        // Add on an animated axis: the playhead key joins the existing ones.
+        let x = keyed(&[(0.0, 1.0), (2.0, 3.0)]);
+        let Animation::Keyframed(keys) = toggle_key_at(&x, 1.0, tol, false) else {
+            panic!("adding must keep the axis keyframed");
+        };
+        assert_eq!(keys.len(), 3);
+        assert!((keys[1].time.to_f64() - 1.0).abs() < 1e-6);
+        assert!((keys[1].value - 2.0).abs() < 1e-6); // the interpolated value
+                                                     // Add on a static axis: it becomes keyframed at its current value.
+        let s = Property::fixed(7.0);
+        let Animation::Keyframed(keys) = toggle_key_at(&s, 1.0, tol, false) else {
+            panic!("adding must animate a static axis");
+        };
+        assert!(keys.iter().any(|k| (k.time.to_f64() - 1.0).abs() < 1e-6));
+        assert!(keys.iter().all(|k| (k.value - 7.0).abs() < 1e-9));
+        // Remove at a key: only that key goes, the others stay.
+        let Animation::Keyframed(keys) = toggle_key_at(&x, 2.0, tol, true) else {
+            panic!("an axis with keys left must stay keyframed");
+        };
+        assert_eq!(keys.len(), 1);
+        assert!((keys[0].time.to_f64()).abs() < 1e-9);
+        // Removing the last key freezes the axis at its current value.
+        let one = keyed(&[(1.0, 4.0)]);
+        assert_eq!(toggle_key_at(&one, 1.0, tol, true), Animation::Static(4.0));
+        // A static axis is left untouched by a union-driven remove.
+        assert_eq!(toggle_key_at(&s, 1.0, tol, true), Animation::Static(7.0));
     }
 
     // A keyframe side reports its bezier influence, or the easy-ease third.
