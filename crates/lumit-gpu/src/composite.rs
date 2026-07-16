@@ -92,21 +92,62 @@ pub struct CompositeLayer<'a> {
     /// Layer-space mask coverage (alpha channel), for GPU-sourced layers
     /// whose masks cannot be applied CPU-side. None = fully visible.
     pub layer_mask: Option<&'a wgpu::Texture>,
+    /// A parent placement multiplied in front of this layer's own (collapsed
+    /// Precomp layers, docs/06 §1.4): the inner layer places in its nested
+    /// comp's pixels, then `pre` carries it into the parent comp's pixels.
+    /// Column-major 4×4 from [`place_matrix`]. None = placed directly.
+    pub pre: Option<[[f32; 4]; 4]>,
+}
+
+/// A layer transform as a comp-pixel placement matrix — the single source of
+/// truth for how (position, anchor, scale %, rotations, z) become a 4×4:
+/// `T(pos, z) · Ry · Rx · Rz · S(scale/100) · T(−anchor)`. Public so the
+/// draw-list builder can concatenate parent placements for collapsed Precomp
+/// layers with exactly the compositor's maths.
+#[allow(clippy::too_many_arguments)]
+pub fn place_matrix(
+    position: (f32, f32),
+    anchor: (f32, f32),
+    scale: (f32, f32),
+    rotation_deg: f32,
+    z: f32,
+    rotation_x_deg: f32,
+    rotation_y_deg: f32,
+) -> [[f32; 4]; 4] {
+    (Mat4::from_translation(glam::vec3(position.0, position.1, z))
+        * Mat4::from_rotation_y(rotation_y_deg.to_radians())
+        * Mat4::from_rotation_x(rotation_x_deg.to_radians())
+        * Mat4::from_rotation_z(rotation_deg.to_radians())
+        * Mat4::from_scale(glam::vec3(scale.0 / 100.0, scale.1 / 100.0, 1.0))
+        * Mat4::from_translation(glam::vec3(-anchor.0, -anchor.1, 0.0)))
+    .to_cols_array_2d()
+}
+
+/// Concatenate two placements: `outer` applied after `inner` (matrix product
+/// `outer · inner`), for chains of collapsed Precomp layers.
+pub fn concat_place(outer: [[f32; 4]; 4], inner: [[f32; 4]; 4]) -> [[f32; 4]; 4] {
+    (Mat4::from_cols_array_2d(&outer) * Mat4::from_cols_array_2d(&inner)).to_cols_array_2d()
 }
 
 impl CompositeLayer<'_> {
     /// comp pixel space → NDC, with the layer transform applied.
     /// Full 4×4 (K-023). Order: quad(0..1) → layer px → −anchor → scale →
-    /// rotate → +position → NDC.
+    /// rotate → +position → (parent `pre`, when collapsed) → NDC.
     fn matrix(&self, comp_w: f32, comp_h: f32, camera: Option<&Mat4>) -> Mat4 {
         let ndc_from_comp = Mat4::from_translation(glam::vec3(-1.0, 1.0, 0.0))
             * Mat4::from_scale(glam::vec3(2.0 / comp_w, -2.0 / comp_h, 1.0));
-        let place = Mat4::from_translation(glam::vec3(self.position.0, self.position.1, self.z))
-            * Mat4::from_rotation_y(self.rotation_y_deg.to_radians())
-            * Mat4::from_rotation_x(self.rotation_x_deg.to_radians())
-            * Mat4::from_rotation_z(self.rotation_deg.to_radians())
-            * Mat4::from_scale(glam::vec3(self.scale.0 / 100.0, self.scale.1 / 100.0, 1.0))
-            * Mat4::from_translation(glam::vec3(-self.anchor.0, -self.anchor.1, 0.0));
+        let mut place = Mat4::from_cols_array_2d(&place_matrix(
+            self.position,
+            self.anchor,
+            self.scale,
+            self.rotation_deg,
+            self.z,
+            self.rotation_x_deg,
+            self.rotation_y_deg,
+        ));
+        if let Some(pre) = &self.pre {
+            place = Mat4::from_cols_array_2d(pre) * place;
+        }
         let quad_to_px = Mat4::from_scale(glam::vec3(self.size.0, self.size.1, 1.0));
         match camera {
             Some(view_proj) if self.three_d => ndc_from_comp * *view_proj * place * quad_to_px,
@@ -661,6 +702,33 @@ pub fn render_for_display(
 mod tests {
     use super::*;
 
+    /// Collapse maths (docs/06 §1.4): concatenating placements composes the
+    /// transforms — a point placed by the inner layer then carried by the
+    /// parent lands where applying both transforms in sequence puts it, and
+    /// a parent scale multiplies the inner offset.
+    #[test]
+    fn place_matrix_concatenation_matches_composed_transforms() {
+        let ident_scale = (100.0, 100.0);
+        let parent = place_matrix((100.0, 50.0), (0.0, 0.0), ident_scale, 0.0, 0.0, 0.0, 0.0);
+        let inner = place_matrix((10.0, 20.0), (0.0, 0.0), ident_scale, 0.0, 0.0, 0.0, 0.0);
+        let p =
+            Mat4::from_cols_array_2d(&concat_place(parent, inner)) * glam::vec4(0.0, 0.0, 0.0, 1.0);
+        assert!((p.x - 110.0).abs() < 1e-4 && (p.y - 70.0).abs() < 1e-4);
+        // A 200% parent doubles the inner offset: (100,50) + 2·(10,20).
+        let parent2 = place_matrix(
+            (100.0, 50.0),
+            (0.0, 0.0),
+            (200.0, 200.0),
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+        );
+        let q = Mat4::from_cols_array_2d(&concat_place(parent2, inner))
+            * glam::vec4(0.0, 0.0, 0.0, 1.0);
+        assert!((q.x - 120.0).abs() < 1e-4 && (q.y - 90.0).abs() < 1e-4);
+    }
+
     fn solid_linear(
         ctx: &GpuContext,
         colour: &ColourEngine,
@@ -718,6 +786,7 @@ mod tests {
             rotation_y_deg: 0.0,
             three_d: false,
             layer_mask: None,
+            pre: None,
         };
         // Background: linear green = sRGB 0,255,0 decoded.
         let g_lin = srgb_decode(1.0);
@@ -778,6 +847,7 @@ mod tests {
                 rotation_y_deg: 0.0,
                 three_d: false,
                 layer_mask: None,
+                pre: None,
             }],
         );
 
@@ -802,6 +872,7 @@ mod tests {
             rotation_y_deg: 0.0,
             three_d: false,
             layer_mask: None,
+            pre: None,
         };
 
         let shown = render_for_display(
@@ -864,6 +935,7 @@ mod tests {
             rotation_y_deg: 0.0,
             three_d: true,
             layer_mask: None,
+            pre: None,
         };
         let count_white = |z: f32| {
             let linear = compositor.composite_with_camera(
@@ -922,6 +994,7 @@ mod tests {
                 rotation_y_deg: 0.0,
                 three_d: false,
                 layer_mask: None,
+                pre: None,
             }],
         );
         let out = colour.readback8(&ctx, &shown).unwrap()[0];
@@ -971,6 +1044,7 @@ mod tests {
                 rotation_y_deg: 0.0,
                 three_d: false,
                 layer_mask: Some(&mask),
+                pre: None,
             }],
         );
         let shown = colour.display(&ctx, &linear);
@@ -1018,6 +1092,7 @@ mod tests {
                     rotation_y_deg: 0.0,
                     three_d: false,
                     layer_mask: None,
+                    pre: None,
                 }],
             );
             colour.readback8(&ctx, &shown).unwrap()[0]
@@ -1091,6 +1166,7 @@ mod tests {
             rotation_y_deg: 0.0,
             three_d: false,
             layer_mask: None,
+            pre: None,
         };
         let g_lin = srgb_decode(128.0 / 255.0);
         let bg = [g_lin, g_lin, g_lin, 1.0];
@@ -1137,6 +1213,7 @@ mod tests {
             rotation_y_deg: 0.0,
             three_d: false,
             layer_mask: None,
+            pre: None,
         };
         let shown = render_for_display(
             &ctx,

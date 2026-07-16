@@ -167,6 +167,11 @@ fn feed_layer(
     }
     h.update(&[u8::from(layer.switches.three_d)]);
     h.update(&[blend_tag(layer.blend)]);
+    // Collapse changes how a Precomp composites (docs/06 §1.4), so it is
+    // content. Hashed only when set, so every pre-collapse key stays valid.
+    if layer.switches.collapse && matches!(layer.kind, LayerKind::Precomp { .. }) {
+        h.update(b"collapsed");
+    }
 
     // Masks: static paths are plain data (animated paths will evaluate here).
     if layer.masks.is_empty() {
@@ -536,6 +541,31 @@ mod tests {
         // Quality tier.
         let half = comp_frame_key(&doc, &comp, 1.0, Quality { divisor: 2 }, &StubStamper);
         assert_ne!(Some(base), half);
+    }
+
+    /// The collapse switch is content (docs/06 §1.4 — it changes how a
+    /// Precomp composites), so toggling it changes the key; and because it
+    /// hashes only when set, every pre-collapse key stays valid.
+    #[test]
+    fn collapse_switch_changes_a_precomp_layers_key() {
+        let mut doc = Document::new();
+        let nested = comp_with(vec![text_layer("inner", 0.0, 10.0, 0.0)]);
+        let nested_id = nested.id;
+        doc.items.push(ProjectItem::Composition(nested));
+        let mut pre = text_layer("", 0.0, 10.0, 0.0);
+        pre.kind = LayerKind::Precomp { comp: nested_id };
+        let parent = comp_with(vec![pre]);
+        let base = key(&doc, &parent, 1.0);
+
+        let mut collapsed = parent.clone();
+        collapsed.layers[0].switches.collapse = true;
+        assert_ne!(base, key(&doc, &collapsed, 1.0));
+
+        // On a non-Precomp layer the switch is inert and never hashed.
+        let plain = comp_with(vec![text_layer("t", 0.0, 10.0, 0.0)]);
+        let mut plain_flagged = plain.clone();
+        plain_flagged.layers[0].switches.collapse = true;
+        assert_eq!(key(&doc, &plain, 1.0), key(&doc, &plain_flagged, 1.0));
     }
 
     /// Precomps recurse: an edit inside the nested comp changes the parent's

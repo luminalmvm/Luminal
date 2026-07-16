@@ -382,6 +382,7 @@ impl Renderer<'_> {
                             rotation_y_deg: mtr.rotation_y.value_at(mlt) as f32,
                             three_d: src_layer.switches.three_d,
                             layer_mask: mp.mask.as_ref(),
+                            pre: None,
                         }],
                         camera,
                     );
@@ -430,6 +431,7 @@ impl Renderer<'_> {
                 }),
                 blend: blend_of(l.blend),
                 layer_mask: p.mask.as_ref(),
+                pre: None,
             });
         }
 

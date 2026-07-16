@@ -581,6 +581,17 @@ Two mechanisms make this safe, and you'll see them by name in the code:
   is rasterised into a little coverage texture instead and the compositor multiplies
   it in per-fragment. Same maths, two routes — a GPU test pins the texture route to
   the CPU one.
+- **Collapse transformations (Precomp layers)** — normally a nested comp renders to its
+  own little picture first, and the parent then moves/scales that picture: two rounds of
+  resampling, and anything poking outside the nested comp's edges gets cut off. The
+  **collapse switch** (the sunburst on a Precomp layer's row) removes the middle step:
+  the inner layers composite straight into the parent, their transforms multiplied into
+  one matrix, so content is resampled once and nothing clips at the nested bounds — the
+  quality move AE users expect for scaled-up precomps. Some things genuinely need the
+  middle picture (a mask on the Precomp layer, a blend mode, opacity below 100%, using
+  it as a matte) — then the switch dims to say "set, but overridden". The undoable
+  switch lives in ops like every edit; the cache knows collapse changes pixels, so
+  toggling it re-renders.
 - **Blend modes** — the full everyday set: Normal, Add, Multiply, Screen, Overlay,
   Soft light, Hard light, Lighten, Darken. Two families under the hood: Add and
   Multiply are physical light maths and run in linear; Screen, Overlay and the lights

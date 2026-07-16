@@ -210,6 +210,12 @@ pub struct Switches {
     /// 2.5D: this layer positions in z and honours the active camera.
     #[serde(default)]
     pub three_d: bool,
+    /// Precomp layers only: collapse transformations (docs/06 §1.4). Inner
+    /// layers composite straight into the parent with concatenated
+    /// transforms — no intermediate raster, content resampled once. Certain
+    /// conditions force an intermediate anyway; see [`collapse_state`].
+    #[serde(default)]
+    pub collapse: bool,
 }
 
 impl Default for Switches {
@@ -219,7 +225,43 @@ impl Default for Switches {
             audible: true,
             locked: false,
             three_d: false,
+            collapse: false,
         }
+    }
+}
+
+/// What the collapse switch actually does for a layer at local time `lt`
+/// (docs/06-RENDER-PIPELINE.md §1.4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CollapseState {
+    /// Not a Precomp layer, or the switch is off: default nesting.
+    Off,
+    /// Collapsing: inner layers splice into the parent, transforms
+    /// concatenated, no intermediate.
+    Active,
+    /// The switch is set but something forces an intermediate anyway (a mask,
+    /// a non-Normal blend, opacity below 100%, or being consumed as a matte).
+    /// Renders like Off; the UI dims the switch.
+    Forced,
+}
+
+/// Evaluate the §1.4 collapse rules for `layer` inside `comp` at local time
+/// `lt`. Effects join the force list when the effect stack lands.
+pub fn collapse_state(comp: &Composition, layer: &Layer, lt: f64) -> CollapseState {
+    if !matches!(layer.kind, LayerKind::Precomp { .. }) || !layer.switches.collapse {
+        return CollapseState::Off;
+    }
+    let forced = !layer.masks.is_empty()
+        || layer.blend != BlendMode::Normal
+        || layer.transform.opacity.value_at(lt) < 99.999
+        || comp
+            .layers
+            .iter()
+            .any(|l| l.matte.as_ref().is_some_and(|m| m.layer == layer.id));
+    if forced {
+        CollapseState::Forced
+    } else {
+        CollapseState::Active
     }
 }
 
@@ -543,6 +585,57 @@ mod tests {
         comp.layers.push(cam("short", 800.0, -20.0, true, 2, 4));
         comp.layers.push(cam("main", 1200.0, -30.0, true, 0, 10));
         comp
+    }
+
+    /// The §1.4 collapse rules: Off for non-precomps and unset switches,
+    /// Active for a clean collapsed Precomp, Forced by a mask, a non-Normal
+    /// blend, sub-100 opacity, or being consumed as a matte.
+    #[test]
+    fn collapse_state_follows_the_force_rules() {
+        let mut comp = comp_with_cameras();
+        let nested = Uuid::now_v7();
+        let mut pre = comp.layers[0].clone();
+        pre.id = Uuid::now_v7();
+        pre.kind = LayerKind::Precomp { comp: nested };
+        pre.switches.visible = true;
+        pre.switches.collapse = true;
+        pre.blend = BlendMode::Normal;
+        pre.masks.clear();
+        pre.transform = TransformGroup::default();
+        comp.layers.push(pre.clone());
+
+        // Clean collapsed Precomp → Active.
+        assert_eq!(collapse_state(&comp, &pre, 1.0), CollapseState::Active);
+        // Switch off → Off; non-Precomp kinds are always Off.
+        let mut off = pre.clone();
+        off.switches.collapse = false;
+        assert_eq!(collapse_state(&comp, &off, 1.0), CollapseState::Off);
+        assert_eq!(
+            collapse_state(&comp, &comp.layers[0], 1.0),
+            CollapseState::Off
+        );
+        // Each §1.4 force: mask, blend, opacity, matte consumption.
+        let mut masked = pre.clone();
+        masked
+            .masks
+            .push(crate::mask::Mask::rectangle(0.0, 0.0, 1.0, 1.0));
+        assert_eq!(collapse_state(&comp, &masked, 1.0), CollapseState::Forced);
+        let mut blended = pre.clone();
+        blended.blend = BlendMode::Add;
+        assert_eq!(collapse_state(&comp, &blended, 1.0), CollapseState::Forced);
+        let mut faded = pre.clone();
+        faded.transform.opacity = Property::fixed(50.0);
+        assert_eq!(collapse_state(&comp, &faded, 1.0), CollapseState::Forced);
+        let mut consumer = comp.layers[0].clone();
+        consumer.id = Uuid::now_v7();
+        consumer.matte = Some(MatteRef {
+            layer: pre.id,
+            channel: MatteChannel::Alpha,
+            inverted: false,
+        });
+        let mut comp2 = comp.clone();
+        comp2.layers.push(consumer);
+        assert_eq!(collapse_state(&comp2, &pre, 1.0), CollapseState::Forced);
     }
 
     /// The topmost visible in-span camera wins; hidden and out-of-span ones

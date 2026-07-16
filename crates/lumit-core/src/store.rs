@@ -562,6 +562,29 @@ mod tests {
                 .audible
         );
 
+        // Collapse round-trips the same way (defaults false).
+        let clp = |s: &DocumentStore| {
+            s.snapshot()
+                .comp(comp_id)
+                .unwrap()
+                .layers
+                .iter()
+                .find(|l| l.id == layer_id)
+                .unwrap()
+                .switches
+                .collapse
+        };
+        store
+            .commit(Op::SetLayerCollapse {
+                comp: comp_id,
+                layer: layer_id,
+                collapse: true,
+            })
+            .unwrap();
+        assert!(clp(&store));
+        store.undo().unwrap();
+        assert!(!clp(&store));
+
         // Visibility round-trips the same way (visible defaults true).
         let vis = |s: &DocumentStore| {
             s.snapshot()

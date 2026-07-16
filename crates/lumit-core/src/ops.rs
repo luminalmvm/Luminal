@@ -92,6 +92,12 @@ pub enum Op {
         layer: Uuid,
         visible: bool,
     },
+    /// Toggle a Precomp layer's collapse-transformations switch (docs/06 §1.4).
+    SetLayerCollapse {
+        comp: Uuid,
+        layer: Uuid,
+        collapse: bool,
+    },
     /// Replace a Text layer's document (exactly invertible).
     SetTextDocument {
         comp: Uuid,
@@ -321,6 +327,24 @@ pub fn apply(doc: &mut Document, op: &Op) -> Result<Op, OpError> {
                 comp: *comp,
                 layer: *layer,
                 three_d: previous,
+            })
+        }
+        Op::SetLayerCollapse {
+            comp,
+            layer,
+            collapse,
+        } => {
+            let c = doc.comp_mut(*comp).ok_or(OpError::UnknownComp)?;
+            let l = c
+                .layers
+                .iter_mut()
+                .find(|l| l.id == *layer)
+                .ok_or(OpError::UnknownLayer)?;
+            let previous = std::mem::replace(&mut l.switches.collapse, *collapse);
+            Ok(Op::SetLayerCollapse {
+                comp: *comp,
+                layer: *layer,
+                collapse: previous,
             })
         }
         Op::SetLayerAudible {

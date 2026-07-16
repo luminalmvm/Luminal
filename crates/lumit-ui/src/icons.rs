@@ -85,11 +85,13 @@ pub enum Icon {
     TwirlClosed,
     /// Disclosure twirl, open (points down).
     TwirlOpen,
+    /// Collapse transformations (Precomp layers): the AE-style sunburst.
+    Collapse,
 }
 
 impl Icon {
     /// Every variant, for exhaustive iteration (tests, palettes).
-    pub const ALL: [Icon; 33] = [
+    pub const ALL: [Icon; 34] = [
         Icon::Pointer,
         Icon::Move,
         Icon::Rectangle,
@@ -123,6 +125,7 @@ impl Icon {
         Icon::Stopwatch,
         Icon::TwirlClosed,
         Icon::TwirlOpen,
+        Icon::Collapse,
     ];
 
     /// The Iconoir icon this variant renders.
@@ -161,6 +164,7 @@ impl Icon {
             Icon::Stopwatch => "timer",
             Icon::TwirlClosed => "nav-arrow-right",
             Icon::TwirlOpen => "nav-arrow-down",
+            Icon::Collapse => "flare",
         }
     }
 

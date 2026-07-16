@@ -1682,6 +1682,14 @@ fn timeline_panel(ui: &mut egui::Ui, theme: &Theme, app: &mut AppState) {
                     place(ui, mute_r, &mut |ui| {
                         mute_control(ui, theme, comp_id, layer, &mut pending)
                     });
+                } else if matches!(layer.kind, lumit_core::model::LayerKind::Precomp { .. }) {
+                    // Precomp layers have no audio; their slot carries the
+                    // collapse switch (docs/06 §1.4) instead.
+                    let clt = app.preview_frame as f64 / comp.frame_rate.fps().max(1.0)
+                        - layer.start_offset.0.to_f64();
+                    place(ui, mute_r, &mut |ui| {
+                        collapse_control(ui, theme, comp, comp_id, layer, clt, &mut pending)
+                    });
                 }
                 if select_this {
                     app.selected_layer = Some(layer.id);
@@ -5123,6 +5131,46 @@ fn build_comp_draws(
                 let Some(nested) = doc.comp(*nested_id) else {
                     continue;
                 };
+                // Collapse (docs/06 §1.4): splice the inner layers straight
+                // into this list with the Precomp layer's placement multiplied
+                // in front — no intermediate raster, no clipping to the nested
+                // bounds, inner blend modes composite against the parent stack.
+                if matches!(
+                    lumit_core::model::collapse_state(comp, layer, lt),
+                    lumit_core::model::CollapseState::Active
+                ) {
+                    visited.push(*nested_id);
+                    let mut inner = build_comp_draws(doc, nested, lt, pixels_by_layer, visited);
+                    visited.pop();
+                    let parent = lumit_gpu::place_matrix(
+                        (
+                            tr.position_x.value_at(lt) as f32,
+                            tr.position_y.value_at(lt) as f32,
+                        ),
+                        (
+                            tr.anchor_x.value_at(lt) as f32,
+                            tr.anchor_y.value_at(lt) as f32,
+                        ),
+                        (
+                            tr.scale_x.value_at(lt) as f32,
+                            tr.scale_y.value_at(lt) as f32,
+                        ),
+                        tr.rotation.value_at(lt) as f32,
+                        tr.position_z.value_at(lt) as f32,
+                        tr.rotation_x.value_at(lt) as f32,
+                        tr.rotation_y.value_at(lt) as f32,
+                    );
+                    for d in &mut inner {
+                        d.pre = Some(match d.pre {
+                            // A collapsed chain: this parent wraps the child's
+                            // own parent placement.
+                            Some(p) => lumit_gpu::concat_place(parent, p),
+                            None => parent,
+                        });
+                    }
+                    draws.extend(inner);
+                    continue;
+                }
                 visited.push(*nested_id);
                 let nested_draws = build_comp_draws(doc, nested, lt, pixels_by_layer, visited);
                 visited.pop();
@@ -5231,6 +5279,7 @@ fn build_comp_draws(
                 }
                 _ => None,
             },
+            pre: None,
         });
     }
     draws
@@ -5440,6 +5489,47 @@ fn three_d_control(
             comp: comp_id,
             layer: layer.id,
             three_d: !layer.switches.three_d,
+        });
+    }
+}
+
+/// Collapse-transformations subcolumn (Precomp layers only, docs/06 §1.4).
+/// Accent when active; dimmed when the switch is set but a mask, blend,
+/// opacity or matte use forces an intermediate anyway (the spec's required
+/// "dimmed collapse switch" indication).
+fn collapse_control(
+    ui: &mut egui::Ui,
+    theme: &Theme,
+    comp: &lumit_core::model::Composition,
+    comp_id: uuid::Uuid,
+    layer: &lumit_core::model::Layer,
+    lt: f64,
+    pending: &mut Option<lumit_core::Op>,
+) {
+    use lumit_core::model::CollapseState;
+    if !matches!(layer.kind, lumit_core::model::LayerKind::Precomp { .. }) {
+        return;
+    }
+    let state = lumit_core::model::collapse_state(comp, layer, lt);
+    let col = match state {
+        CollapseState::Active => theme.accent,
+        CollapseState::Forced => theme.text_disabled,
+        CollapseState::Off => theme.text_secondary,
+    };
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::click());
+    crate::icons::paint(ui.painter(), rect, Icon::Collapse, col, 1.4);
+    let hover = match state {
+        CollapseState::Active => "Collapse transformations: on (inner layers composite directly)",
+        CollapseState::Forced => {
+            "Collapse is set, but a mask, blend, opacity or matte use forces an intermediate"
+        }
+        CollapseState::Off => "Collapse transformations: concatenate inner layers' transforms",
+    };
+    if resp.on_hover_text(hover).clicked() {
+        *pending = Some(lumit_core::Op::SetLayerCollapse {
+            comp: comp_id,
+            layer: layer.id,
+            collapse: !layer.switches.collapse,
         });
     }
 }
@@ -7048,6 +7138,10 @@ pub struct CompLayerDraw {
     /// Layer-space mask coverage (white RGBA, alpha = coverage) for
     /// GPU-sourced layers — Precomps, whose pixels never exist CPU-side.
     pub mask_cov: Option<(Vec<u8>, u32, u32)>,
+    /// Parent placement for layers spliced out of a collapsed Precomp
+    /// (docs/06 §1.4): multiplied in front of this draw's own placement so
+    /// content is resampled once, never twice. From lumit_gpu::place_matrix.
+    pub pre: Option<[[f32; 4]; 4]>,
 }
 
 /// GPU display path (slice 5 completion): decoded sRGB bytes → linear fp16
@@ -7153,6 +7247,7 @@ impl GpuViewer {
                             rotation_y_deg: m.rotation_y_deg,
                             three_d: m.three_d,
                             layer_mask: None,
+                            pre: None,
                         }],
                         cam_mat,
                     )
@@ -7184,6 +7279,7 @@ impl GpuViewer {
                     }),
                     blend: l.blend,
                     layer_mask: mask_tex.as_ref(),
+                    pre: l.pre,
                 },
             )
             .collect();
@@ -8636,6 +8732,117 @@ mod geometry_tests {
             DrawSource::Pixels { tex_w, tex_h, .. } => assert_eq!((*tex_w, *tex_h), (480, 270)),
             _ => panic!("expected a pixel source for a footage layer"),
         }
+    }
+
+    // Collapse (docs/06 §1.4): a collapsed Precomp splices its inner draws
+    // into the parent list with the parent's placement multiplied in front —
+    // no Nested intermediate. Off (or forced by a mask) renders Nested.
+    #[test]
+    fn collapsed_precomp_splices_inner_draws_with_parent_placement() {
+        use lumit_core::model::{ProjectItem, TextDocument};
+        let text_layer = || Layer {
+            id: Uuid::now_v7(),
+            name: "inner".into(),
+            kind: LayerKind::Text {
+                document: TextDocument {
+                    text: "hi".into(),
+                    size: 24.0,
+                    fill: LinearColour([1.0, 1.0, 1.0, 1.0]),
+                    extra: serde_json::Map::new(),
+                },
+            },
+            in_point: CompTime(Rational::ZERO),
+            out_point: CompTime(Rational::new(10, 1).unwrap()),
+            start_offset: CompTime(Rational::ZERO),
+            transform: TransformGroup::default(),
+            matte: None,
+            blend: Default::default(),
+            masks: Vec::new(),
+            switches: Switches::default(),
+            extra: serde_json::Map::new(),
+        };
+        let nested = Composition {
+            id: Uuid::now_v7(),
+            name: "Nested".into(),
+            width: 640,
+            height: 360,
+            frame_rate: FrameRate::new(60, 1).unwrap(),
+            duration: Duration(Rational::new(10, 1).unwrap()),
+            background: LinearColour::BLACK,
+            work_area: None,
+            layers: vec![text_layer()],
+            markers: Vec::new(),
+            extra: serde_json::Map::new(),
+        };
+        let nested_id = nested.id;
+        let mut doc = Document::new();
+        doc.items.push(ProjectItem::Composition(nested));
+
+        let mut pre_layer = text_layer();
+        pre_layer.kind = LayerKind::Precomp { comp: nested_id };
+        pre_layer.switches.collapse = true;
+        pre_layer.transform.position_x = lumit_core::anim::Property::fixed(100.0);
+        pre_layer.transform.scale_x = lumit_core::anim::Property::fixed(200.0);
+        let parent = Composition {
+            id: Uuid::now_v7(),
+            name: "Parent".into(),
+            width: 1920,
+            height: 1080,
+            frame_rate: FrameRate::new(60, 1).unwrap(),
+            duration: Duration(Rational::new(10, 1).unwrap()),
+            background: LinearColour::BLACK,
+            work_area: None,
+            layers: vec![pre_layer.clone()],
+            markers: Vec::new(),
+            extra: serde_json::Map::new(),
+        };
+        let map: HashMap<Uuid, &CompLayerPixels> = HashMap::new();
+        let mut visited = vec![parent.id];
+        let draws = build_comp_draws(&doc, &parent, 0.0, &map, &mut visited);
+        // Spliced: one draw, pixel source (the inner text), pre = the parent
+        // Precomp layer's placement matrix — exactly the compositor's maths.
+        assert_eq!(draws.len(), 1);
+        assert!(matches!(draws[0].source, DrawSource::Pixels { .. }));
+        let tr = &pre_layer.transform;
+        let expect = lumit_gpu::place_matrix(
+            (
+                tr.position_x.value_at(0.0) as f32,
+                tr.position_y.value_at(0.0) as f32,
+            ),
+            (
+                tr.anchor_x.value_at(0.0) as f32,
+                tr.anchor_y.value_at(0.0) as f32,
+            ),
+            (
+                tr.scale_x.value_at(0.0) as f32,
+                tr.scale_y.value_at(0.0) as f32,
+            ),
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+        );
+        assert_eq!(draws[0].pre, Some(expect));
+
+        // Switch off → the Nested intermediate as before, no pre.
+        let mut off = parent.clone();
+        off.layers[0].switches.collapse = false;
+        let mut visited = vec![off.id];
+        let draws = build_comp_draws(&doc, &off, 0.0, &map, &mut visited);
+        assert_eq!(draws.len(), 1);
+        assert!(matches!(draws[0].source, DrawSource::Nested { .. }));
+        assert!(draws[0].pre.is_none());
+
+        // A mask on the Precomp layer forces the intermediate (§1.4) even
+        // with the switch set.
+        let mut forced = parent.clone();
+        forced.layers[0]
+            .masks
+            .push(lumit_core::mask::Mask::rectangle(0.0, 0.0, 10.0, 10.0));
+        let mut visited = vec![forced.id];
+        let draws = build_comp_draws(&doc, &forced, 0.0, &map, &mut visited);
+        assert_eq!(draws.len(), 1);
+        assert!(matches!(draws[0].source, DrawSource::Nested { .. }));
     }
 
     // The live value-drag preview renders a comp patched with the provisional
