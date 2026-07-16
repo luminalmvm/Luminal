@@ -625,6 +625,36 @@ impl Retime {
         Some(r)
     }
 
+    /// A copy with the speed *at* boundary `j` set to `v` (docs/04-RETIMING.md
+    /// §9.2, the eased-store edit the speed lens needs): the incoming
+    /// segment's end speed and the outgoing segment's start speed both take
+    /// `v` — a smooth join — with every other endpoint and every ease left
+    /// alone; downstream source positions recompute exactly (K-070). At the
+    /// first boundary only the outgoing start moves; at the last, only the
+    /// incoming end. None when an adjacent segment is a Map (those are edited
+    /// through their own handles) or `j` is out of range.
+    pub fn with_boundary_speed(&self, j: usize, v: Rational) -> Option<Retime> {
+        if j >= self.boundaries.len() || self.segments.is_empty() {
+            return None;
+        }
+        let mut r = self.clone();
+        if j > 0 {
+            let RetimeSegment::Rate(seg) = &mut r.segments[j - 1] else {
+                return None;
+            };
+            seg.v1 = v;
+        }
+        if j < r.segments.len() {
+            let RetimeSegment::Rate(seg) = &mut r.segments[j] else {
+                return None;
+            };
+            seg.v0 = v;
+        }
+        r.allow_reverse = r.allow_reverse || v.is_negative();
+        r.recompute_boundaries().ok()?;
+        Some(r)
+    }
+
     /// Split this retime at local time `t` into two retimes covering [0, t]
     /// and [t, D], each with its own domain starting at 0 (docs/04-RETIMING.md
     /// §5.3, §8: cutting a clip partitions its retime exactly). A Linear-ease
@@ -1653,6 +1683,46 @@ mod tests {
         let vks = eased.value_keyframes();
         assert_eq!(vks.len(), 2);
         assert_eq!(vks[0], (rat(0, 1), rat(0, 1)));
+    }
+
+    /// §9.2 eased-store editing: setting the speed at a boundary moves both
+    /// adjacent eased ramps' meeting speed, keeps every ease, and recomputes
+    /// downstream source positions; Map adjacency refuses.
+    #[test]
+    fn boundary_speed_edit_moves_the_join_of_eased_ramps() {
+        // Two eased ramps: 100%→200% then 200%→50%, joined at t=2.
+        let keys = [
+            (rat(0, 1), rat(1, 1)),
+            (rat(2, 1), rat(2, 1)),
+            (rat(4, 1), rat(1, 2)),
+        ];
+        let mut r = Retime::from_speed_keyframes(rat(0, 1), &keys).unwrap();
+        for seg in &mut r.segments {
+            if let RetimeSegment::Rate(s) = seg {
+                s.ease = Ease::Smooth;
+            }
+        }
+        r.recompute_boundaries().unwrap();
+        let end_before = r.boundaries.last().unwrap().s;
+
+        let edited = r.with_boundary_speed(1, rat(3, 1)).unwrap();
+        // The join speed is 300% from both sides…
+        assert!((edited.speed_at(2.0 - 1e-9) - 3.0).abs() < 1e-6);
+        assert!((edited.speed_at(2.0) - 3.0).abs() < 1e-6);
+        // …the eases survive…
+        for seg in &edited.segments {
+            match seg {
+                RetimeSegment::Rate(s) => assert_eq!(s.ease, Ease::Smooth),
+                RetimeSegment::Map(_) => panic!("no Map segments expected"),
+            }
+        }
+        // …and downstream recomputed (more speed → more source consumed).
+        assert!(edited.boundaries.last().unwrap().s > end_before);
+        // Endpoint boundaries move only their one side.
+        let first = r.with_boundary_speed(0, rat(1, 4)).unwrap();
+        assert!((first.speed_at(0.0) - 0.25).abs() < 1e-6);
+        // Out of range refuses.
+        assert!(r.with_boundary_speed(99, rat(1, 1)).is_none());
     }
 
     #[test]

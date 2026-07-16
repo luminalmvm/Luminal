@@ -3539,11 +3539,12 @@ fn graph_lane_plot(
     );
 }
 
-/// The Retime channel graphed (K-075): the value lens plots the source position
-/// read as `HH:MM:SS:FF` frame timecode, the derivative lens plots speed per
-/// cent. In the speed lens the speed keyframes are draggable (2b) — the retime
-/// rebuilds from the edited keyframe and downstream boundaries recompute (K-070).
-/// The value lens is read-only for now, as are eased/Map ramps in the speed lens.
+/// The Velocity (speed) lens of the Retime channel (K-075; the Time lens is
+/// the ordinary graph editor, K-078): the curve plots speed per cent. Plain
+/// keyframe stores drag their keys (2b); eased stores drag their boundary
+/// joins (§9.2, square handles) with every ease preserved — the retime
+/// rebuilds from the edit and downstream boundaries recompute (K-070). Map
+/// segments are edited through the Time lens's own handles.
 #[allow(clippy::too_many_arguments)]
 fn graph_plot_retime(
     ui: &mut egui::Ui,
@@ -3598,9 +3599,9 @@ fn graph_plot_retime(
 
     let speed_view = app.graph_speed_view;
 
-    // Speed keyframes in % (K-075, 2b): draggable in the speed lens. Present only
-    // when the retime is a Linear-Rate keyframe store; eased/Map ramps stay
-    // read-only until the §9.2 editing lands.
+    // Speed keyframes in % (K-075, 2b): draggable when the retime is a plain
+    // Linear-Rate keyframe store. Eased stores get boundary handles instead
+    // (below); Map segments are the Time lens's business.
     let dur = layer.out_point.0;
     let kfs: Vec<(f64, f64)> = retime
         .speed_keyframes()
@@ -3614,10 +3615,44 @@ fn graph_plot_retime(
         lumit_core::Rational::from_f64_on_grid(pct / 100.0, 1000)
             .unwrap_or(lumit_core::Rational::ONE)
     };
+    // Eased stores expose no plain speed keyframes, but every boundary still
+    // has a draggable speed — the join of the eased ramps (§9.2). Handles are
+    // (boundary index, local time, speed %), skipping Map-adjacent joins.
+    let boundary_handles: Vec<(usize, f64, f64)> = if kfs.is_empty() {
+        use lumit_core::retime::RetimeSegment;
+        retime
+            .boundaries
+            .iter()
+            .enumerate()
+            .filter_map(|(j, b)| {
+                let incoming_rate =
+                    j == 0 || matches!(retime.segments.get(j - 1), Some(RetimeSegment::Rate(_)));
+                let v = if j < retime.segments.len() {
+                    match &retime.segments[j] {
+                        RetimeSegment::Rate(seg) if incoming_rate => Some(seg.v0.to_f64()),
+                        _ => None,
+                    }
+                } else {
+                    match retime.segments.last() {
+                        Some(RetimeSegment::Rate(seg)) => Some(seg.v1.to_f64()),
+                        _ => None,
+                    }
+                };
+                v.map(|v| (j, b.t.to_f64(), v * 100.0))
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+
     // While dragging a handle, a provisional retime drives the live curve.
     let provisional = app.graph_retime_edit.and_then(|(idx, pct)| {
-        let &(t, _) = kfs.get(idx)?;
-        speed_with_key(&Some(retime.clone()), dur, t, pct_to_speed(pct))
+        if kfs.is_empty() {
+            retime.with_boundary_speed(idx, pct_to_speed(pct))
+        } else {
+            let &(t, _) = kfs.get(idx)?;
+            speed_with_key(&Some(retime.clone()), dur, t, pct_to_speed(pct))
+        }
     });
     let sampled: &lumit_core::retime::Retime = provisional.as_ref().unwrap_or(retime);
 
@@ -3731,6 +3766,51 @@ fn graph_plot_retime(
                         if let Some(new_rt) =
                             speed_with_key(&Some(retime.clone()), dur, t, pct_to_speed(p))
                         {
+                            pending = Some(lumit_core::Op::SetLayerRetime {
+                                comp: comp.id,
+                                layer: layer.id,
+                                retime: Some(new_rt),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        // Eased stores: the boundary joins drag the same way (§9.2). The
+        // square glyph tells them apart from plain keyframes; the eases
+        // themselves are untouched by the drag.
+        for &(j, t, pct) in &boundary_handles {
+            let shown_pct = match app.graph_retime_edit {
+                Some((i, p)) if i == j => p,
+                _ => pct,
+            };
+            let pos = egui::pos2(x_of(t), y_of(shown_pct));
+            let resp = ui.interact(
+                egui::Rect::from_center_size(pos, egui::vec2(12.0, 12.0)),
+                ui.id().with(("rtbound", layer.id, j)),
+                egui::Sense::click_and_drag(),
+            );
+            let active = app.graph_retime_edit.is_some_and(|(i, _)| i == j);
+            let colour = if resp.hovered() || active {
+                theme.accent
+            } else {
+                theme.curve[1]
+            };
+            ui.painter().rect_filled(
+                egui::Rect::from_center_size(pos, egui::vec2(7.0, 7.0)),
+                1.0,
+                colour,
+            );
+            if resp.dragged() {
+                if let Some(p) = resp.interact_pointer_pos() {
+                    let frac = ((rect.bottom() - p.y) / rect.height()) as f64;
+                    app.graph_retime_edit = Some((j, lo + frac * (hi - lo)));
+                }
+            }
+            if resp.drag_stopped() {
+                if let Some((i, p)) = app.graph_retime_edit.take() {
+                    if i == j {
+                        if let Some(new_rt) = retime.with_boundary_speed(j, pct_to_speed(p)) {
                             pending = Some(lumit_core::Op::SetLayerRetime {
                                 comp: comp.id,
                                 layer: layer.id,

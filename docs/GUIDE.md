@@ -380,6 +380,11 @@ Two mechanisms make this safe, and you'll see them by name in the code:
   Delete. Whatever the handles, the curve always passes exactly through the keys.
   The **marquee works in both views**: drag a box over the speed view's background and the
   speed points inside it are selected, just like value keys.
+  The **Retime channel's Velocity lens** can now edit *eased* ramps too: a ramp shaped with
+  the Slow/Fast/Smooth/Sharp presets shows a small **square handle** where two ramps join —
+  drag it up or down to set the speed at that join, and both neighbouring ramps re-aim to
+  meet it while keeping their easing shapes. (Round handles remain the plain keyframes of
+  un-eased ramps, as before.)
   A **footage layer** also carries a **Retime channel** here, named for the lens you are in
   (K-076): **Time** in the value view, **Velocity** in the speed view. In the **Time** lens it
   is now *exactly* an ordinary property graph (K-078): the curve is the source position (in
