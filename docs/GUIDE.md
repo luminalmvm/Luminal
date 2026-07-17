@@ -135,11 +135,20 @@ Two mechanisms make this safe, and you'll see them by name in the code:
   frame (crisp, a touch stuttery in deep slow-mo), Blend crossfades the two neighbouring frames
   by how far between them the moment falls (smoother, slightly ghosted), and **Flow** invents a
   genuine in-between frame by working out how everything *moved* between the two and dragging
-  each halfway (the real slow-mo trick). Flow lives in its own crate (`lumit-flow`) — a pure,
-  deterministic CPU reference (pyramidal Lucas–Kanade motion estimation, then motion-compensated
-  synthesis with a graceful crossfade fallback where the motion is unreliable). It's the "oracle"
-  the later fast GPU version must match, and it's tested against known translations (motion
-  recovered to sub-pixel) and against a plain crossfade (sharper on textured motion). The
+  each halfway (the real slow-mo trick). Flow lives in its own crate (`lumit-flow`) and uses
+  **DIS — Dense Inverse Search** — the algorithm the specs pin for it (same family OpenCV
+  ships). In plain terms: the frames are stacked into a pyramid of ever-smaller copies;
+  starting from the smallest, thousands of little 8×8 tiles each hunt for where their bit of
+  picture went (a few quick "am I getting warmer?" refinement steps each); every pixel then
+  takes a vote among the tiles covering it, trusting only tiles whose answer actually *looks
+  right* at that pixel — that mistrust is what keeps the motion crisp at object edges instead
+  of rubber-sheeting. Pixels visible in only one frame (things being covered or revealed —
+  where slow-mo artefacts live) are found by checking the two directions of motion against
+  each other, and the synthesis quietly falls back to a plain crossfade wherever both frames
+  lost sight of something. The whole thing is a pure, deterministic CPU implementation — the
+  "oracle" the fast GPU version must match — tested against scenes with mathematically known
+  motion (translations, rotations, checkerboards, a sliding square's occlusion) and against a
+  plain crossfade (sharper on textured motion). The
   frame-pick and each interpolation are shared functions used by *both* preview and export, so a
   slow-mo frame is identical in each — the preview-equals-export promise holds for interpolation
   too. The same Frames toggle appears per-clip on Sequence layers (next to Clip speed %), so a
