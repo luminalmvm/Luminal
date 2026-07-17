@@ -4959,7 +4959,20 @@ fn graph_plot(
                     // dragged key's time stays locked.
                     app.graph_edit = Some((idx, key.time.to_f64(), v_of(p.y)));
                 } else {
-                    app.graph_edit = Some((idx, t_of(p.x), v_of(p.y)));
+                    // Retime features snap to beats (docs/09-AUDIO v1): a Time
+                    // key dragged near a marker lands exactly on it, so a ramp
+                    // hits the beat. Transform keys stay free.
+                    let mut nt = t_of(p.x);
+                    if is_retime {
+                        let thr = 6.0 / px_per_sec.max(1e-6);
+                        nt = lumit_core::markers::snap_time(
+                            rational_at(nt),
+                            &comp.markers,
+                            rational_at(thr),
+                        )
+                        .to_f64();
+                    }
+                    app.graph_edit = Some((idx, nt, v_of(p.y)));
                     if !selected {
                         // Dragging an unselected key collapses the selection
                         // to just it (today's single-key drag, plus select).
