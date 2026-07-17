@@ -112,6 +112,15 @@ Two mechanisms make this safe, and you'll see them by name in the code:
 - `crates/lumit-core/src/model.rs` — **What a project is.** Structs for the document,
   comps, layers, footage items. Each has an `extra` field that preserves anything a future
   Lumit version adds — so old and new versions can share project files.
+- **Effects, the pixel side.** The first real effect exists end to end: **Blur**
+  (gaussian). Its life is the template every effect will follow (design rule §1.1's four
+  parts): a catalogue entry in `lumit-core/src/fx.rs` declaring parameters and behaviour
+  traits; a plain-Rust reference implementation there too (the *oracle* — slow but
+  unarguably correct); a GPU program (`lumit-gpu/src/fx_blur.wgsl`) that does the same
+  maths fast; and a test that renders a nasty little corpus (gradients, hard alpha edges,
+  a brighter-than-white spike) through both and fails if they ever disagree. The radius is
+  measured as a percentage of the comp's diagonal, so half-resolution preview looks the
+  same as full — just smaller.
 - **Effects, the data side (Phase 3 begins here).** Every layer now carries an ordered
   **effect stack** in the project model: each entry says *which* effect (a stable name +
   a version, so cached frames from older maths retire themselves), whether it's bypassed,

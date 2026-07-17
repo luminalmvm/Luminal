@@ -7,9 +7,14 @@ license = "GPL-3.0-only"
 [dependencies]
 bytemuck = { version = "1", features = ["derive"] }
 glam = "0.29"
+half = "2"
 pollster = "0.4"
 thiserror = "2"
 wgpu = "24"
+
+[dev-dependencies]
+# The CPU oracle the WGSL kernels are held to (docs/08 §1.6).
+lumit-core = { path = "../lumit-core" }
 
 [lints]
 workspace = true

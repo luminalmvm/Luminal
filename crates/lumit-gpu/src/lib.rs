@@ -382,6 +382,7 @@ mod tests {
 }
 
 pub mod composite;
+pub mod fx;
 pub mod oklab;
 pub use composite::{
     camera_matrix, concat_place, place_matrix, Blend, CompositeLayer, Compositor, MatteInput,
