@@ -653,3 +653,32 @@ does). Two render-semantics points are pinned:
   list). After Effects lets a collapsed precomp's adjustment layers process the parent's
   stack below them; Lumit deliberately diverges — the stack applies within the adjustment
   layer's own comp, always, so precomposing never changes what an adjustment layer sees.
+
+**K-092 · DECIDED · Theme shape, mode and animation level ship as three independent settings.**
+From the owner (2026-07-19): alongside the existing dark-ramp picker (`ThemeVariant`), Lumit
+gains a light ramp and a second panel geometry, plus a UI-animation-level control — each its
+own setting, not one combined picker, all in the Window menu for now (07-UI-SPEC.md §15's
+future Settings window is their eventual home).
+- **`ThemeMode` (Dark/Light)**: one light ramp (`Theme::light()`), not a light equivalent of
+  every dark variant. `ThemeVariant` (Dark/DarkBlue) narrows to "which dark ramp" and is
+  meaningless — hidden in the Window menu — under Light. Light mode ships with **one uniform
+  panel colour** (white) on a soft neutral canvas; per-panel colour tinting is a wanted, but
+  explicitly deferred, future customisation setting.
+- **`ThemeShape` (Sharp/Round)**: Sharp is the existing edge-to-edge, hairline-elevated system,
+  byte-identical to before. Round is a Figma-UI3-inspired floating-card system — visible gaps
+  between panels and from the window edge, rounded corners, a soft shadow standing in for the
+  hairline — carried as data (`ShapeTokens`) on `Theme` rather than hardcoded in `apply()`.
+  This reverses two prior binding statements *for Round only*, Sharp keeping them as written:
+  §7.3's "there are no gaps between docked panels", and §2.3's shadow_float being "permitted
+  solely on" floating chrome — Round's ordinary docked cards join that list. Every panel,
+  Viewer included, cards identically under Round; no exemption. A stated, permanent v1 limit:
+  stacked tab-bar containers stay square-cornered under Round — `egui_tiles` 0.12.0's
+  `Behavior` trait has no hook to round a tab bar's own container.
+- **`AnimationLevel` (All/Minimal/None)**: a three-tier refinement of the existing
+  motion/reduced-motion binary (15-DESIGN.md §8) — `None` is that same reduced-motion behaviour,
+  `Minimal` is the new middle tier. Backed by one global lever over egui's own
+  `Style::animation_time`, covering what egui's internals already animate (collapsing
+  headers, resizable-panel expand/collapse, scrollbar fade, dialog fade-in). It does not reach
+  Lumit's own menus/dropdowns, which have no animation today regardless of this setting.
+
+Spec: [15-DESIGN.md](15-DESIGN.md) §2, §7.3, §8, §11; [07-UI-SPEC.md](07-UI-SPEC.md) §15.

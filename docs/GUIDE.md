@@ -939,14 +939,23 @@ Two mechanisms make this safe, and you'll see them by name in the code:
   from pressed purely by how light their fill is; scrollbars are thin and solid; panel
   edges are single crisp 1px lines. The colours themselves (the clay accent, the cool grey
   family) are still Lumit's own — we borrowed the skeleton, not the skin.
-  Two customisation seeds live in the **Window menu** (the full theme picker grows from
-  here): **Background** switches between the near-black ramp and the previous bluer one,
-  and **Accent** lets you pick any colour for the app's single accent — selection, the
-  playhead, active states all follow it, since they are one token. Both persist with your
-  workspace; Reset returns the clay default.
+  Five customisation seeds live in the **Window menu** (the full theme picker grows from
+  here, K-092): **Mode** switches the whole app between Dark and a new Light theme — one
+  plain white for every panel on a soft neutral canvas, not a tinted panel per section (that
+  idea is wanted, but saved for a future setting rather than built now); **Background**
+  (only shown under Dark, since there's nothing to pick under Light) switches between the
+  near-black ramp and the previous bluer one; **Accent** lets you pick any colour for the
+  app's single accent — selection, the playhead, active states all follow it, since they are
+  one token; **Shape** switches between the existing sharp, edge-to-edge look and a new
+  Round shape — panels float as rounded cards with real gaps between them and the window
+  edge, Figma-inspired, no blur or bevel, just a soft shadow standing in for the border; and
+  **Animation** picks how much motion the UI's own chrome shows (All / Minimal / None) —
+  this reaches things like a collapsing section's arrow or a dialog's fade-in, not (yet) the
+  app's own dropdown menus, which don't animate at all today regardless of this setting. All
+  five persist with your workspace; Reset returns the clay default for Accent.
   The **focused panel** also wears a thin accent edge: whichever panel you last clicked is
   where keyboard shortcuts land, and the edge keeps that visible at a glance (the After
-  Effects convention).
+  Effects convention) — it follows the Round shape's card rounding too, when that's picked.
 - `crates/lumit-ui/src/icons.rs` — **the icons: Iconoir, shipped as a font** (K-085).
   Little pictures like the play triangle or the padlock come from Iconoir, a free
   professionally drawn icon family, baked into the program as a small font file — each icon

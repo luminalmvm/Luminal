@@ -130,12 +130,15 @@ ramp while keeping the same roles.
 | `hairline` | `#26292c` (≈ `text_primary` @ 11%) | Default 1px borders between panels, rows, cards; the dock's 1px tile gaps |
 | `hairline_strong` | `#3c4145` (≈ `text_primary` @ 22%) | Dividers that must be found, Null layer outlines; doubles as the pressed widget fill |
 
-Hairlines are the *only* default elevation between panels. Interactive widgets are
-**borderless** (K-084, the rerun grammar): idle, hovered and pressed are *fill* steps
-(`surface_3` → `surface_4` → `hairline_strong`), never stroke changes. `shadow_float`
-(black @ 50%, offset 0/15, blur 50 — rerun's float shadow) is permitted solely on: modal
-dialogs, menus/popovers, panels while being drag-undocked, and drag ghosts (clips or assets
-in flight).
+Hairlines are the *only* default elevation between panels **under the Sharp shape**.
+Interactive widgets are **borderless** (K-084, the rerun grammar): idle, hovered and pressed
+are *fill* steps (`surface_3` → `surface_4` → `hairline_strong`), never stroke changes.
+`shadow_float` (black @ 50%, offset 0/15, blur 50 — rerun's float shadow) is permitted solely
+on: modal dialogs, menus/popovers, panels while being drag-undocked, and drag ghosts (clips or
+assets in flight) — **under Sharp**. The Round shape (K-092, §7.3) is a deliberate exception:
+ordinary docked panes there are floating cards with their own small shadow (`ShapeTokens::
+ROUND.card_shadow`, distinct from and smaller than `shadow_float`), so "docked" no longer
+implies "no shadow" once Round is picked.
 
 ## 3. Saturated colour
 
@@ -405,8 +408,13 @@ mono while focused.
 ### 7.3 Spacing
 
 Household spacing scale (4/8/12/16/24/32…) with the dense end doing the work: 4px within
-control clusters, 8px between clusters, 12px panel padding, 16px dialog padding. Panels butt
-together separated by a single `hairline`; there are no gaps between docked panels.
+control clusters, 8px between clusters, 12px panel padding, 16px dialog padding. **Under the
+Sharp shape**, panels butt together separated by a single `hairline`; there are no gaps
+between docked panels. **Under Round** (K-092), this is the point of the shape: a real gap
+(`ShapeTokens::ROUND.tile_gap`, painted as the canvas colour) opens between every pane and
+from the window edge (`window_inset`), and each pane becomes its own rounded card
+(`card_radius`/`card_padding`) — see the new Round subsection after §11. Spacing itself (this
+section's 4/8/12/16px scale) does not vary by shape; only radius, gap, inset and shadow do.
 
 ## 8. Motion
 
@@ -417,9 +425,15 @@ together separated by a single `hairline`; there are no gaps between docked pane
   and opacity only. One signature interaction, per the household budget: the drag ghost —
   clips and assets in flight lag the cursor slightly and settle with a single small
   overshoot on drop.
-- **Reduced motion** (OS setting, plus an in-app override): springs don't mount — animation
-  times set to zero, drag ghosts pin to the cursor, drop-target pulses become static fills.
-  Any meaning carried by motion is also carried by colour or text.
+- **Animation level** (K-092): a three-tier in-app setting — **All** (this section's ≤150ms
+  budget in full), **Minimal** (a fast ~50ms snap — still perceptible as motion, not a hard
+  cut), **None** (springs don't mount — animation times set to zero, drag ghosts pin to the
+  cursor, drop-target pulses become static fills; the OS's own reduced-motion request maps
+  onto this tier). Any meaning carried by motion is also carried by colour or text at every
+  tier. Backed by one lever over egui's own animation timing, so it reaches what egui's
+  internals animate today (collapsing headers, resizable-panel expand/collapse, scrollbar
+  fade, dialog fade-in) — it does not retroactively animate Lumit's own menus/dropdowns, which
+  have no animation of their own yet regardless of this setting.
 - **Playback is not motion.** The Viewer playing at 60fps, scrub feedback, progressive
   preview refinement, and waveform scrolling are *content*, exempt from all of the above,
   and never gated by reduced-motion.
@@ -463,18 +477,50 @@ together separated by a single `hairline`; there are no gaps between docked pane
   to begin."*
 - Attribution/licence lines: mono 11px `text_muted`.
 
-## 11. Light mode (future)
+## 11. Light mode (K-092)
 
-Light mode is a token swap, not a redesign. Because every colour flows through `Theme`
-(§4.1), shipping it means writing `Theme::light()`: the household paper-light values
-desaturated by the same method as §2 (near-neutral warm-grey papers, strictly neutral
-`viewer_surround` around `#9c9c9c`–`#b4b4b4` as grading suites prefer for light UIs), the
-light `clay`/`olive`/`kraft`/`fig` values, and re-run of the §9 contrast checks. The editor
-token families (§6) need their own light derivations — muted layer colours darken rather than
-lighten. No widget code changes. Until it ships, Lumit launches dark and says so plainly in
-settings: *"Light theme — planned."*
+Light mode shipped as `Theme::light()` — a token swap, not a redesign, exactly as this
+section originally proposed: no widget code changes, only the `Theme` struct's values differ.
+One uniform panel colour (white) on a soft neutral canvas, per the owner's explicit call —
+**not** per-panel colour-tinting; that idea is wanted and stays on the table as a future
+customisable setting, not built here. Surfaces keep the same *roles* as §2.1 (`surface_1` =
+panel body, `surface_2` = faint/tab-bar chrome, `surface_3` = floating, `surface_4` =
+hover/pressed fill), re-derived at the light end rather than mirror-inverted: since white is
+already the brightest possible value, "elevation" reads as a light-grey wash rather than
+further brightening past white. `viewer_surround` is **not** mode-mirrored — it stays in the
+same fixed neutral mid-grey neighbourhood (`#9c9c9c`–`#b4b4b4`, per this section's original
+target) in both Dark and Light, for the same reason §2.1 already decouples it from chrome
+brightness: grading judgement needs a surround that doesn't shift under the artist. Text,
+hairlines (the same "≈ `text_primary` at N%" rule, re-run against the new near-black anchor),
+and roles (accent/success/warning/error, re-picked at reduced lightness rather than naively
+inverted — a value as light as the dark-mode accent washes out on white) all follow. The
+household `clay`/`olive`/`kraft`/`fig` light values this section originally pointed at aren't
+available in this checkout; Lumit's light-mode role colours are its own derivations rather
+than a port. `with_accent`'s hover-shift direction now depends on mode: brightening reads as
+"more prominent" on a dark surface, so Dark brightens on hover; Light darkens by the same
+amount instead. The §9 contrast floors are re-run against the light ramp, not assumed to carry
+over from the dark one's numbers.
 
-## 12. New-panel checklist
+## 12. The Round shape (K-092)
+
+The Figma-UI3-inspired alternative to this document's default Sharp system: panels float as
+rounded, softly-shadowed cards with a real gap between them and from the window edge, rather
+than butting edge-to-edge behind a hairline (§7.3, §2.3). Explicitly not glassmorphism or
+neumorphism — flat fills, no blur, no inset/outset bevel; the shadow is the only elevation cue
+Round adds. Every geometry number Sharp vs Round differs on lives in one place
+(`ShapeTokens`, on `Theme`): control/float radii (larger under Round, so a button doesn't look
+unfinished inside a rounded card), the docked-pane card's own radius/padding, the inter-pane
+gap width, the window-edge inset, and the card's shadow. Colours are unaffected by shape —
+Round on Dark and Round on Light both exist, independent of `ThemeMode`. Every panel, the
+Viewer included, cards identically; there is no exemption (an earlier option — keeping the
+Viewer flush as a deliberate exception — was considered and rejected: consistency won, and
+K-074's "no top bit" rule is specifically about the tab bar, not panel margins, so it isn't
+affected either way). A stated, permanent limitation: stacked tab-bar containers (a group of
+panels sharing tabs) stay square-cornered under Round — `egui_tiles` 0.12.0's `Behavior` trait
+has no hook to round a tab bar's own container, and patching the crate for this alone isn't
+planned.
+
+## 13. New-panel checklist
 
 The Lumit equivalent of the household §9 checklist. Every new panel or feature MUST satisfy:
 

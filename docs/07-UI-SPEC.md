@@ -646,9 +646,10 @@ project file, [10-FILE-FORMAT.md](10-FILE-FORMAT.md) §2):
   header text so users understand what the app guarantees.
 - **Export**: default preset, export priority default (background/balanced/fast), encoder
   preference order, filename template.
-- **Keymap**, **Interface** (UI scale, tooltips, reduced motion follows OS or override),
-  **Autosave** (interval, copies kept), **Plugins** (search paths, disabled list, per-plugin
-  overrides).
+- **Keymap**, **Interface** (UI scale, tooltips, reduced motion follows OS or override —
+  Theme Mode, Shape and Animation level live in the Window menu for now, K-092; they migrate
+  into this group once this window ships), **Autosave** (interval, copies kept), **Plugins**
+  (search paths, disabled list, per-plugin overrides).
 
 All bindings are remappable in Settings → Keymap (search, conflict detection, per-context
 display); the keymap serialises to a shareable file. An "After Effects" alternate preset
