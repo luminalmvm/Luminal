@@ -260,6 +260,9 @@ struct Renderer<'a> {
     /// Flow interpolation backend, sharing the export device; falls back to
     /// the CPU oracle by itself (export MUST honour the Flow policy, K-019).
     flow: lumit_flow::FlowEngine,
+    /// Effect kernels, sharing the export device (docs/08; the same passes
+    /// the preview runs, so effects export pixel-identically).
+    fx: lumit_gpu::fx::FxEngine,
 }
 
 /// A layer's source, prepared for compositing: a linear texture plus the
@@ -546,6 +549,12 @@ impl Renderer<'_> {
             let Some(p) = self.prepare(l, t, visited)? else {
                 continue;
             };
+            let diag = ((nested.width as f32).powi(2) + (nested.height as f32).powi(2)).sqrt();
+            let p = Prepared {
+                tex: self.apply_fx(p.tex, l, lt, diag),
+                natural: p.natural,
+                mask: p.mask,
+            };
             let tr = &l.transform;
             out.push(CollapsedSpec {
                 p,
@@ -572,6 +581,40 @@ impl Renderer<'_> {
             });
         }
         Ok(())
+    }
+
+    /// Run a layer's live effect stack on its prepared linear texture
+    /// (docs/08 §1.5: after masks, before transform), resolved against the
+    /// comp diagonal — export renders full-resolution, so no decode scaling.
+    fn apply_fx(&self, tex: Tex, layer: &lumit_core::model::Layer, lt: f64, comp_diag: f32) -> Tex {
+        if !layer.switches.fx || layer.effects.is_empty() {
+            return tex;
+        }
+        let resolved = lumit_core::fx::resolve_stack(&layer.effects, lt, comp_diag);
+        let (w, h) = (tex.width(), tex.height());
+        let mut tex = tex;
+        for op in &resolved {
+            match op {
+                lumit_core::fx::Resolved::Blur {
+                    radius_px,
+                    edge,
+                    mix,
+                } => {
+                    tex = self.fx.blur(
+                        self.gpu,
+                        &tex,
+                        w,
+                        h,
+                        &lumit_gpu::fx::BlurOp {
+                            radius_px: *radius_px,
+                            edge: *edge,
+                            mix: *mix,
+                        },
+                    );
+                }
+            }
+        }
+        tex
     }
 
     /// Render a whole comp at time `t` into a linear fp16 texture (recursive
@@ -639,6 +682,12 @@ impl Renderer<'_> {
                 }
             }
             if let Some(p) = self.prepare(l, t, visited)? {
+                let diag = ((comp.width as f32).powi(2) + (comp.height as f32).powi(2)).sqrt();
+                let p = Prepared {
+                    tex: self.apply_fx(p.tex, l, lt, diag),
+                    natural: p.natural,
+                    mask: p.mask,
+                };
                 prepared.insert(l.id, p);
             }
         }
@@ -826,6 +875,7 @@ fn run(
         compositor: lumit_gpu::Compositor::new(gpu),
         decoders: HashMap::new(),
         flow: lumit_flow::FlowEngine::with_context(gpu),
+        fx: lumit_gpu::fx::FxEngine::new(gpu),
     };
     // Encoded frame dimensions must be even for 4:2:0 H.264/HEVC.
     let (tw, th) = (spec.target.0 & !1, spec.target.1 & !1);

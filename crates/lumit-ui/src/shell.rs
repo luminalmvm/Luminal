@@ -2377,19 +2377,27 @@ fn timeline_panel(ui: &mut egui::Ui, theme: &Theme, app: &mut AppState) {
                             &mut pending,
                         );
                     }
-                    // Effects group: the home for the layer's effect stack. The effects
-                    // system itself lands later; the twirl is here so the shape is right.
+                    // Effects group (docs/08): the layer's effect stack. Each
+                    // effect is a compact block — enable / name / remove on its
+                    // title row, then one animatable row per parameter.
                     let fx_id = ui.id().with(("effects-group", layer.id));
                     if group_header_row(ui, theme, "Effects", fx_id, false, viewport) {
-                        ui.indent(("fx-empty", layer.id), |ui| {
-                            ui.label(
-                                egui::RichText::new(
-                                    "No effects yet — the effects system is on the way.",
-                                )
-                                .small()
-                                .color(theme.text_disabled),
-                            );
-                        });
+                        let fps2 = comp.frame_rate.fps().max(1.0);
+                        let fx_ctx = RowCtx {
+                            theme,
+                            comp_id,
+                            layer,
+                            lt: app.preview_frame as f64 / fps2 - layer.start_offset.0.to_f64(),
+                            off: layer.start_offset.0.to_f64(),
+                            fps: fps2,
+                            viewport,
+                            track_left,
+                            track_w,
+                            px_per_sec,
+                            view_start,
+                            graph_mode: app.timeline_graph_mode,
+                        };
+                        effects_rows(ui, &fx_ctx, &mut pending);
                     }
                 }
             }
@@ -5489,6 +5497,21 @@ fn build_comp_draws(
             })
         });
 
+        // Radius units are % of the comp diagonal (docs/08 §2.3); the effect
+        // runs on the layer's decoded texture, so scale the diagonal by
+        // decode/natural to stay honest under reduced-resolution preview.
+        let fx = {
+            let comp_diag = ((comp.width as f32).powi(2) + (comp.height as f32).powi(2)).sqrt();
+            let scale = match &source {
+                DrawSource::Pixels { tex_w, .. } => *tex_w as f32 / natural.0.max(1.0),
+                DrawSource::Nested { .. } => 1.0,
+            };
+            if layer.switches.fx {
+                lumit_core::fx::resolve_stack(&layer.effects, lt, comp_diag * scale)
+            } else {
+                Vec::new()
+            }
+        };
         draws.push(CompLayerDraw {
             source,
             natural_size: natural,
@@ -5530,6 +5553,7 @@ fn build_comp_draws(
                 _ => None,
             },
             pre: None,
+            fx,
         });
     }
     draws
@@ -7227,6 +7251,168 @@ fn speed_property_row(
     }
 }
 
+/// The Effects group's rows (docs/08): an "Add effect" menu, then one block
+/// per effect — bypass / name / remove on its title row, one row per
+/// parameter beneath. Float parameters are fully animatable (stopwatch +
+/// key diamonds on the lane, like any transform property); every change
+/// commits one whole-stack SetLayerEffects, so each edit is one undo step.
+fn effects_rows(ui: &mut egui::Ui, ctx: &RowCtx, pending: &mut Option<lumit_core::Op>) {
+    use lumit_core::fx::{self, ParamKind};
+    use lumit_core::model::EffectValue;
+    let layer = ctx.layer;
+    let commit =
+        |effects: Vec<lumit_core::model::EffectInstance>| lumit_core::Op::SetLayerEffects {
+            comp: ctx.comp_id,
+            layer: layer.id,
+            effects,
+        };
+
+    // The add row.
+    {
+        let (_row, mut c) = row_frame(ui, ctx, false);
+        c.menu_button(
+            egui::RichText::new("Add effect")
+                .small()
+                .color(ctx.theme.text_secondary),
+            |ui| {
+                for schema in fx::BUILTINS {
+                    if ui.button(schema.label).clicked() {
+                        if let Some(inst) = fx::instantiate(schema.match_name) {
+                            let mut effects = layer.effects.clone();
+                            effects.push(inst);
+                            *pending = Some(commit(effects));
+                        }
+                        ui.close_menu();
+                    }
+                }
+            },
+        );
+    }
+
+    for (idx, e) in layer.effects.iter().enumerate() {
+        let schema = fx::schema(&e.effect.match_name);
+        // Title row: bypass, name (dimmed when bypassed), remove.
+        {
+            let (_row, mut c) = row_frame(ui, ctx, false);
+            let mut on = e.enabled;
+            if c.checkbox(&mut on, "")
+                .on_hover_text("Bypass this effect")
+                .changed()
+            {
+                let mut effects = layer.effects.clone();
+                effects[idx].enabled = on;
+                *pending = Some(commit(effects));
+            }
+            let name = schema.map_or(e.effect.match_name.as_str(), |s| s.label);
+            let colour = if e.enabled {
+                ctx.theme.text_secondary
+            } else {
+                ctx.theme.text_disabled
+            };
+            c.label(egui::RichText::new(name).small().color(colour));
+            if c.small_button("\u{00d7}")
+                .on_hover_text("Remove this effect")
+                .clicked()
+            {
+                let mut effects = layer.effects.clone();
+                effects.remove(idx);
+                *pending = Some(commit(effects));
+            }
+        }
+        // One row per parameter, driven by the schema.
+        let Some(schema) = schema else { continue };
+        for (pi, param) in e.params.iter().enumerate() {
+            let Some(ps) = schema.params.iter().find(|p| p.id == param.id) else {
+                continue;
+            };
+            match (&param.value, ps.kind) {
+                (EffectValue::Float(prop), ParamKind::Float { slider, hard, .. }) => {
+                    let is_animated = prop.is_animated();
+                    let (row_rect, mut c) = row_frame(ui, ctx, false);
+                    if let Some(animation) = stopwatch(&mut c, ctx.theme, prop, ctx.lt) {
+                        let mut effects = layer.effects.clone();
+                        effects[idx].params[pi].value =
+                            EffectValue::Float(lumit_core::anim::Property {
+                                animation,
+                                extra: serde_json::Map::new(),
+                            });
+                        *pending = Some(commit(effects));
+                    }
+                    c.label(
+                        egui::RichText::new(ps.label)
+                            .small()
+                            .color(ctx.theme.text_muted),
+                    );
+                    let committed = prop.value_at(ctx.lt);
+                    let id = egui::Id::new(("fxparam", e.id, pi));
+                    let mut v = c.data(|d| d.get_temp::<f64>(id)).unwrap_or(committed);
+                    let resp = c.add(
+                        egui::DragValue::new(&mut v)
+                            .speed((slider.1 - slider.0).abs().max(1.0) / 200.0)
+                            .range(hard.0..=hard.1)
+                            .max_decimals(2),
+                    );
+                    if resp.dragged() || resp.has_focus() {
+                        c.data_mut(|d| d.insert_temp(id, v));
+                    }
+                    if resp.drag_stopped() || resp.lost_focus() {
+                        if (v - committed).abs() > 1e-9 {
+                            let mut effects = layer.effects.clone();
+                            let animation = if is_animated {
+                                lumit_core::anim::Animation::Keyframed(upsert_key(prop, ctx.lt, v))
+                            } else {
+                                lumit_core::anim::Animation::Static(v)
+                            };
+                            effects[idx].params[pi].value =
+                                EffectValue::Float(lumit_core::anim::Property {
+                                    animation,
+                                    extra: serde_json::Map::new(),
+                                });
+                            *pending = Some(commit(effects));
+                        }
+                        c.data_mut(|d| d.remove::<f64>(id));
+                    }
+                    // Keys on the lane, like any property row.
+                    if let lumit_core::anim::Animation::Keyframed(keys) = &prop.animation {
+                        draw_key_diamonds(ui, ctx, row_rect, keys);
+                    }
+                }
+                (EffectValue::Choice(cur), ParamKind::Choice { options, .. }) => {
+                    let (_row, mut c) = row_frame(ui, ctx, false);
+                    c.label(
+                        egui::RichText::new(ps.label)
+                            .small()
+                            .color(ctx.theme.text_muted),
+                    );
+                    let cur_label = options.get(*cur as usize).copied().unwrap_or("?");
+                    bare_dropdown(&mut c, egui::RichText::new(cur_label).small(), |ui| {
+                        for (oi, opt) in options.iter().enumerate() {
+                            if ui.selectable_label(oi as u32 == *cur, *opt).clicked() {
+                                let mut effects = layer.effects.clone();
+                                effects[idx].params[pi].value = EffectValue::Choice(oi as u32);
+                                *pending = Some(commit(effects));
+                                ui.close_menu();
+                            }
+                        }
+                    });
+                }
+                (EffectValue::Bool(cur), ParamKind::Bool { .. }) => {
+                    let (_row, mut c) = row_frame(ui, ctx, false);
+                    let mut v = *cur;
+                    if c.checkbox(&mut v, egui::RichText::new(ps.label).small())
+                        .changed()
+                    {
+                        let mut effects = layer.effects.clone();
+                        effects[idx].params[pi].value = EffectValue::Bool(v);
+                        *pending = Some(commit(effects));
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
 fn mask_space(
     layer: &lumit_core::model::Layer,
     app: &AppState,
@@ -7414,6 +7600,10 @@ pub struct CompLayerDraw {
     /// (docs/06 §1.4): multiplied in front of this draw's own placement so
     /// content is resampled once, never twice. From lumit_gpu::place_matrix.
     pub pre: Option<[[f32; 4]; 4]>,
+    /// The layer's live effect stack, resolved to plain numbers at this
+    /// frame (docs/08; radius already in texture pixels). Applied to the
+    /// linear source texture after masks, before the transform.
+    pub fx: Vec<lumit_core::fx::Resolved>,
 }
 
 /// GPU display path (slice 5 completion): decoded sRGB bytes → linear fp16
@@ -7424,6 +7614,7 @@ pub struct GpuViewer {
     ctx: lumit_gpu::GpuContext,
     engine: lumit_gpu::ColourEngine,
     compositor: lumit_gpu::Compositor,
+    fx: lumit_gpu::fx::FxEngine,
     render_state: egui_wgpu::RenderState,
     /// Keep the display texture alive while egui samples it.
     current: Option<(egui_wgpu::wgpu::Texture, egui::TextureId)>,
@@ -7476,10 +7667,12 @@ impl GpuViewer {
         );
         let engine = lumit_gpu::ColourEngine::new(&ctx);
         let compositor = lumit_gpu::Compositor::new(&ctx);
+        let fx = lumit_gpu::fx::FxEngine::new(&ctx);
         Self {
             ctx,
             engine,
             compositor,
+            fx,
             render_state,
             current: None,
             vram: Vec::new(),
@@ -7503,9 +7696,9 @@ impl GpuViewer {
         background: [f64; 4],
         layers: &[CompLayerDraw],
     ) -> egui_wgpu::wgpu::Texture {
-        let linear_textures: Vec<egui_wgpu::wgpu::Texture> = layers
-            .iter()
-            .map(|l| match &l.source {
+        let mut linear_textures: Vec<egui_wgpu::wgpu::Texture> = Vec::with_capacity(layers.len());
+        for l in layers {
+            let mut tex = match &l.source {
                 DrawSource::Pixels { rgba, tex_w, tex_h } => {
                     let src = self.engine.upload_srgb8(&self.ctx, rgba, *tex_w, *tex_h);
                     self.engine.linearise(&self.ctx, &src)
@@ -7517,8 +7710,35 @@ impl GpuViewer {
                     draws,
                     camera,
                 } => self.realise(*camera, *width, *height, *background, draws),
-            })
-            .collect();
+            };
+            // The effect stack runs on the linear source, after masks and
+            // before the transform (docs/08 §1.5; docs/06 render order).
+            if !l.fx.is_empty() {
+                let (w, h) = (tex.width(), tex.height());
+                for op in &l.fx {
+                    match op {
+                        lumit_core::fx::Resolved::Blur {
+                            radius_px,
+                            edge,
+                            mix,
+                        } => {
+                            tex = self.fx.blur(
+                                &self.ctx,
+                                &tex,
+                                w,
+                                h,
+                                &lumit_gpu::fx::BlurOp {
+                                    radius_px: *radius_px,
+                                    edge: *edge,
+                                    mix: *mix,
+                                },
+                            );
+                        }
+                    }
+                }
+            }
+            linear_textures.push(tex);
+        }
         let cam_mat = camera.map(|pose| crate::export::camera_mat(width, height, pose));
         // Layer-space mask textures (Precomp masks — GPU mask pass).
         let mask_textures: Vec<Option<egui_wgpu::wgpu::Texture>> = layers

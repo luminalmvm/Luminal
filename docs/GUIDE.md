@@ -112,6 +112,13 @@ Two mechanisms make this safe, and you'll see them by name in the code:
 - `crates/lumit-core/src/model.rs` — **What a project is.** Structs for the document,
   comps, layers, footage items. Each has an `extra` field that preserves anything a future
   Lumit version adds — so old and new versions can share project files.
+- **Effects are usable end to end.** Twirl a layer open, open its **Effects** group,
+  and "Add effect" lists the catalogue (Blur, for now). Each effect shows a bypass
+  tick, a remove button, and one row per parameter — a Blur radius has a stopwatch
+  and lane diamonds exactly like Position does, so effect animation and layer
+  animation are one skill. The same stack renders in preview and in export through
+  the same GPU passes, and cached frames re-render themselves when a parameter
+  moves (the cache key already understood effects).
 - **Effects, the pixel side.** The first real effect exists end to end: **Blur**
   (gaussian). Its life is the template every effect will follow (design rule §1.1's four
   parts): a catalogue entry in `lumit-core/src/fx.rs` declaring parameters and behaviour
