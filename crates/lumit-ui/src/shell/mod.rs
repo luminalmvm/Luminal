@@ -10,6 +10,7 @@ pub(crate) use crate::theme::Theme;
 pub(crate) use lumit_core::model::ProjectItem;
 pub(crate) use serde::{Deserialize, Serialize};
 
+mod command_palette;
 mod dock;
 mod draws;
 mod gpu;
@@ -111,6 +112,16 @@ pub struct Shell {
     /// Which Settings page is showing (runtime only).
     #[serde(skip, default)]
     settings_page: settings::SettingsPage,
+    /// Command palette (Ctrl/Cmd+P) state — all runtime only.
+    #[serde(skip, default)]
+    palette_open: bool,
+    #[serde(skip, default)]
+    palette_query: String,
+    #[serde(skip, default)]
+    palette_sel: usize,
+    /// Set on open so the search field grabs focus for one frame.
+    #[serde(skip, default)]
+    palette_focus: bool,
     /// The panel that last took a click — it wears the accent boundary so the
     /// keyboard's home is always visible (AE's focused-panel edge).
     #[serde(skip, default)]
@@ -272,6 +283,10 @@ impl Default for Shell {
             settings: settings::PerformanceSettings::default(),
             settings_open: false,
             settings_page: settings::SettingsPage::default(),
+            palette_open: false,
+            palette_query: String::new(),
+            palette_sel: 0,
+            palette_focus: false,
             active_panel: None,
             app: AppState::default(),
             splash: None,
@@ -471,6 +486,8 @@ impl Shell {
         const SAVE: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::S);
         // The macOS-standard Settings shortcut (Cmd/Ctrl+comma).
         const SETTINGS: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::Comma);
+        // Command palette (Cmd/Ctrl+P).
+        const PALETTE: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::P);
         // Order matters: consume the more-modified shortcut first.
         if ctx.input_mut(|i| i.consume_shortcut(&REDO)) {
             self.app.redo();
@@ -482,6 +499,9 @@ impl Shell {
         }
         if ctx.input_mut(|i| i.consume_shortcut(&SETTINGS)) {
             self.settings_open = true;
+        }
+        if ctx.input_mut(|i| i.consume_shortcut(&PALETTE)) {
+            self.open_command_palette();
         }
     }
 
@@ -936,6 +956,7 @@ impl Shell {
     /// dialog never reaches a panel behind it.
     fn any_modal_open(&self) -> bool {
         if self.settings_open
+            || self.palette_open
             || self.app.comp_dialog.is_some()
             || self.app.pending_recovery.is_some()
         {
@@ -1549,6 +1570,10 @@ impl Shell {
                     });
                 });
                 ui.menu_button("Window", |ui| {
+                    if ui.button("Command palette…").clicked() {
+                        self.open_command_palette();
+                        ui.close_menu();
+                    }
                     if ui.button("Reset workspace").clicked() {
                         self.dock = default_layout();
                         ui.close_menu();
@@ -1744,6 +1769,7 @@ impl Shell {
         #[cfg(feature = "media")]
         self.export_dialog_modal(ctx);
         self.settings_modal(ctx);
+        self.command_palette_modal(ctx);
         // Read before the borrow below splits `self` apart (used by the
         // active-panel focus edge further down).
         let modal_open = self.any_modal_open();
