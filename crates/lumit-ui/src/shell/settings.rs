@@ -166,56 +166,28 @@ impl Shell {
         page_heading(ui, theme, "Appearance");
 
         settings_group(ui, theme, "Theme", |ui| {
-            // Mode: light or dark chrome (K-092).
-            let mut mode = self.theme_mode;
-            settings_row(ui, theme, "Mode", Some("Light or dark chrome."), |ui| {
-                bare_dropdown(ui, mode_label(mode), |ui| {
-                    for m in [
-                        crate::theme::ThemeMode::Dark,
-                        crate::theme::ThemeMode::Light,
-                    ] {
-                        if ui.selectable_label(mode == m, mode_label(m)).clicked() {
-                            mode = m;
-                            ui.close_menu();
-                        }
-                    }
-                });
-            });
-            if mode != self.theme_mode {
-                self.theme_mode = mode;
-                self.recompose(ctx);
-            }
-
-            // Background ramp — meaningful only under Dark (one light ramp).
-            if self.theme_mode == crate::theme::ThemeMode::Dark {
-                settings_divider(ui, theme);
-                let mut variant = self.theme_variant;
-                settings_row(
-                    ui,
-                    theme,
-                    "Background",
-                    Some("Which dark ramp the chrome uses."),
-                    |ui| {
-                        bare_dropdown(ui, variant_label(variant), |ui| {
-                            for v in [
-                                crate::theme::ThemeVariant::Dark,
-                                crate::theme::ThemeVariant::DarkBlue,
-                            ] {
-                                if ui
-                                    .selectable_label(variant == v, variant_label(v))
-                                    .clicked()
-                                {
-                                    variant = v;
-                                    ui.close_menu();
-                                }
+            // Colour scheme: one dropdown over every built-in scheme (K-097),
+            // folding in the old light/dark and background-ramp choices.
+            let mut scheme = self.color_scheme;
+            settings_row(
+                ui,
+                theme,
+                "Colour scheme",
+                Some("The whole palette — light, dark, and community themes."),
+                |ui| {
+                    bare_dropdown(ui, scheme.label(), |ui| {
+                        for s in crate::theme::ColorScheme::ALL {
+                            if ui.selectable_label(scheme == s, s.label()).clicked() {
+                                scheme = s;
+                                ui.close_menu();
                             }
-                        });
-                    },
-                );
-                if variant != self.theme_variant {
-                    self.theme_variant = variant;
-                    self.recompose(ctx);
-                }
+                        }
+                    });
+                },
+            );
+            if scheme != self.color_scheme {
+                self.color_scheme = scheme;
+                self.recompose(ctx);
             }
 
             // Accent colour.
@@ -358,7 +330,7 @@ impl Shell {
     /// any accent override. The single funnel every Appearance control uses
     /// (was an inline closure in the Window menu before the Settings window).
     pub(crate) fn recompose(&mut self, ctx: &egui::Context) {
-        self.theme = Theme::for_settings(self.theme_mode, self.theme_variant, self.theme_shape);
+        self.theme = Theme::for_scheme(self.color_scheme, self.theme_shape);
         if let Some(rgb) = self.accent_override {
             self.theme = self.theme.with_accent(rgb);
         }
@@ -431,20 +403,6 @@ fn settings_divider(ui: &mut egui::Ui, theme: &Theme) {
         y,
         egui::Stroke::new(1.0_f32, theme.hairline),
     );
-}
-
-fn mode_label(m: crate::theme::ThemeMode) -> &'static str {
-    match m {
-        crate::theme::ThemeMode::Dark => "Dark",
-        crate::theme::ThemeMode::Light => "Light",
-    }
-}
-
-fn variant_label(v: crate::theme::ThemeVariant) -> &'static str {
-    match v {
-        crate::theme::ThemeVariant::Dark => "Dark",
-        crate::theme::ThemeVariant::DarkBlue => "Dark blue",
-    }
 }
 
 fn shape_label(s: crate::theme::ThemeShape) -> &'static str {

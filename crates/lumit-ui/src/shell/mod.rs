@@ -74,18 +74,25 @@ pub struct Shell {
     floating: Vec<Panel>,
     #[serde(skip, default)]
     theme: Theme,
-    /// The user's background-ramp pick (Window menu); the seed of the full
-    /// theme picker to come. Meaningful only under `ThemeMode::Dark` (there
-    /// is one light ramp). Persisted with the workspace.
-    #[serde(default)]
+    /// Legacy background-ramp pick (K-092), superseded by `color_scheme`
+    /// (K-097). Kept only to migrate an older save on load, and never
+    /// written back (`skip_serializing`), so a new save carries only
+    /// `color_scheme`.
+    #[serde(default, skip_serializing)]
     theme_variant: crate::theme::ThemeVariant,
-    /// A custom accent colour, when picked (Window menu). None = the clay
-    /// default. Persisted with the workspace.
+    /// A custom accent colour, when picked (Settings → Appearance). None =
+    /// the clay default. Persisted with the workspace.
     #[serde(default)]
     accent_override: Option<[u8; 3]>,
-    /// Light or dark (Window menu, K-092). Persisted with the workspace.
-    #[serde(default)]
+    /// Legacy light/dark pick (K-092), superseded by `color_scheme` (K-097).
+    /// Migration-only, like `theme_variant`.
+    #[serde(default, skip_serializing)]
     theme_mode: crate::theme::ThemeMode,
+    /// The colour scheme (K-097): Dark, Dark blue, Light, Gruvbox dark/light,
+    /// Catppuccin Mocha/Latte. Supersedes the old mode × variant pair, whose
+    /// saved value is migrated into this on first load. Persisted.
+    #[serde(default)]
+    color_scheme: crate::theme::ColorScheme,
     /// Sharp (edge-to-edge) or Round (floating card) panel geometry (Window
     /// menu, K-092). Persisted with the workspace.
     #[serde(default)]
@@ -228,6 +235,28 @@ impl ExportDialogState {
     }
 }
 
+/// Reconcile the persisted colour scheme with a pre-K-097 save's legacy
+/// mode × variant pair. A newer save carries `color_scheme` directly (the
+/// legacy fields are no longer written, so they deserialize to their
+/// defaults) and this returns it untouched; only when `color_scheme` is still
+/// its default is the legacy pair consulted, so an older Light or Dark-blue
+/// pick survives the upgrade.
+fn migrated_scheme(
+    current: crate::theme::ColorScheme,
+    mode: crate::theme::ThemeMode,
+    variant: crate::theme::ThemeVariant,
+) -> crate::theme::ColorScheme {
+    use crate::theme::{ColorScheme, ThemeMode, ThemeVariant};
+    if current != ColorScheme::default() {
+        return current;
+    }
+    match (mode, variant) {
+        (ThemeMode::Light, _) => ColorScheme::Light,
+        (ThemeMode::Dark, ThemeVariant::DarkBlue) => ColorScheme::DarkBlue,
+        _ => ColorScheme::Dark,
+    }
+}
+
 impl Default for Shell {
     fn default() -> Self {
         Self {
@@ -237,6 +266,7 @@ impl Default for Shell {
             theme_variant: crate::theme::ThemeVariant::default(),
             accent_override: None,
             theme_mode: crate::theme::ThemeMode::default(),
+            color_scheme: crate::theme::ColorScheme::default(),
             theme_shape: crate::theme::ThemeShape::default(),
             animation_level: crate::theme::AnimationLevel::default(),
             settings: settings::PerformanceSettings::default(),
@@ -280,8 +310,11 @@ impl Shell {
         let workspace_restored = restored.is_some();
         let mut shell = restored.unwrap_or_default();
         Theme::install_fonts(ctx);
-        // Honour the saved picks (K-092: mode × variant × shape).
-        shell.theme = Theme::for_settings(shell.theme_mode, shell.theme_variant, shell.theme_shape);
+        // Migrate a pre-K-097 save (see `migrated_scheme`).
+        shell.color_scheme =
+            migrated_scheme(shell.color_scheme, shell.theme_mode, shell.theme_variant);
+        // Honour the saved picks (K-097 scheme × K-092 shape).
+        shell.theme = Theme::for_scheme(shell.color_scheme, shell.theme_shape);
         if let Some(rgb) = shell.accent_override {
             shell.theme = shell.theme.with_accent(rgb);
         }
@@ -294,11 +327,8 @@ impl Shell {
         // The boot log (K-008): every line reflects real initialisation state.
         let mut lines = vec![
             BootLine::ok(format!(
-                "Theme: aizome-{} ({})",
-                match shell.theme_mode {
-                    crate::theme::ThemeMode::Dark => "dark",
-                    crate::theme::ThemeMode::Light => "light",
-                },
+                "Theme: {} ({})",
+                shell.color_scheme.label(),
                 match shell.theme_shape {
                     crate::theme::ThemeShape::Sharp => "sharp",
                     crate::theme::ThemeShape::Round => "round",
@@ -2558,6 +2588,50 @@ mod dock_tests {
         assert_eq!(shell.theme_mode, crate::theme::ThemeMode::Dark);
         assert_eq!(shell.theme_shape, crate::theme::ThemeShape::Sharp);
         assert_eq!(shell.animation_level, crate::theme::AnimationLevel::All);
+    }
+
+    #[test]
+    fn a_pre_k097_theme_pick_migrates_onto_color_scheme() {
+        use crate::theme::{ColorScheme, ThemeMode, ThemeVariant};
+        // Old Light / Dark-blue picks survive the upgrade to `ColorScheme`.
+        assert_eq!(
+            migrated_scheme(ColorScheme::Dark, ThemeMode::Light, ThemeVariant::Dark),
+            ColorScheme::Light
+        );
+        assert_eq!(
+            migrated_scheme(ColorScheme::Dark, ThemeMode::Dark, ThemeVariant::DarkBlue),
+            ColorScheme::DarkBlue
+        );
+        assert_eq!(
+            migrated_scheme(ColorScheme::Dark, ThemeMode::Dark, ThemeVariant::Dark),
+            ColorScheme::Dark
+        );
+        // A newer save's explicit scheme is never second-guessed by stale
+        // legacy fields.
+        assert_eq!(
+            migrated_scheme(
+                ColorScheme::GruvboxDark,
+                ThemeMode::Light,
+                ThemeVariant::DarkBlue
+            ),
+            ColorScheme::GruvboxDark
+        );
+    }
+
+    #[test]
+    fn color_scheme_round_trips_through_a_save() {
+        // `color_scheme` persists; the legacy mode/variant are read-only
+        // (skip_serializing), so a saved-then-loaded Shell keeps its scheme.
+        let shell = Shell {
+            color_scheme: crate::theme::ColorScheme::CatppuccinMocha,
+            ..Shell::default()
+        };
+        let json = serde_json::to_string(&shell).unwrap();
+        let back: Shell = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            back.color_scheme,
+            crate::theme::ColorScheme::CatppuccinMocha
+        );
     }
 
     // The Timeline starts as a full-width strip along the bottom: its pane is
