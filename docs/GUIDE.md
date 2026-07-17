@@ -112,6 +112,31 @@ Two mechanisms make this safe, and you'll see them by name in the code:
 - `crates/lumit-core/src/model.rs` — **What a project is.** Structs for the document,
   comps, layers, footage items. Each has an `extra` field that preserves anything a future
   Lumit version adds — so old and new versions can share project files.
+- **Glitch** — the corrupted-video look, as two sub-effects sharing one Intensity dial (a
+  third, Datamosh, waits on machinery — the flow field, §3.1 — no effect has yet; it's
+  written down as a clearly deferred follow-up, not quietly dropped). **Block displacement**
+  carves the frame into a grid (Block size) and, per block, reads its picture from a
+  slightly different spot — a random-looking but fully repeatable jump, plus an optional
+  colour-channel split and a "slice repeat" look where a thin strip of the block tiles
+  instead of showing a plain shifted read. **Scanlines** darkens alternating bands of rows
+  (Line period, Darkness), optionally rolling them over time and alternating which half of
+  each band darkens every other cycle for an interlaced-video feel. One dial, Intensity,
+  turns *all* of that up or down together, and at 0 the effect is a guaranteed no-op — checked
+  by a test — no matter which sections are switched on or what Mix is set to. The interesting
+  engineering wrinkle: which block "moves" and by how much has to be decided freshly for
+  every pixel, on the GPU, from nothing but (seed, that block's row/column, a coarse
+  time-step) — there's no way to precompute a lookup table for it up front, because a busy
+  frame can have thousands of blocks. That means the effect needs its own hash function
+  running *inside* the graphics-card program, not just on the CPU side like Shake's wobble
+  does. Shake's existing hash is built on 64-bit numbers, which graphics-card programs
+  (written in a language called WGSL) cannot represent — so Glitch gets a sibling hash built
+  entirely from 32-bit numbers instead, same design, both the CPU and the GPU version running
+  the identical recipe so they always agree. Every "which block, how much, which look" answer
+  comes from that one shared hash fed different small numbers, which is also why the same
+  project glitches exactly the same way on every machine, every time. It reuses the same
+  frame-cache lesson Shake taught the codebase: because Glitch is seeded, the cache
+  automatically knows a frozen frame still needs the *current* moment's local time to look
+  right, with no Glitch-specific code needed for that part at all.
 - **Blur gains a Radial mode** — the third and final mode of the §3.8 trio, alongside
   Gaussian and Directional. Drop a Centre point anywhere on the frame (as two percentages,
   Centre X and Centre Y, of the frame's width and height) and pick a Type: **Spin** streaks

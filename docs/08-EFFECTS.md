@@ -495,6 +495,41 @@ Three sub-effects shipped as one "Glitch" effect with enableable sections, all s
   by Intensity; temporal window `{-1, 0}`. It is a *look*, not real bitstream corruption —
   deterministic and safe.
 
+**Status (Block displacement + Scanlines, shipped; Datamosh deferred):** Datamosh needs the
+`{-1, 0}` temporal window and the §3.1 flow field — machinery no effect has yet (the flow
+engine is currently reached only through Retime and the Motion blur effect, §3.1/§3.2) — so
+it is deferred rather than half-built; the two window entries above (`{0}` shipped, `{-1, 0}`
+deferred) are unchanged. Category is **Distortion**, matching Shake and RGB split — its
+closest siblings (a seeded positional wobble; a channel split) — not the additive-light
+Stylise pair (Glow, Flash). Intensity (0–1, the master dial per §1.2) scales *every* hashed
+quantity across both sections — grid jitter, displacement, channel offset, slice-repeat odds
+and scanline darkness alike — so 0 is a genuine, single-knob bit-exact passthrough regardless
+of which sections are enabled or what Mix reads, pinned by an explicit early return (the same
+shape as Glow's neutral short-circuit, not the box-blur family's tap-sum coincidence). "Rows/
+columns jitter" ships as one Block jitter % (of Block size), applied as a hashed offset to
+*which nominal block* a pixel's content is read from — a cheap stand-in for moving grid lines
+themselves, which would need a boundary search a single pointwise pass cannot do; pinned as a
+deliberate simplification. "Channel-offset toggle or amount" ships as a continuous Channel
+offset (% diag) Float, following RGB split's R/B-offset-from-G shape but with a per-block
+hashed offset instead of one global vector — alpha follows green here too, for the same
+matte-fringing reason. Slice repetition ships as a Float 0–100%: the odds (scaled by
+Intensity) that a block folds its own content to repeat a short hashed strip instead of a
+plain positional read. The per-block hash runs inside the GPU kernel itself, not as a
+host-precomputed table (the block index is a per-pixel quantity — there are too many blocks
+at a small Block size to fit a table into the shared uniform binding), which is the case this
+section's `{0}` window text anticipates: WGSL has no 64-bit integer type, so it cannot host
+Shake's actual splitmix64 lattice; `splitmix32`, a matching-spirit 32-bit sibling, was added
+alongside it in `lumit-core` for exactly this, and both the CPU reference and the WGSL kernel
+run it, so the integer hash agrees bit-for-bit (measured oracle worst: 1 fp16 ULP, same as
+the other hash/tap-based kernels — no looser bound was needed despite Glitch's `cheap` cost
+class default suggesting one might be). "Time-derived tick" (per-frame block variation) steps
+at a fixed, unexposed 8 Hz, chosen so blocks visibly pop rather than blur into continuous
+noise; the spec text lists no rate parameter, so this is pinned as an internal constant, not
+a control. Interlace alternates which half of each scanline period darkens on odd periods —
+the classic interlaced-field look. Frame keys: Glitch declares `seeded: true` exactly like
+Shake, so the existing §2.4 mechanism already carries the layer's local time into its cache
+key with no Glitch-specific plumbing — pinned by a regression test alongside Shake's own.
+
 ### 3.13 Echo — frame echo and trails (speed lines)
 
 **Parameters:** Echo count (1–32), Spacing (frames, may be negative to echo forward),

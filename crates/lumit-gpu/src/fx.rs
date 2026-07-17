@@ -296,6 +296,61 @@ struct GlowParams {
     mix_amt: f32,
 }
 
+/// One resolved Glitch (docs/08 §3.12, schema status note): Block
+/// displacement and Scanlines, one kernel pass — Datamosh is deferred.
+/// `tick` and `roll_px` arrive already computed from local time
+/// (`lumit_core::fx::GLITCH_TICK_HZ` and roll speed × time × period), so
+/// the kernel never sees raw time or does its own time maths.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GlitchOp {
+    /// The master 0..1 dial; scales every section's strength.
+    pub intensity: f32,
+    pub seed: u32,
+    pub tick: i32,
+    pub block_enabled: bool,
+    /// Raster pixels (px@comp × the §2.3 preview factor).
+    pub block_size_px: f32,
+    /// 0..1, fraction of block_size_px.
+    pub jitter_frac: f32,
+    /// Peak per-block displacement, raster pixels.
+    pub amount_px: f32,
+    /// Peak per-block R/B split, raster pixels.
+    pub chan_px: f32,
+    /// 0..1: odds (before the Intensity scale) a block slice-repeats.
+    pub slice_frac: f32,
+    pub scanline_enabled: bool,
+    /// Raster pixels (px@comp × the §2.3 preview factor).
+    pub period_px: f32,
+    /// 0..1.
+    pub darkness: f32,
+    /// The scanline pattern's pixel offset at this frame, host-computed.
+    pub roll_px: f32,
+    pub interlace: bool,
+    /// 0..1, blended against the unprocessed input.
+    pub mix: f32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct GlitchParams {
+    intensity: f32,
+    seed: u32,
+    tick: i32,
+    block_enabled: u32,
+    block_size: f32,
+    jitter_frac: f32,
+    amount: f32,
+    chan: f32,
+    slice_frac: f32,
+    scanline_enabled: u32,
+    period: f32,
+    darkness: f32,
+    roll_px: f32,
+    interlace: u32,
+    mix_amt: f32,
+    _pad0: f32,
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct AdjustParams {
@@ -319,6 +374,7 @@ pub struct FxEngine {
     transform: wgpu::ComputePipeline,
     glow_bright: wgpu::ComputePipeline,
     glow_combine: wgpu::ComputePipeline,
+    glitch: wgpu::ComputePipeline,
     adjust: wgpu::ComputePipeline,
     layout: wgpu::BindGroupLayout,
     /// The adjustment blend's own layout: three sampled inputs (below,
@@ -430,6 +486,7 @@ impl FxEngine {
         let saturation_mod = module(include_str!("fx_saturation.wgsl"), "fx-saturation");
         let transform_mod = module(include_str!("fx_transform.wgsl"), "fx-transform");
         let glow_mod = module(include_str!("fx_glow.wgsl"), "fx-glow");
+        let glitch_mod = module(include_str!("fx_glitch.wgsl"), "fx-glitch");
         let adjust_mod = module(include_str!("fx_adjust.wgsl"), "fx-adjust");
         let blur = pipeline(&blur_mod, "fx-blur", "blur_pass");
         let dir_blur = pipeline(&dir_blur_mod, "fx-dir-blur", "dir_blur");
@@ -444,6 +501,7 @@ impl FxEngine {
         let transform = pipeline(&transform_mod, "fx-transform", "transform");
         let glow_bright = pipeline(&glow_mod, "fx-glow-bright", "glow_bright");
         let glow_combine = pipeline(&glow_mod, "fx-glow", "glow_combine");
+        let glitch = pipeline(&glitch_mod, "fx-glitch", "glitch");
         let adjust = ctx
             .device
             .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
@@ -468,6 +526,7 @@ impl FxEngine {
             transform,
             glow_bright,
             glow_combine,
+            glitch,
             adjust,
             layout,
             adjust_layout,
@@ -1000,6 +1059,49 @@ impl FxEngine {
             w,
             h,
             bytemuck::bytes_of(&params),
+        );
+        out
+    }
+
+    /// Apply one Glitch (docs/08 §3.12) to a linear working texture,
+    /// returning a new texture of the same size. One pointwise-with-taps
+    /// pass: block UV displacement, channel offset and scanline darkening
+    /// together — Datamosh is deferred (schema status note).
+    pub fn glitch(
+        &self,
+        ctx: &GpuContext,
+        src: &wgpu::Texture,
+        w: u32,
+        h: u32,
+        op: &GlitchOp,
+    ) -> wgpu::Texture {
+        let out = work_texture(ctx, w, h, "fx-glitch-out");
+        self.dispatch(
+            ctx,
+            &self.glitch,
+            src,
+            src,
+            &out,
+            w,
+            h,
+            bytemuck::bytes_of(&GlitchParams {
+                intensity: op.intensity,
+                seed: op.seed,
+                tick: op.tick,
+                block_enabled: u32::from(op.block_enabled),
+                block_size: op.block_size_px,
+                jitter_frac: op.jitter_frac,
+                amount: op.amount_px,
+                chan: op.chan_px,
+                slice_frac: op.slice_frac,
+                scanline_enabled: u32::from(op.scanline_enabled),
+                period: op.period_px,
+                darkness: op.darkness,
+                roll_px: op.roll_px,
+                interlace: u32::from(op.interlace),
+                mix_amt: op.mix,
+                _pad0: 0.0,
+            }),
         );
         out
     }
@@ -1845,6 +1947,193 @@ mod tests {
             let out2 = fx.glow(&ctx, &tex, w, h, &op);
             let gpu2 = readback_linear_f32(&ctx, &out2, w, h).unwrap();
             assert_eq!(gpu, gpu2, "GPU glow must be bit-stable");
+        }
+    }
+
+    /// The §1.6 oracle for Glitch (docs/08 §3.12, schema status note):
+    /// WGSL agrees with the CPU reference across intensity, seed, tick,
+    /// section toggles and the full parameter set, and is bit-stable
+    /// (§2.4). The per-block hash is exact integer maths on both sides
+    /// (`splitmix32`), so the bound stays as tight as the other hash/
+    /// tap-based kernels; intensity 0 and "both sections off" are asserted
+    /// bit-exact against the untouched corpus (either alone is enough to
+    /// short-circuit, matching the CPU reference's early return).
+    #[test]
+    fn wgsl_glitch_matches_the_cpu_oracle() {
+        let Ok(ctx) = GpuContext::headless() else {
+            eprintln!("no GPU adapter; skipping WGSL parity test");
+            return;
+        };
+        let fx = FxEngine::new(&ctx);
+        let (w, h) = (32u32, 24u32);
+        let img = corpus(w, h);
+
+        #[allow(clippy::struct_excessive_bools)]
+        struct Case {
+            name: &'static str,
+            intensity: f32,
+            seed: u32,
+            tick: i32,
+            block_enabled: bool,
+            block_size_px: f32,
+            jitter_frac: f32,
+            amount_px: f32,
+            chan_px: f32,
+            slice_frac: f32,
+            scanline_enabled: bool,
+            period_px: f32,
+            darkness: f32,
+            roll_px: f32,
+            interlace: bool,
+            mix: f32,
+        }
+        let cases = [
+            Case {
+                name: "neutral-intensity0",
+                intensity: 0.0,
+                seed: 7,
+                tick: 3,
+                block_enabled: true,
+                block_size_px: 6.0,
+                jitter_frac: 0.5,
+                amount_px: 5.0,
+                chan_px: 2.0,
+                slice_frac: 0.5,
+                scanline_enabled: true,
+                period_px: 3.0,
+                darkness: 0.6,
+                roll_px: 1.0,
+                interlace: true,
+                mix: 0.4,
+            },
+            Case {
+                name: "both-sections-off",
+                intensity: 1.0,
+                seed: 7,
+                tick: 3,
+                block_enabled: false,
+                block_size_px: 6.0,
+                jitter_frac: 0.5,
+                amount_px: 5.0,
+                chan_px: 2.0,
+                slice_frac: 0.5,
+                scanline_enabled: false,
+                period_px: 3.0,
+                darkness: 0.6,
+                roll_px: 1.0,
+                interlace: true,
+                mix: 0.4,
+            },
+            Case {
+                name: "block-only",
+                intensity: 0.7,
+                seed: 11,
+                tick: 4,
+                block_enabled: true,
+                block_size_px: 6.0,
+                jitter_frac: 0.3,
+                amount_px: 4.0,
+                chan_px: 1.5,
+                slice_frac: 0.4,
+                scanline_enabled: false,
+                period_px: 3.0,
+                darkness: 0.6,
+                roll_px: 0.0,
+                interlace: false,
+                mix: 1.0,
+            },
+            Case {
+                name: "scanline-only",
+                intensity: 0.8,
+                seed: 3,
+                tick: 1,
+                block_enabled: false,
+                block_size_px: 6.0,
+                jitter_frac: 0.0,
+                amount_px: 0.0,
+                chan_px: 0.0,
+                slice_frac: 0.0,
+                scanline_enabled: true,
+                period_px: 4.0,
+                darkness: 0.5,
+                roll_px: 2.5,
+                interlace: true,
+                mix: 1.0,
+            },
+            Case {
+                name: "both-sections-full",
+                intensity: 1.0,
+                seed: 99,
+                tick: 12,
+                block_enabled: true,
+                block_size_px: 5.0,
+                jitter_frac: 1.0,
+                amount_px: 8.0,
+                chan_px: 3.0,
+                slice_frac: 1.0,
+                scanline_enabled: true,
+                period_px: 2.5,
+                darkness: 0.8,
+                roll_px: -1.5,
+                interlace: true,
+                mix: 0.6,
+            },
+        ];
+
+        for case in cases {
+            let mut cpu = img.clone();
+            lumit_core::fx::cpu::glitch(
+                &mut cpu,
+                w,
+                h,
+                case.intensity,
+                case.seed,
+                case.tick,
+                case.block_enabled,
+                case.block_size_px,
+                case.jitter_frac,
+                case.amount_px,
+                case.chan_px,
+                case.slice_frac,
+                case.scanline_enabled,
+                case.period_px,
+                case.darkness,
+                case.roll_px,
+                case.interlace,
+                case.mix,
+            );
+
+            let tex = upload_linear_f32(&ctx, &img, w, h);
+            let op = GlitchOp {
+                intensity: case.intensity,
+                seed: case.seed,
+                tick: case.tick,
+                block_enabled: case.block_enabled,
+                block_size_px: case.block_size_px,
+                jitter_frac: case.jitter_frac,
+                amount_px: case.amount_px,
+                chan_px: case.chan_px,
+                slice_frac: case.slice_frac,
+                scanline_enabled: case.scanline_enabled,
+                period_px: case.period_px,
+                darkness: case.darkness,
+                roll_px: case.roll_px,
+                interlace: case.interlace,
+                mix: case.mix,
+            };
+            let out = fx.glitch(&ctx, &tex, w, h, &op);
+            let gpu = readback_linear_f32(&ctx, &out, w, h).unwrap();
+
+            let worst = worst_f16_ulp(&cpu, &gpu);
+            eprintln!("glitch {}: worst {worst} ulp", case.name);
+            assert!(worst <= 2, "{}: worst {worst} fp16 ULP", case.name);
+            if case.name == "neutral-intensity0" || case.name == "both-sections-off" {
+                assert_eq!(gpu, img, "{}: must be the bit-exact passthrough", case.name);
+            }
+
+            let out2 = fx.glitch(&ctx, &tex, w, h, &op);
+            let gpu2 = readback_linear_f32(&ctx, &out2, w, h).unwrap();
+            assert_eq!(gpu, gpu2, "GPU glitch must be bit-stable");
         }
     }
 
