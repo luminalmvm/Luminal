@@ -112,7 +112,34 @@ Two mechanisms make this safe, and you'll see them by name in the code:
 - `crates/lumit-core/src/model.rs` — **What a project is.** Structs for the document,
   comps, layers, footage items. Each has an `extra` field that preserves anything a future
   Lumit version adds — so old and new versions can share project files.
-- **Blur grows a Directional mode.** The Blur effect now has a Mode switch: *Gaussian*
+- **RGB split gains a Wavelength mode** (K-090's quality-tier pattern: where physical
+  accuracy is optional, it hides behind a Bool next to the fast look). Off — the
+  default, and exactly the effect as it was, byte for byte — the split is three
+  samples: red pulled one way, blue the other, green in place. On, the kernel instead
+  takes *nine* samples spread along the same line, one per slice of the visible
+  spectrum from 650 nm red to 450 nm blue-violet, and weights each by that
+  wavelength's actual colour in linear RGB before summing — how real lens dispersion
+  works, so the fringe is a graded rainbow rather than a hard red/blue rim. The
+  wavelength→colour table lives in `lumit-core` next to the CPU reference and is
+  handed to the GPU kernel through its parameter block, so both paths read literally
+  the same numbers (the same trick as the host-computed sines). The table's columns
+  are normalised so a flat image passes through unchanged, and alpha still refuses to
+  move — mattes never grow coloured rims in either mode.
+  transform group — Anchor, Position, Scale, Rotation, Opacity, same names and units —
+  packaged as a stack effect. Why would you want a second transform? *Adjustment
+  layers.* An adjustment layer's effects apply to the composite of everything below
+  it, so a Transform effect on one is the montage punch-in or whip-pan gesture over
+  the whole frame at once, without touching any individual layer's own transform.
+  Under the hood it works backwards: for each output pixel the kernel asks "which
+  input point would the forward transform have moved *here*?" (the inverse affine),
+  takes one bilinear sample there, and shows transparent for anything that maps
+  outside the frame. The matrix arrives pre-computed from the CPU (GPU trigonometry
+  is allowed to be sloppy; ours must match the reference bit-for-bit), and at default
+  parameters the effect is a *bit-exact* passthrough — a test pins that promise. A
+  zero scale collapses the image to fully transparent rather than dividing by zero —
+  engine code never faults. Its Anchor and Position are measured in comp pixels, so
+  the resolver now carries the preview-resolution factor as well as the diagonal:
+  half-resolution preview frames exactly like full, only softer (design rule §2.3).
   (the soft circular blur it has always been) or *Directional* — a streak along an
   angle, the speed-line look. Under the hood directional blur is a *line integral*:
   for each pixel, the kernel walks a short line through it (Length long, pointing
@@ -122,20 +149,25 @@ Two mechanisms make this safe, and you'll see them by name in the code:
   the original blur maths, and the test that pins them to the CPU reference, are
   byte-for-byte what they were. Old projects saved before the switch existed simply
   read as Gaussian. (The third §3.8 mode, Radial spin/zoom, is still to come.)
-- **Grade (first stage).** The colour-correction engine begins: lift / gamma / gain per
-  channel plus saturation — the trackball grammar every colourist tool shares. *Gain*
-  multiplies (brightens everything proportionally), *lift* adds (raises the blacks —
-  or crushes them, negative values are allowed), *gamma* bends the mid-tones without
-  moving black or white. Each is a colour parameter, so warming the shadows while
-  cooling the highlights is just different numbers per channel. Two rules from the
-  design doc shape the code: it grades *unpremultiplied* colour (same reason as
-  Sharpen — grading premultiplied pixels shifts matte edges), and it never clips
-  highlights — a gain of 2 on an HDR value of 4 gives 8, and whatever glow comes later
-  gets all of it. Saturation pivots around proper Rec. 709 luma, so desaturating gives
-  true greyscale, not the grey-green mush of naive averaging. Neutral settings
-  short-circuit: a Grade at defaults passes pixels through untouched rather than
-  rounding them through power curves. The rest of §3.10 — exposure, white balance,
-  curves, vignette, and the Looks-style preset browser — builds on this stage.
+- **Grade splits into Colour balance and Saturation** (K-090's one-thing rule: an
+  effect does one job, so the young all-in-one Grade became two Colour-category
+  effects; a deliberate all-in-one grading suite may return much later, but
+  single-purpose is the default shape). **Colour balance** is lift / gamma / gain per
+  channel — the trackball grammar every colourist tool shares. *Gain* multiplies
+  (brightens everything proportionally), *lift* adds (raises the blacks — or crushes
+  them, negative values are allowed), *gamma* bends the mid-tones without moving black
+  or white. Each is a colour parameter, so warming the shadows while cooling the
+  highlights is just different numbers per channel. **Saturation** does exactly one
+  thing: it pivots colourfulness around proper Rec. 709 luma, so desaturating gives
+  true greyscale, not the grey-green mush of naive averaging. The same two design
+  rules shape both: they grade *unpremultiplied* colour (same reason as Sharpen —
+  grading premultiplied pixels shifts matte edges), and they never clip highlights — a
+  gain of 2 on an HDR value of 4 gives 8, and whatever glow comes later gets all of
+  it. Neutral settings now short-circuit the *whole effect*: at defaults each passes
+  pixels through bit-for-bit untouched (and there's a test holding it to that) rather
+  than rounding them through power curves. The rest of §3.10 — exposure, white
+  balance, curves, vignette, and the Looks-style preset browser — arrives as further
+  single-purpose colour effects.
 - **Flash.** The beat-strobe, in its manual form until beat markers exist. Its Trigger
   parameter reads unusually on purpose: *each keyframe is a hit*. Drop a keyframe with
   value 1 on a kick drum and the frame flashes to the flash colour, then fades out

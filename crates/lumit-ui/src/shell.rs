@@ -5539,7 +5539,9 @@ fn build_comp_draws(
                 DrawSource::Nested { .. } => 1.0,
             };
             if layer.switches.fx {
-                lumit_core::fx::resolve_stack(&layer.effects, lt, comp_diag * scale)
+                // scale doubles as the §2.3 preview-resolution factor:
+                // raster pixels per comp pixel for px@comp parameters.
+                lumit_core::fx::resolve_stack(&layer.effects, lt, comp_diag * scale, scale)
             } else {
                 Vec::new()
             }
@@ -8008,6 +8010,28 @@ impl GpuViewer {
                                 },
                             );
                         }
+                        lumit_core::fx::Resolved::SpectralSplit {
+                            amount_px,
+                            angle_deg,
+                            radial,
+                            mix,
+                        } => {
+                            let (dx, dy) = lumit_core::fx::rgb_split_offset(*amount_px, *angle_deg);
+                            tex = self.fx.spectral_split(
+                                &self.ctx,
+                                &tex,
+                                w,
+                                h,
+                                &lumit_gpu::fx::SpectralSplitOp {
+                                    dx,
+                                    dy,
+                                    amount_px: *amount_px,
+                                    radial: *radial,
+                                    basis: lumit_core::fx::spectral_basis_vec4(),
+                                    mix: *mix,
+                                },
+                            );
+                        }
                         lumit_core::fx::Resolved::Flash {
                             strength,
                             colour,
@@ -8025,23 +8049,61 @@ impl GpuViewer {
                                 },
                             );
                         }
-                        lumit_core::fx::Resolved::Grade {
+                        lumit_core::fx::Resolved::ColourBalance {
                             lift,
                             gamma,
                             gain,
-                            saturation,
                             mix,
                         } => {
-                            tex = self.fx.grade(
+                            tex = self.fx.colour_balance(
                                 &self.ctx,
                                 &tex,
                                 w,
                                 h,
-                                &lumit_gpu::fx::GradeOp {
+                                &lumit_gpu::fx::ColourBalanceOp {
                                     lift: *lift,
                                     gamma: *gamma,
                                     gain: *gain,
+                                    mix: *mix,
+                                },
+                            );
+                        }
+                        lumit_core::fx::Resolved::Saturation { saturation, mix } => {
+                            tex = self.fx.saturation(
+                                &self.ctx,
+                                &tex,
+                                w,
+                                h,
+                                &lumit_gpu::fx::SaturationOp {
                                     saturation: *saturation,
+                                    mix: *mix,
+                                },
+                            );
+                        }
+                        lumit_core::fx::Resolved::Transform {
+                            anchor,
+                            position,
+                            scale,
+                            rotation_deg,
+                            opacity,
+                            mix,
+                        } => {
+                            let (m, off, opacity) = lumit_core::fx::transform_op(
+                                *anchor,
+                                *position,
+                                *scale,
+                                *rotation_deg,
+                                *opacity,
+                            );
+                            tex = self.fx.transform(
+                                &self.ctx,
+                                &tex,
+                                w,
+                                h,
+                                &lumit_gpu::fx::TransformOp {
+                                    m,
+                                    off,
+                                    opacity,
                                     mix: *mix,
                                 },
                             );

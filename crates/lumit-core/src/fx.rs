@@ -285,8 +285,11 @@ pub const BUILTINS: &[EffectSchema] = &[
     },
     // Chromatic aberration (docs/08 §3.6): R and B sample offset positions,
     // G stays put, alpha follows the green channel so mattes never fringe.
-    // Operates premultiplied. The §3.6 Centre/Falloff/channel-blur extras
-    // land later; radial mode grows the offset from the frame centre.
+    // Operates premultiplied. The Wavelength Bool (K-090 quality tier)
+    // swaps the three-channel split for a nine-sample spectral dispersion
+    // sharing the same parameters. The §3.6 Centre/Falloff/channel-blur
+    // extras land later; radial mode grows the offset from the frame
+    // centre.
     EffectSchema {
         match_name: "rgb_split",
         label: "RGB split",
@@ -327,6 +330,17 @@ pub const BUILTINS: &[EffectSchema] = &[
                 label: "Radial",
                 // Off: one shared shift. On: offsets grow from the centre,
                 // like lens fringing.
+                kind: ParamKind::Bool { default: false },
+            },
+            ParamSchema {
+                id: "wavelength",
+                label: "Wavelength",
+                // K-090 quality tier: off = the classic three-channel
+                // split (byte-identical to before this Bool existed); on =
+                // wavelength-based dispersion — nine spectral samples along
+                // the same offset, weighted by SPECTRAL_BASIS and
+                // recombined in linear, for the higher-quality rainbow
+                // fringe. All other parameters are shared between modes.
                 kind: ParamKind::Bool { default: false },
             },
             MIX_PARAM,
@@ -393,15 +407,14 @@ pub const BUILTINS: &[EffectSchema] = &[
             MIX_PARAM,
         ],
     },
-    // Grade (docs/08 §3.10), minimal v1: the lift/gamma/gain stage plus
-    // saturation, per channel, in linear, on unpremultiplied colour (§2.2).
-    // Exposure/white balance, vibrance, curves, the vignette and the preset
-    // browser follow as the remaining §3.10 stages. Defaults are neutral —
+    // Colour balance (docs/08 §3.10 as amended by K-090: the v1 Grade split
+    // into single-purpose colour effects): lift / gamma / gain per channel,
+    // in linear, on unpremultiplied colour (§2.2). Defaults are neutral —
     // a grade's "tasteful default" is a preset choice, which is what the
-    // §3.10 browser is for.
+    // §3.10 preset browser is for.
     EffectSchema {
-        match_name: "grade",
-        label: "Grade",
+        match_name: "colour_balance",
+        label: "Colour balance",
         version: 1,
         category: FxCategory::Colour,
         traits: EffectTraits {
@@ -440,6 +453,27 @@ pub const BUILTINS: &[EffectSchema] = &[
                     range: (0.0, 4.0),
                 },
             },
+            MIX_PARAM,
+        ],
+    },
+    // Saturation (docs/08 §3.10 as amended by K-090): one job — scale
+    // colourfulness about Rec. 709 luma, in linear, on unpremultiplied
+    // colour (§2.2). Neutral default: like the balance above, its tasteful
+    // setting is a preset choice.
+    EffectSchema {
+        match_name: "saturation",
+        label: "Saturation",
+        version: 1,
+        category: FxCategory::Colour,
+        traits: EffectTraits {
+            cost: CostClass::Cheap,
+            roi: Roi::Exact,
+            temporal: &[0],
+            premultiplied: false, // §2.2: grading premult shifts matte edges
+            seeded: false,
+            beat_input: false,
+        },
+        params: &[
             ParamSchema {
                 id: "saturation",
                 label: "Saturation",
@@ -448,6 +482,110 @@ pub const BUILTINS: &[EffectSchema] = &[
                     default: 100.0,
                     slider: (0.0, 200.0),
                     hard: (Some(0.0), Some(200.0)),
+                },
+            },
+            MIX_PARAM,
+        ],
+    },
+    // Transform (docs/08 §3.5, K-090): the layer transform group as a stack
+    // entry — same parameter names, units and animatability. Its point is
+    // adjustment layers: applied there, it transforms the composite of
+    // everything below, which is the montage punch-in/whip gesture without
+    // touching per-layer transforms. Identity parameters pass the input
+    // through bit-exactly (pinned by test). The §3.5 Skew pair is post-v1.
+    EffectSchema {
+        match_name: "transform",
+        label: "Transform",
+        version: 1,
+        category: FxCategory::Utility,
+        traits: EffectTraits {
+            cost: CostClass::Trivial,
+            // §3.5: exact under pure translation, full-frame otherwise —
+            // the static declaration carries the general case.
+            roi: Roi::FullFrame,
+            temporal: &[0],
+            premultiplied: true,
+            seeded: false,
+            beat_input: false,
+        },
+        params: &[
+            ParamSchema {
+                id: "anchor_x",
+                label: "Anchor x",
+                // Pixels at full comp resolution (px@comp, §2.3), exactly
+                // like the layer transform's Anchor; unbounded (K-090).
+                kind: ParamKind::Float {
+                    default: 0.0,
+                    slider: (-1000.0, 1000.0),
+                    hard: (None, None),
+                },
+            },
+            ParamSchema {
+                id: "anchor_y",
+                label: "Anchor y",
+                kind: ParamKind::Float {
+                    default: 0.0,
+                    slider: (-1000.0, 1000.0),
+                    hard: (None, None),
+                },
+            },
+            ParamSchema {
+                id: "position_x",
+                label: "Position x",
+                // px@comp; the anchor point lands here. Defaults equal the
+                // anchor's, so a fresh instance is the identity.
+                kind: ParamKind::Float {
+                    default: 0.0,
+                    slider: (-1000.0, 1000.0),
+                    hard: (None, None),
+                },
+            },
+            ParamSchema {
+                id: "position_y",
+                label: "Position y",
+                kind: ParamKind::Float {
+                    default: 0.0,
+                    slider: (-1000.0, 1000.0),
+                    hard: (None, None),
+                },
+            },
+            ParamSchema {
+                id: "scale_x",
+                label: "Scale x %",
+                // Per cent, 100 = natural size; negative flips (like the
+                // layer transform), so both hard sides stay open.
+                kind: ParamKind::Float {
+                    default: 100.0,
+                    slider: (0.0, 400.0),
+                    hard: (None, None),
+                },
+            },
+            ParamSchema {
+                id: "scale_y",
+                label: "Scale y %",
+                kind: ParamKind::Float {
+                    default: 100.0,
+                    slider: (0.0, 400.0),
+                    hard: (None, None),
+                },
+            },
+            ParamSchema {
+                id: "rotation",
+                label: "Rotation °",
+                // Degrees, unbounded — whip transitions spin whole turns.
+                kind: ParamKind::Float {
+                    default: 0.0,
+                    slider: (-180.0, 180.0),
+                    hard: (None, None),
+                },
+            },
+            ParamSchema {
+                id: "opacity",
+                label: "Opacity %",
+                kind: ParamKind::Float {
+                    default: 100.0,
+                    slider: (0.0, 100.0),
+                    hard: (Some(0.0), Some(100.0)),
                 },
             },
             MIX_PARAM,
@@ -539,6 +677,19 @@ pub enum Resolved {
         /// 0..1.
         mix: f32,
     },
+    /// The RGB split's Wavelength mode (docs/08 §3.6, K-090): its own
+    /// variant, exactly as Blur's Directional mode is — so the classic
+    /// mode's path stays byte-identical.
+    SpectralSplit {
+        /// Peak spectral offset in raster pixels.
+        amount_px: f32,
+        /// Linear-mode shift direction, degrees (0° = +x, y-down raster).
+        angle_deg: f32,
+        /// True: offsets grow from the frame centre instead.
+        radial: bool,
+        /// 0..1.
+        mix: f32,
+    },
     Flash {
         /// The evaluated envelope × intensity, 0..1 (0 = no flash).
         strength: f32,
@@ -548,18 +699,88 @@ pub enum Resolved {
         /// 0..1.
         mix: f32,
     },
-    Grade {
+    ColourBalance {
         /// Added per channel after gain (raises or crushes the blacks).
         lift: [f32; 3],
         /// Per-channel mid-tone exponent's base; 1 is neutral, > 0.
         gamma: [f32; 3],
         /// Per-channel linear multiplier; 1 is neutral.
         gain: [f32; 3],
+        /// 0..1.
+        mix: f32,
+    },
+    Saturation {
         /// Factor about Rec. 709 luma: 0 = greyscale, 1 = neutral, 2 = max.
         saturation: f32,
         /// 0..1.
         mix: f32,
     },
+    Transform {
+        /// Anchor point, raster pixels (converted from px@comp, §2.3).
+        anchor: [f32; 2],
+        /// Where the anchor lands, raster pixels.
+        position: [f32; 2],
+        /// Per-axis factor; 1 is natural size, negative flips.
+        scale: [f32; 2],
+        /// Degrees about the anchor (0° = none; y-down raster, so positive
+        /// turns clockwise on screen, matching the layer transform).
+        rotation_deg: f32,
+        /// 0..1, multiplied into the premultiplied output.
+        opacity: f32,
+        /// 0..1.
+        mix: f32,
+    },
+}
+
+/// The inverse affine of a Transform effect (docs/08 §3.5): the forward map
+/// is `p_out = position + R(rotation) · S(scale) · (p_in − anchor)` — the
+/// layer transform's own shape — so each output pixel centre `p` samples the
+/// input at `q = m·p + o` with `m = S⁻¹·R⁻¹` (row-major 2×2) and
+/// `o = anchor − m·position`. Host-computed so the WGSL kernel never runs
+/// its own trigonometry (its `cos`/`sin` are not correctly rounded) and the
+/// CPU reference consumes bit-identical numbers. `None` when a scale axis is
+/// degenerate (|s| < 1e-6): the image has collapsed to nothing and renders
+/// fully transparent — never a division blow-up (docs/14 no-panic rule).
+pub fn transform_inverse(
+    anchor: [f32; 2],
+    position: [f32; 2],
+    scale: [f32; 2],
+    rotation_deg: f32,
+) -> Option<([f32; 4], [f32; 2])> {
+    if scale[0].abs() < 1e-6 || scale[1].abs() < 1e-6 {
+        return None;
+    }
+    let rad = (rotation_deg as f64).to_radians();
+    let (sin, cos) = (rad.sin() as f32, rad.cos() as f32);
+    let m = [
+        cos / scale[0],
+        sin / scale[0],
+        -sin / scale[1],
+        cos / scale[1],
+    ];
+    let o = [
+        anchor[0] - (m[0] * position[0] + m[1] * position[1]),
+        anchor[1] - (m[2] * position[0] + m[3] * position[1]),
+    ];
+    Some((m, o))
+}
+
+/// [`transform_inverse`] folded with the degenerate case, as the GPU op
+/// ingredients `(m, offset, effective opacity)`: a zero-scale transform
+/// maps to an identity matrix with opacity 0 — fully transparent. The CPU
+/// reference and both render paths all build from this one function, so
+/// every path consumes bit-identical numbers.
+pub fn transform_op(
+    anchor: [f32; 2],
+    position: [f32; 2],
+    scale: [f32; 2],
+    rotation_deg: f32,
+    opacity: f32,
+) -> ([f32; 4], [f32; 2], f32) {
+    match transform_inverse(anchor, position, scale, rotation_deg) {
+        Some((m, o)) => (m, o, opacity),
+        None => ([1.0, 0.0, 0.0, 1.0], [0.0, 0.0], 0.0),
+    }
 }
 
 /// The Flash trigger envelope (docs/08 §3.7, manual form). A static Trigger
@@ -603,10 +824,52 @@ pub fn rgb_split_offset(amount_px: f32, angle_deg: f32) -> (f32, f32) {
     (amount_px * rad.cos(), amount_px * rad.sin())
 }
 
+/// The wavelength → linear-sRGB basis behind the RGB split's Wavelength
+/// mode (docs/08 §3.6, K-090): nine taps across the visible spectrum. Tap
+/// `i` sits at spectral fraction `t = i/4 − 1`, sampling `position +
+/// t·offset` — so the red end (t = −1, 650 nm) lands where the classic
+/// mode's R samples and the blue end (t = +1, 450 nm) where its B does,
+/// and the two modes disperse in the same direction. Derived offline: CIE
+/// 1931 x̄ȳz̄ via the Wyman et al. (2013) multi-lobe Gaussian fits at
+/// 650–450 nm in 25 nm steps, through the sRGB D65 matrix, negatives
+/// clipped, then each channel's column normalised to sum 1 (within one
+/// f32 ULP) so a uniform image passes through unchanged. The CPU reference
+/// reads this table directly and the WGSL kernel receives it in its
+/// uniform, so both paths consume bit-identical numbers.
+pub const SPECTRAL_BASIS: [[f32; 3]; 9] = [
+    [0.112_422_91, 0.0, 0.0],           // 650 nm
+    [0.294_590_23, 0.0, 0.0],           // 625 nm
+    [0.365_333_56, 0.036_021_75, 0.0],  // 600 nm
+    [0.201_592_3, 0.192_775_3, 0.0],    // 575 nm
+    [0.0, 0.311_754_2, 0.0],            // 550 nm
+    [0.0, 0.300_619_63, 0.0],           // 525 nm
+    [0.0, 0.134_424_22, 0.068_714_05],  // 500 nm
+    [0.0, 0.024_404_911, 0.339_951_04], // 475 nm
+    [0.026_061_023, 0.0, 0.591_334_94], // 450 nm — the violet re-red bump
+];
+
+/// [`SPECTRAL_BASIS`] as vec4 rows (w zero) for the GPU uniform — the
+/// kernel reads the very same numbers the CPU reference does.
+pub fn spectral_basis_vec4() -> [[f32; 4]; 9] {
+    let mut out = [[0.0; 4]; 9];
+    for (dst, src) in out.iter_mut().zip(SPECTRAL_BASIS.iter()) {
+        dst[..3].copy_from_slice(src);
+    }
+    out
+}
+
 /// Resolve a layer's live stack at layer time `lt` for a raster whose
-/// diagonal is `diag_px` pixels. Placeholders, unknown names and bypassed
-/// effects resolve to nothing (they render as identity, docs/03 §8).
-pub fn resolve_stack(effects: &[EffectInstance], lt: f64, diag_px: f32) -> Vec<Resolved> {
+/// diagonal is `diag_px` pixels; `px_scale` is raster pixels per comp pixel
+/// (the §2.3 preview-resolution factor — 1.0 at full resolution), which
+/// converts px@comp parameters exactly as `diag_px` converts % diag ones.
+/// Placeholders, unknown names and bypassed effects resolve to nothing
+/// (they render as identity, docs/03 §8).
+pub fn resolve_stack(
+    effects: &[EffectInstance],
+    lt: f64,
+    diag_px: f32,
+    px_scale: f32,
+) -> Vec<Resolved> {
     effects
         .iter()
         .filter(|e| e.enabled && e.effect.namespace == EffectNamespace::Builtin)
@@ -666,12 +929,28 @@ pub fn resolve_stack(effects: &[EffectInstance], lt: f64, diag_px: f32) -> Vec<R
                     Some(EffectValue::Bool(b)) => *b,
                     _ => false,
                 };
+                // Instances saved before the Wavelength mode existed carry
+                // no such parameter and resolve as the classic split.
+                let wavelength = match e.param("wavelength") {
+                    Some(EffectValue::Bool(b)) => *b,
+                    _ => false,
+                };
                 let mix = (e.float_at("mix", lt).unwrap_or(100.0) as f32 / 100.0).clamp(0.0, 1.0);
-                Some(Resolved::RgbSplit {
-                    amount_px: (amount_pct / 100.0 * diag_px).max(0.0),
-                    angle_deg,
-                    radial,
-                    mix,
+                let amount_px = (amount_pct / 100.0 * diag_px).max(0.0);
+                Some(if wavelength {
+                    Resolved::SpectralSplit {
+                        amount_px,
+                        angle_deg,
+                        radial,
+                        mix,
+                    }
+                } else {
+                    Resolved::RgbSplit {
+                        amount_px,
+                        angle_deg,
+                        radial,
+                        mix,
+                    }
                 })
             }
             "flash" => {
@@ -689,19 +968,39 @@ pub fn resolve_stack(effects: &[EffectInstance], lt: f64, diag_px: f32) -> Vec<R
                     mix,
                 })
             }
-            "grade" => {
+            "colour_balance" => {
                 let rgb = |id: &str, neutral: f64| -> [f32; 3] {
                     let c = e.colour_at(id, lt).unwrap_or([neutral; 4]);
                     [c[0] as f32, c[1] as f32, c[2] as f32]
                 };
-                let saturation =
-                    (e.float_at("saturation", lt).unwrap_or(100.0) as f32 / 100.0).clamp(0.0, 2.0);
                 let mix = (e.float_at("mix", lt).unwrap_or(100.0) as f32 / 100.0).clamp(0.0, 1.0);
-                Some(Resolved::Grade {
+                Some(Resolved::ColourBalance {
                     lift: rgb("lift", 0.0),
                     gamma: rgb("gamma", 1.0).map(|g| g.max(0.01)),
                     gain: rgb("gain", 1.0),
-                    saturation,
+                    mix,
+                })
+            }
+            "saturation" => {
+                let saturation =
+                    (e.float_at("saturation", lt).unwrap_or(100.0) as f32 / 100.0).clamp(0.0, 2.0);
+                let mix = (e.float_at("mix", lt).unwrap_or(100.0) as f32 / 100.0).clamp(0.0, 1.0);
+                Some(Resolved::Saturation { saturation, mix })
+            }
+            "transform" => {
+                // px@comp parameters scale by the preview factor (§2.3) so
+                // Half preview frames exactly like Full, only softer.
+                let px = |id: &str| e.float_at(id, lt).unwrap_or(0.0) as f32 * px_scale;
+                let pct = |id: &str| e.float_at(id, lt).unwrap_or(100.0) as f32 / 100.0;
+                let opacity =
+                    (e.float_at("opacity", lt).unwrap_or(100.0) as f32 / 100.0).clamp(0.0, 1.0);
+                let mix = (e.float_at("mix", lt).unwrap_or(100.0) as f32 / 100.0).clamp(0.0, 1.0);
+                Some(Resolved::Transform {
+                    anchor: [px("anchor_x"), px("anchor_y")],
+                    position: [px("position_x"), px("position_y")],
+                    scale: [pct("scale_x"), pct("scale_y")],
+                    rotation_deg: e.float_at("rotation", lt).unwrap_or(0.0) as f32,
+                    opacity,
                     mix,
                 })
             }
@@ -745,36 +1044,103 @@ pub mod cpu {
                 radial,
                 mix,
             } => rgb_split(rgba, w, h, *amount_px, *angle_deg, *radial, *mix),
+            Resolved::SpectralSplit {
+                amount_px,
+                angle_deg,
+                radial,
+                mix,
+            } => spectral_split(rgba, w, h, *amount_px, *angle_deg, *radial, *mix),
             Resolved::Flash {
                 strength,
                 colour,
                 mix,
             } => flash(rgba, *strength, *colour, *mix),
-            Resolved::Grade {
+            Resolved::ColourBalance {
                 lift,
                 gamma,
                 gain,
-                saturation,
                 mix,
-            } => grade(rgba, *lift, *gamma, *gain, *saturation, *mix),
+            } => colour_balance(rgba, *lift, *gamma, *gain, *mix),
+            Resolved::Saturation { saturation, mix } => saturate(rgba, *saturation, *mix),
+            Resolved::Transform {
+                anchor,
+                position,
+                scale,
+                rotation_deg,
+                opacity,
+                mix,
+            } => transform(
+                rgba,
+                w,
+                h,
+                *anchor,
+                *position,
+                *scale,
+                *rotation_deg,
+                *opacity,
+                *mix,
+            ),
         }
     }
 
-    /// Grade (docs/08 §3.10, minimal v1): per-channel gain → lift → gamma,
-    /// then saturation about Rec. 709 luma, in linear light on
-    /// unpremultiplied colour (§2.2), re-premultiplied on the way out.
-    /// Neutral gamma and saturation short-circuit so a neutral grade is the
-    /// identity rather than a round trip through `powf`. Negative light
-    /// clamps at zero (that is what a crushing lift means); highlights are
-    /// never clipped (§2.1).
-    pub fn grade(
+    /// Transform (docs/08 §3.5, K-090): resample the input through the
+    /// inverse of `position + R·S·(p − anchor)` — one bilinear tap per
+    /// output pixel, transparent outside the frame, premultiplied
+    /// throughout, with opacity multiplied into all four channels.
+    /// Identity parameters reproduce the input bit-exactly: the inverse
+    /// affine is exactly `q = p`, a bilinear tap at a pixel centre is
+    /// exactly that pixel, and opacity/mix 1 multiply by exact 1.0 — the
+    /// WGSL twin follows the identical arithmetic. A degenerate scale
+    /// (|s| < 1e-6) renders fully transparent, never a division blow-up.
+    #[allow(clippy::too_many_arguments)]
+    pub fn transform(
+        rgba: &mut [f32],
+        w: u32,
+        h: u32,
+        anchor: [f32; 2],
+        position: [f32; 2],
+        scale: [f32; 2],
+        rotation_deg: f32,
+        opacity: f32,
+        mix: f32,
+    ) {
+        let original = rgba.to_vec();
+        // A collapsed (zero-scale) image is invisible: opacity 0, and the
+        // sample point no longer matters (super::transform_op's rule).
+        let (m, o, opacity) = super::transform_op(anchor, position, scale, rotation_deg, opacity);
+        for y in 0..h {
+            for x in 0..w {
+                let i = ((y * w + x) * 4) as usize;
+                let px = x as f32 + 0.5;
+                let py = y as f32 + 0.5;
+                let qx = m[0] * px + m[1] * py + o[0];
+                let qy = m[2] * px + m[3] * py + o[1];
+                let s = bilinear_edge(&original, w, h, qx, qy, 0);
+                for c in 0..4 {
+                    let v = s[c] * opacity;
+                    rgba[i + c] = original[i + c] * (1.0 - mix) + v * mix;
+                }
+            }
+        }
+    }
+
+    /// Colour balance (docs/08 §3.10 as amended by K-090): per-channel
+    /// gain → lift → gamma in linear light on unpremultiplied colour (§2.2),
+    /// re-premultiplied on the way out. Fully neutral parameters
+    /// short-circuit the whole effect, so a Colour balance at defaults is
+    /// the bit-exact identity rather than a round trip through `powf` and
+    /// the unpremultiply divide. Negative light clamps at zero (that is
+    /// what a crushing lift means); highlights are never clipped (§2.1).
+    pub fn colour_balance(
         rgba: &mut [f32],
         lift: [f32; 3],
         gamma: [f32; 3],
         gain: [f32; 3],
-        saturation: f32,
         mix: f32,
     ) {
+        if lift == [0.0; 3] && gamma == [1.0; 3] && gain == [1.0; 3] {
+            return; // neutral: bit-exact identity (the WGSL twin matches)
+        }
         for px in rgba.chunks_exact_mut(4) {
             let a = px[3];
             let u = unpremult(px);
@@ -786,15 +1152,30 @@ pub mod cpu {
                 }
                 v[c] = x;
             }
-            if saturation != 1.0 {
-                let luma = v[0] * LUMA[0] + v[1] * LUMA[1] + v[2] * LUMA[2];
-                for x in &mut v {
-                    *x = (luma + (*x - luma) * saturation).max(0.0);
-                }
-            }
             for c in 0..3 {
                 let graded = v[c] * a;
                 px[c] = px[c] * (1.0 - mix) + graded * mix;
+            }
+        }
+    }
+
+    /// Saturation (docs/08 §3.10 as amended by K-090): scale colourfulness
+    /// about Rec. 709 luma, in linear light on unpremultiplied colour
+    /// (§2.2), re-premultiplied on the way out. Saturation 1 short-circuits
+    /// the whole effect (bit-exact identity); 0 collapses to true greyscale.
+    /// Named `saturate` so the parameter can keep the plain name.
+    pub fn saturate(rgba: &mut [f32], saturation: f32, mix: f32) {
+        if saturation == 1.0 {
+            return; // neutral: bit-exact identity (the WGSL twin matches)
+        }
+        for px in rgba.chunks_exact_mut(4) {
+            let a = px[3];
+            let u = unpremult(px);
+            let luma = u[0] * LUMA[0] + u[1] * LUMA[1] + u[2] * LUMA[2];
+            for c in 0..3 {
+                let v = (luma + (u[c] - luma) * saturation).max(0.0);
+                let s = v * a;
+                px[c] = px[c] * (1.0 - mix) + s * mix;
             }
         }
     }
@@ -903,6 +1284,54 @@ pub mod cpu {
                 let r = bilinear(&original, w, h, pos.0 - ox, pos.1 - oy)[0];
                 let b = bilinear(&original, w, h, pos.0 + ox, pos.1 + oy)[2];
                 let split = [r, original[i + 1], b, original[i + 3]];
+                for c in 0..4 {
+                    rgba[i + c] = original[i + c] * (1.0 - mix) + split[c] * mix;
+                }
+            }
+        }
+    }
+
+    /// The RGB split's Wavelength mode (docs/08 §3.6, K-090): instead of
+    /// three channels at three offsets, nine spectral samples spread across
+    /// `±offset` (tap i at fraction i/4 − 1), each weighted by its
+    /// wavelength's linear-RGB basis colour ([`super::SPECTRAL_BASIS`]) and
+    /// summed — real dispersion's rainbow fringe rather than the classic
+    /// hard R/G/B rim. The basis columns are normalised, so a uniform image
+    /// passes through unchanged. Offsets (linear or radial) and edge
+    /// handling match the classic mode exactly; alpha still follows the
+    /// green channel's rule and stays put, so mattes never fringe.
+    pub fn spectral_split(
+        rgba: &mut [f32],
+        w: u32,
+        h: u32,
+        amount_px: f32,
+        angle_deg: f32,
+        radial: bool,
+        mix: f32,
+    ) {
+        let original = rgba.to_vec();
+        let (dx, dy) = super::rgb_split_offset(amount_px, angle_deg);
+        let (fw, fh) = (w as f32, h as f32);
+        let diag = (fw * fw + fh * fh).sqrt();
+        let k = amount_px / (0.5 * diag);
+        for y in 0..h {
+            for x in 0..w {
+                let i = ((y * w + x) * 4) as usize;
+                let pos = (x as f32 + 0.5, y as f32 + 0.5);
+                let (ox, oy) = if radial {
+                    ((pos.0 - fw * 0.5) * k, (pos.1 - fh * 0.5) * k)
+                } else {
+                    (dx, dy)
+                };
+                let mut acc = [0.0f32; 3];
+                for (tap, weight) in super::SPECTRAL_BASIS.iter().enumerate() {
+                    let t = tap as f32 * 0.25 - 1.0;
+                    let s = bilinear(&original, w, h, pos.0 + t * ox, pos.1 + t * oy);
+                    for c in 0..3 {
+                        acc[c] += weight[c] * s[c];
+                    }
+                }
+                let split = [acc[0], acc[1], acc[2], original[i + 3]];
                 for c in 0..4 {
                     rgba[i + c] = original[i + c] * (1.0 - mix) + split[c] * mix;
                 }
@@ -1142,7 +1571,7 @@ mod tests {
     fn resolve_stack_evaluates_converts_and_skips_dead_effects() {
         let mut e = instantiate("blur").unwrap();
         // 1.5% of a 1000px diagonal = 15px.
-        let r = resolve_stack(&[e.clone()], 0.0, 1000.0);
+        let r = resolve_stack(&[e.clone()], 0.0, 1000.0, 1.0);
         assert_eq!(
             r,
             vec![Resolved::Blur {
@@ -1152,11 +1581,11 @@ mod tests {
             }]
         );
         e.enabled = false;
-        assert!(resolve_stack(&[e.clone()], 0.0, 1000.0).is_empty());
+        assert!(resolve_stack(&[e.clone()], 0.0, 1000.0, 1.0).is_empty());
         e.enabled = true;
         e.effect.namespace = EffectNamespace::Placeholder;
         assert!(
-            resolve_stack(&[e], 0.0, 1000.0).is_empty(),
+            resolve_stack(&[e], 0.0, 1000.0, 1.0).is_empty(),
             "placeholders render as identity"
         );
     }
@@ -1208,7 +1637,7 @@ mod tests {
             Some(EffectValue::Bool(true))
         ));
         // 0.4% of a 1000px diagonal = 4px; amount 60% = 0.6.
-        let r = resolve_stack(&[e], 0.0, 1000.0);
+        let r = resolve_stack(&[e], 0.0, 1000.0, 1.0);
         assert_eq!(
             r,
             vec![Resolved::Sharpen {
@@ -1317,7 +1746,7 @@ mod tests {
         assert_eq!(e.float_at("angle", 0.0), Some(0.0));
         assert!(matches!(e.param("radial"), Some(EffectValue::Bool(false))));
         // 0.4% of a 1000px diagonal = 4px.
-        let r = resolve_stack(&[e], 0.0, 1000.0);
+        let r = resolve_stack(&[e], 0.0, 1000.0, 1.0);
         assert_eq!(
             r,
             vec![Resolved::RgbSplit {
@@ -1369,6 +1798,103 @@ mod tests {
         cpu::rgb_split(&mut c, w, h, 20.0, 0.0, true, 1.0);
         assert_eq!(c[mid], 1.0, "frame-centre red is unmoved");
         assert_eq!(c[mid + 2], 1.0, "frame-centre blue is unmoved");
+    }
+
+    #[test]
+    fn rgb_split_wavelength_bool_selects_the_variant() {
+        // A fresh instance defaults to the classic split — and resolves to
+        // the exact same Resolved value it did before the Bool existed.
+        let mut e = instantiate("rgb_split").unwrap();
+        assert!(matches!(
+            e.param("wavelength"),
+            Some(EffectValue::Bool(false))
+        ));
+        let classic = Resolved::RgbSplit {
+            amount_px: 4.0,
+            angle_deg: 0.0,
+            radial: false,
+            mix: 1.0,
+        };
+        let r = resolve_stack(std::slice::from_ref(&e), 0.0, 1000.0, 1.0);
+        assert_eq!(r, vec![classic]);
+
+        // Wavelength on: the same numbers arrive as SpectralSplit.
+        for p in &mut e.params {
+            if p.id == "wavelength" {
+                p.value = EffectValue::Bool(true);
+            }
+        }
+        let r = resolve_stack(std::slice::from_ref(&e), 0.0, 1000.0, 1.0);
+        assert_eq!(
+            r,
+            vec![Resolved::SpectralSplit {
+                amount_px: 4.0,
+                angle_deg: 0.0,
+                radial: false,
+                mix: 1.0
+            }]
+        );
+
+        // A legacy instance (saved before the Bool existed) has no
+        // wavelength parameter and still resolves as the classic split.
+        e.params.retain(|p| p.id != "wavelength");
+        let r = resolve_stack(std::slice::from_ref(&e), 0.0, 1000.0, 1.0);
+        assert_eq!(r, vec![classic]);
+    }
+
+    #[test]
+    fn spectral_basis_columns_sum_to_one() {
+        // The normalisation that makes a uniform image pass through
+        // unchanged: each channel's nine weights sum to 1 (within f32
+        // rounding of the summation itself).
+        for c in 0..3 {
+            let sum: f32 = SPECTRAL_BASIS.iter().map(|w| w[c]).sum();
+            assert!((sum - 1.0).abs() < 1e-6, "channel {c} sums to {sum}");
+        }
+    }
+
+    #[test]
+    fn cpu_spectral_split_disperses_and_preserves_uniform() {
+        let (w, h) = (17u32, 9u32);
+        let at = |x: u32, y: u32| ((y * w + x) * 4) as usize;
+
+        // A uniform image is unchanged (the basis is normalised, and clamp
+        // addressing keeps edges uniform too).
+        let mut uniform = vec![0.0f32; (w * h * 4) as usize];
+        for px in uniform.chunks_exact_mut(4) {
+            px.copy_from_slice(&[0.5, 0.25, 0.125, 1.0]);
+        }
+        let before = uniform.clone();
+        cpu::spectral_split(&mut uniform, w, h, 3.0, 25.0, false, 1.0);
+        for (i, (a, b)) in uniform.iter().zip(&before).enumerate() {
+            assert!((a - b).abs() < 1e-6, "texel {i}: {a} vs {b}");
+        }
+
+        // A white impulse on an opaque black frame disperses: red mass
+        // lands ahead of the impulse (the classic mode's R direction), blue
+        // behind, green astride it — and alpha never moves.
+        let mut img = vec![0.0f32; (w * h * 4) as usize];
+        for px in img.chunks_exact_mut(4) {
+            px[3] = 1.0;
+        }
+        let mid = at(8, 4);
+        img[mid..mid + 3].copy_from_slice(&[1.0, 1.0, 1.0]);
+
+        // Mix 0 is the exact identity.
+        let mut m0 = img.clone();
+        cpu::spectral_split(&mut m0, w, h, 3.0, 45.0, false, 0.0);
+        assert_eq!(m0, img);
+
+        let mut s = img.clone();
+        cpu::spectral_split(&mut s, w, h, 2.0, 0.0, false, 1.0);
+        assert!(s[at(10, 4)] > 0.1, "red end lands +2x of the impulse");
+        assert!(s[at(6, 4) + 2] > 0.3, "blue end lands -2x of the impulse");
+        assert!(s[mid + 1] > 0.3, "green stays astride the impulse");
+        assert!(s[at(10, 4) + 2] < 1e-6, "no blue leaks toward the red end");
+        assert!(
+            s.iter().skip(3).step_by(4).all(|a| *a == 1.0),
+            "alpha stays put: mattes never fringe"
+        );
     }
 
     #[test]
@@ -1425,7 +1951,7 @@ mod tests {
         assert_eq!(e.colour_at("colour", 0.0), Some([1.0, 1.0, 1.0, 1.0]));
         // Trigger 0: resolves to a zero-strength (identity) flash — the
         // §1.2 trigger-driven exemption.
-        let r = resolve_stack(std::slice::from_ref(&e), 0.0, 1000.0);
+        let r = resolve_stack(std::slice::from_ref(&e), 0.0, 1000.0, 1.0);
         assert_eq!(
             r,
             vec![Resolved::Flash {
@@ -1461,75 +1987,127 @@ mod tests {
     }
 
     #[test]
-    fn grade_instantiates_and_resolves_neutral() {
-        let e = instantiate("grade").unwrap();
+    fn colour_balance_instantiates_and_resolves_neutral() {
+        let e = instantiate("colour_balance").unwrap();
         assert_eq!(e.colour_at("lift", 0.0), Some([0.0, 0.0, 0.0, 1.0]));
         assert_eq!(e.colour_at("gamma", 0.0), Some([1.0; 4]));
         assert_eq!(e.colour_at("gain", 0.0), Some([1.0; 4]));
-        assert_eq!(e.float_at("saturation", 0.0), Some(100.0));
-        let r = resolve_stack(std::slice::from_ref(&e), 0.0, 1000.0);
+        let r = resolve_stack(std::slice::from_ref(&e), 0.0, 1000.0, 1.0);
         assert_eq!(
             r,
-            vec![Resolved::Grade {
+            vec![Resolved::ColourBalance {
                 lift: [0.0; 3],
                 gamma: [1.0; 3],
                 gain: [1.0; 3],
-                saturation: 1.0,
                 mix: 1.0
             }]
         );
     }
 
     #[test]
-    fn cpu_grade_stages_behave() {
-        let neutral = ([0.0f32; 3], [1.0f32; 3], [1.0f32; 3]);
-        // One opaque mid-grey-ish pixel, one half-alpha, one HDR, one empty.
-        let img = vec![
+    fn saturation_instantiates_and_resolves_neutral() {
+        let e = instantiate("saturation").unwrap();
+        assert_eq!(e.float_at("saturation", 0.0), Some(100.0));
+        let r = resolve_stack(std::slice::from_ref(&e), 0.0, 1000.0, 1.0);
+        assert_eq!(
+            r,
+            vec![Resolved::Saturation {
+                saturation: 1.0,
+                mix: 1.0
+            }]
+        );
+    }
+
+    /// One opaque mid-grey-ish pixel, one half-alpha, one HDR, one empty —
+    /// the colour-effect test quartet.
+    fn colour_quartet() -> Vec<f32> {
+        vec![
             0.25, 0.5, 0.1, 1.0, //
             0.1, 0.2, 0.05, 0.5, //
             4.0, 2.0, 1.0, 1.0, //
             0.0, 0.0, 0.0, 0.0,
-        ];
+        ]
+    }
 
-        // A neutral grade is the identity on opaque pixels and within one
-        // rounding step elsewhere (unpremultiply round-trips).
+    #[test]
+    fn cpu_colour_balance_stages_behave() {
+        let img = colour_quartet();
+
+        // A neutral balance is the bit-exact identity (K-090 split: the
+        // whole effect short-circuits, no unpremultiply round trip).
         let mut n = img.clone();
-        cpu::grade(&mut n, neutral.0, neutral.1, neutral.2, 1.0, 1.0);
-        for (a, b) in n.iter().zip(&img) {
-            assert!((a - b).abs() < 1e-6, "{a} vs {b}");
-        }
+        cpu::colour_balance(&mut n, [0.0; 3], [1.0; 3], [1.0; 3], 1.0);
+        assert_eq!(n, img);
 
-        // Mix 0 is the exact identity whatever the grade.
+        // Mix 0 is the exact identity whatever the balance.
         let mut m0 = img.clone();
-        cpu::grade(&mut m0, [0.5; 3], [2.0; 3], [3.0; 3], 0.0, 0.0);
+        cpu::colour_balance(&mut m0, [0.5; 3], [2.0; 3], [3.0; 3], 0.0);
         assert_eq!(m0, img);
 
         // Gain doubles linear values; HDR stays unclipped (§2.1).
         let mut g = img.clone();
-        cpu::grade(&mut g, [0.0; 3], [1.0; 3], [2.0; 3], 1.0, 1.0);
+        cpu::colour_balance(&mut g, [0.0; 3], [1.0; 3], [2.0; 3], 1.0);
         assert_eq!(g[0], 0.5);
         assert_eq!(g[8], 8.0, "highlights never clip");
 
         // Lift raises blacks (empty alpha stays empty: premultiplied zero).
         let mut l = img.clone();
-        cpu::grade(&mut l, [0.1; 3], [1.0; 3], [1.0; 3], 1.0, 1.0);
+        cpu::colour_balance(&mut l, [0.1; 3], [1.0; 3], [1.0; 3], 1.0);
         assert!((l[2] - 0.2).abs() < 1e-6, "0.1 blue lifted by 0.1");
         assert_eq!(&l[12..16], &[0.0; 4], "empty pixels stay empty");
 
         // Gamma 2 is a square root in linear: 0.25 → 0.5.
         let mut ga = img.clone();
-        cpu::grade(&mut ga, [0.0; 3], [2.0; 3], [1.0; 3], 1.0, 1.0);
+        cpu::colour_balance(&mut ga, [0.0; 3], [2.0; 3], [1.0; 3], 1.0);
         assert!((ga[0] - 0.5).abs() < 1e-6);
 
-        // Saturation 0 collapses to Rec. 709 luma (greyscale).
+        // Alpha is untouched by any of it.
+        for v in [&n, &m0, &g, &l, &ga] {
+            assert_eq!(v[3], 1.0);
+            assert_eq!(v[7], 0.5);
+        }
+    }
+
+    #[test]
+    fn cpu_saturation_behaves() {
+        let img = colour_quartet();
+
+        // Saturation 1 is the bit-exact identity (whole-effect
+        // short-circuit, K-090 split).
+        let mut n = img.clone();
+        cpu::saturate(&mut n, 1.0, 1.0);
+        assert_eq!(n, img);
+
+        // Mix 0 is the exact identity whatever the saturation.
+        let mut m0 = img.clone();
+        cpu::saturate(&mut m0, 0.0, 0.0);
+        assert_eq!(m0, img);
+
+        // Saturation 0 collapses to Rec. 709 luma (true greyscale).
         let mut s = img.clone();
-        cpu::grade(&mut s, neutral.0, neutral.1, neutral.2, 0.0, 1.0);
+        cpu::saturate(&mut s, 0.0, 1.0);
         let luma = 0.25 * cpu::LUMA[0] + 0.5 * cpu::LUMA[1] + 0.1 * cpu::LUMA[2];
         for (c, v) in s.iter().take(3).enumerate() {
             assert!((v - luma).abs() < 1e-6, "channel {c} at luma");
         }
+        // The half-alpha pixel desaturates in unpremultiplied space: its
+        // premultiplied channels all land on (unpremult luma) × alpha.
+        let luma_half = (0.2 * cpu::LUMA[0] + 0.4 * cpu::LUMA[1] + 0.1 * cpu::LUMA[2]) * 0.5;
+        for c in 0..3 {
+            assert!((s[4 + c] - luma_half).abs() < 1e-6, "channel {c}");
+        }
+        assert_eq!(&s[12..16], &[0.0; 4], "empty pixels stay empty");
+
+        // Oversaturation spreads channels apart and clamps at zero, never
+        // clipping highlights (§2.1).
+        let mut o = img.clone();
+        cpu::saturate(&mut o, 2.0, 1.0);
+        assert!(o[1] > 0.5, "dominant green pushes up");
+        assert!(o[2] >= 0.0, "recessive blue clamps at zero, not negative");
+        assert!(o[8] > 4.0, "HDR red keeps its headroom");
+
         // Alpha is untouched by any of it.
-        for v in [&n, &m0, &g, &l, &ga, &s] {
+        for v in [&n, &m0, &s, &o] {
             assert_eq!(v[3], 1.0);
             assert_eq!(v[7], 0.5);
         }
@@ -1542,7 +2120,7 @@ mod tests {
         let mut e = instantiate("blur").unwrap();
         assert!(matches!(e.param("mode"), Some(EffectValue::Choice(0))));
         assert_eq!(e.float_at("length", 0.0), Some(10.0));
-        let r = resolve_stack(std::slice::from_ref(&e), 0.0, 1000.0);
+        let r = resolve_stack(std::slice::from_ref(&e), 0.0, 1000.0, 1.0);
         assert_eq!(
             r,
             vec![Resolved::Blur {
@@ -1558,7 +2136,7 @@ mod tests {
                 p.value = EffectValue::Choice(1);
             }
         }
-        let r = resolve_stack(std::slice::from_ref(&e), 0.0, 1000.0);
+        let r = resolve_stack(std::slice::from_ref(&e), 0.0, 1000.0, 1.0);
         assert_eq!(
             r,
             vec![Resolved::DirBlur {
@@ -1573,7 +2151,7 @@ mod tests {
         // parameter and still resolves as Gaussian.
         e.params
             .retain(|p| !matches!(p.id.as_str(), "mode" | "length" | "angle"));
-        let r = resolve_stack(std::slice::from_ref(&e), 0.0, 1000.0);
+        let r = resolve_stack(std::slice::from_ref(&e), 0.0, 1000.0, 1.0);
         assert!(matches!(r[..], [Resolved::Blur { .. }]));
     }
 
@@ -1617,5 +2195,154 @@ mod tests {
             "streak spreads in y"
         );
         assert!(v[at(7, 4)] < 1e-6, "x row stays clean");
+    }
+
+    #[test]
+    fn transform_instantiates_and_resolves_with_the_preview_factor() {
+        let e = instantiate("transform").unwrap();
+        assert_eq!(e.float_at("anchor_x", 0.0), Some(0.0));
+        assert_eq!(e.float_at("position_x", 0.0), Some(0.0));
+        assert_eq!(e.float_at("scale_x", 0.0), Some(100.0));
+        assert_eq!(e.float_at("rotation", 0.0), Some(0.0));
+        assert_eq!(e.float_at("opacity", 0.0), Some(100.0));
+        // Defaults resolve to the exact identity op.
+        let r = resolve_stack(std::slice::from_ref(&e), 0.0, 1000.0, 1.0);
+        assert_eq!(
+            r,
+            vec![Resolved::Transform {
+                anchor: [0.0; 2],
+                position: [0.0; 2],
+                scale: [1.0; 2],
+                rotation_deg: 0.0,
+                opacity: 1.0,
+                mix: 1.0
+            }]
+        );
+
+        // px@comp parameters scale by the §2.3 preview factor; percentages
+        // and degrees do not.
+        let mut e = e;
+        for p in &mut e.params {
+            match p.id.as_str() {
+                "anchor_x" => p.value = EffectValue::Float(Property::fixed(40.0)),
+                "position_x" => p.value = EffectValue::Float(Property::fixed(100.0)),
+                "scale_x" => p.value = EffectValue::Float(Property::fixed(200.0)),
+                "rotation" => p.value = EffectValue::Float(Property::fixed(90.0)),
+                _ => {}
+            }
+        }
+        let r = resolve_stack(std::slice::from_ref(&e), 0.0, 500.0, 0.5);
+        assert_eq!(
+            r,
+            vec![Resolved::Transform {
+                anchor: [20.0, 0.0],
+                position: [50.0, 0.0],
+                scale: [2.0, 1.0],
+                rotation_deg: 90.0,
+                opacity: 1.0,
+                mix: 1.0
+            }]
+        );
+    }
+
+    #[test]
+    fn transform_inverse_is_exact_at_identity_and_none_at_zero_scale() {
+        let (m, o) = transform_inverse([0.0; 2], [0.0; 2], [1.0; 2], 0.0).unwrap();
+        assert_eq!(m, [1.0, 0.0, -0.0, 1.0]);
+        assert_eq!(o, [0.0, 0.0]);
+        assert!(transform_inverse([0.0; 2], [0.0; 2], [0.0, 1.0], 0.0).is_none());
+        assert!(transform_inverse([0.0; 2], [0.0; 2], [1.0, 0.0], 0.0).is_none());
+    }
+
+    /// A varied premultiplied test card for the transform: gradient, an HDR
+    /// spike, a half-alpha region and an opaque border pixel.
+    fn transform_card(w: u32, h: u32) -> Vec<f32> {
+        let mut img = vec![0.0f32; (w * h * 4) as usize];
+        for y in 0..h {
+            for x in 0..w {
+                let i = ((y * w + x) * 4) as usize;
+                let g = (x + y) as f32 / (w + h) as f32;
+                let a = if y < h / 2 { 1.0 } else { 0.5 };
+                img[i] = g * a;
+                img[i + 1] = (1.0 - g) * a;
+                img[i + 2] = 0.25 * a;
+                img[i + 3] = a;
+            }
+        }
+        let spike = ((3 * w + 4) * 4) as usize;
+        img[spike..spike + 4].copy_from_slice(&[6.0, 3.0, 1.5, 1.0]);
+        img
+    }
+
+    #[test]
+    fn cpu_transform_identity_is_bit_exact() {
+        let (w, h) = (13u32, 9u32);
+        let img = transform_card(w, h);
+        // Identity parameters: the docs/08 §3.5 bit-exact passthrough pin.
+        let mut id = img.clone();
+        cpu::transform(&mut id, w, h, [0.0; 2], [0.0; 2], [1.0; 2], 0.0, 1.0, 1.0);
+        assert_eq!(id, img);
+        // Mix 0 is the exact identity whatever the parameters.
+        let mut m0 = img.clone();
+        cpu::transform(
+            &mut m0,
+            w,
+            h,
+            [3.0; 2],
+            [9.0, 1.0],
+            [2.0, 0.5],
+            33.0,
+            0.4,
+            0.0,
+        );
+        assert_eq!(m0, img);
+    }
+
+    #[test]
+    fn cpu_transform_moves_scales_rotates_and_fades() {
+        // A white impulse on a transparent frame.
+        let (w, h) = (17u32, 9u32);
+        let mut img = vec![0.0f32; (w * h * 4) as usize];
+        let at = |x: u32, y: u32| ((y * w + x) * 4) as usize;
+        let mid = at(8, 4);
+        img[mid..mid + 4].copy_from_slice(&[1.0, 1.0, 1.0, 1.0]);
+
+        // Position +2 in x (anchor 0): the impulse lands two pixels right,
+        // exactly (integer offsets keep bilinear taps on pixel centres).
+        let mut t = img.clone();
+        cpu::transform(&mut t, w, h, [0.0; 2], [2.0, 0.0], [1.0; 2], 0.0, 1.0, 1.0);
+        assert_eq!(t[at(10, 4)], 1.0, "impulse moved +2x");
+        assert_eq!(t[mid], 0.0, "and left its old home");
+
+        // The area revealed beyond the source edge is transparent, not a
+        // smeared border: shifting +2 leaves columns 0-1 fully empty.
+        for y in 0..h {
+            for x in 0..2 {
+                assert_eq!(t[at(x, y) + 3], 0.0, "({x},{y}) revealed as clear");
+            }
+        }
+
+        // Rotation 90° about the frame centre: y-down raster, so the pixel
+        // two to the right of centre lands two below it (clockwise).
+        let centre = [8.5, 4.5];
+        let mut r = img.clone();
+        img[at(10, 4)..at(10, 4) + 4].copy_from_slice(&[0.0, 1.0, 0.0, 1.0]);
+        r.copy_from_slice(&img);
+        cpu::transform(&mut r, w, h, centre, centre, [1.0; 2], 90.0, 1.0, 1.0);
+        assert_eq!(r[mid], 1.0, "the centre pixel stays put");
+        assert!(r[at(8, 6) + 1] > 0.999, "+2x lands at +2y");
+
+        // Scale 0 is degenerate: the image collapses to nothing and renders
+        // fully transparent — never a division fault (docs/14).
+        let mut z = img.clone();
+        cpu::transform(&mut z, w, h, centre, centre, [0.0, 0.0], 0.0, 1.0, 1.0);
+        assert!(z.iter().all(|v| *v == 0.0), "zero scale collapses to clear");
+
+        // Opacity halves all four channels (premultiplied).
+        let mut o = img.clone();
+        cpu::transform(&mut o, w, h, [0.0; 2], [0.0; 2], [1.0; 2], 0.0, 0.5, 1.0);
+        for c in 0..4 {
+            assert_eq!(o[mid + c], 0.5, "channel {c} at half");
+        }
     }
 }
