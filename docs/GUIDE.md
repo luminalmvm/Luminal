@@ -171,6 +171,14 @@ Two mechanisms make this safe, and you'll see them by name in the code:
   threshold off everything, so the transition is seamless. "Luminance only" (the default)
   sharpens the brightness signal and leaves colour alone, because sharpening the colour
   channels of compressed game capture produces rainbow fringes.
+- **Flow is a layer option** (K-088) — the wind toggle in a footage layer's switch
+  cluster. On, it synthesises in-between frames with optical flow wherever the footage's
+  rate (through any retime) undershoots the comp's — the moment a source frame would sit
+  across two comp frames, flow takes over; footage already at comp rate costs nothing. A
+  **Flow** group appears beside Transform and Effects with the engine's knobs (Quality:
+  half-resolution fields, the fast default, or full). Under the hood it's the retime's
+  frame-interpolation policy — an un-retimed layer quietly gains an identity retime to
+  carry it, and loses it again when you switch off.
 - **Effects are usable end to end.** Twirl a layer open, open its **Effects** group,
   and "Add effect" lists the catalogue. Each effect shows a bypass
   tick, a remove button, and one row per parameter — a Blur radius has a stopwatch

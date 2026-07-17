@@ -1656,11 +1656,13 @@ fn timeline_panel(ui: &mut egui::Ui, theme: &Theme, app: &mut AppState) {
                 let eye_r = slot(row_rect.left() + 18.0, row_rect.left() + 36.0);
                 let mute_r = slot(edge - 34.0, edge);
                 let td_r = slot(edge - 60.0, edge - 38.0);
-                let blend_r = slot(edge - 124.0, edge - 64.0);
-                let matte_r = slot(edge - 178.0, edge - 128.0);
+                // Flow option toggle (K-088), footage layers only.
+                let flow_r = slot(edge - 86.0, edge - 64.0);
+                let blend_r = slot(edge - 150.0, edge - 90.0);
+                let matte_r = slot(edge - 204.0, edge - 154.0);
                 // Layer type is encoded by the lane bar's colour (Mack) — no glyph
                 // or colour tab in the outline.
-                let title_r = slot(row_rect.left() + 58.0, edge - 182.0);
+                let title_r = slot(row_rect.left() + 58.0, edge - 208.0);
                 let place =
                     |ui: &mut egui::Ui, r: egui::Rect, add: &mut dyn FnMut(&mut egui::Ui)| {
                         let mut child = ui.new_child(
@@ -1705,6 +1707,9 @@ fn timeline_panel(ui: &mut egui::Ui, theme: &Theme, app: &mut AppState) {
                 if is_footage {
                     place(ui, mute_r, &mut |ui| {
                         mute_control(ui, theme, comp_id, layer, &mut pending)
+                    });
+                    place(ui, flow_r, &mut |ui| {
+                        flow_control(ui, theme, comp_id, layer, &mut pending)
                     });
                 } else if matches!(layer.kind, lumit_core::model::LayerKind::Precomp { .. }) {
                     // Precomp layers have no audio; their slot carries the
@@ -2398,6 +2403,33 @@ fn timeline_panel(ui: &mut egui::Ui, theme: &Theme, app: &mut AppState) {
                             graph_mode: app.timeline_graph_mode,
                         };
                         effects_rows(ui, &fx_ctx, &mut pending);
+                    }
+                    // Flow group (K-088): present only while the option is on.
+                    if matches!(
+                        &layer.kind,
+                        lumit_core::model::LayerKind::Footage { retime: Some(rt), .. }
+                            if matches!(rt.interpolation, lumit_core::retime::Interpolation::Flow(_))
+                    ) {
+                        let flow_id = ui.id().with(("flow-group", layer.id));
+                        if group_header_row(ui, theme, "Flow", flow_id, true, viewport) {
+                            let fps3 = comp.frame_rate.fps().max(1.0);
+                            let flow_ctx = RowCtx {
+                                theme,
+                                comp_id,
+                                layer,
+                                lt: app.preview_frame as f64 / fps3
+                                    - layer.start_offset.0.to_f64(),
+                                off: layer.start_offset.0.to_f64(),
+                                fps: fps3,
+                                viewport,
+                                track_left,
+                                track_w,
+                                px_per_sec,
+                                view_start,
+                                graph_mode: app.timeline_graph_mode,
+                            };
+                            flow_group_rows(ui, &flow_ctx, &mut pending);
+                        }
                     }
                 }
             }
@@ -5808,6 +5840,112 @@ fn collapse_control(
             collapse: !layer.switches.collapse,
         });
     }
+}
+
+/// The Flow option toggle (K-088), footage layers only: optical-flow frame
+/// interpolation as a property of how the layer samples its source. Accent
+/// while on. Turning it on keeps any existing retime and sets its
+/// interpolation policy to Flow (an identity retime is created when the
+/// layer has none — it renders identically, docs/04 §3); turning it off
+/// returns the policy to Nearest, and a pure identity store collapses back
+/// to no retime at all.
+fn flow_control(
+    ui: &mut egui::Ui,
+    theme: &Theme,
+    comp_id: uuid::Uuid,
+    layer: &lumit_core::model::Layer,
+    pending: &mut Option<lumit_core::Op>,
+) {
+    use lumit_core::retime::{FlowParams, Interpolation, Retime};
+    let lumit_core::model::LayerKind::Footage { retime, .. } = &layer.kind else {
+        return;
+    };
+    let on = matches!(
+        retime.as_ref().map(|r| &r.interpolation),
+        Some(Interpolation::Flow(_))
+    );
+    let col = if on {
+        theme.accent
+    } else {
+        theme.text_secondary
+    };
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::click());
+    crate::icons::paint(ui.painter(), rect, Icon::Flow, col, 1.4);
+    let hover = if on {
+        "Flow: synthesising in-between frames where the footage is slower than the comp"
+    } else {
+        "Flow: synthesise in-between frames (optical flow) when the footage's rate          undershoots the comp's"
+    };
+    if resp.on_hover_text(hover).clicked() {
+        let new_retime = if on {
+            let mut r = retime
+                .clone()
+                .unwrap_or_else(|| Retime::identity(layer.out_point.0, lumit_core::Rational::ZERO));
+            r.interpolation = Interpolation::Nearest;
+            // A pure identity store with the default policy is no retime.
+            if r == Retime::identity(layer.out_point.0, lumit_core::Rational::ZERO) {
+                None
+            } else {
+                Some(r)
+            }
+        } else {
+            let mut r = retime
+                .clone()
+                .unwrap_or_else(|| Retime::identity(layer.out_point.0, lumit_core::Rational::ZERO));
+            r.interpolation = Interpolation::Flow(FlowParams::default());
+            Some(r)
+        };
+        *pending = Some(lumit_core::Op::SetLayerRetime {
+            comp: comp_id,
+            layer: layer.id,
+            retime: new_retime,
+        });
+    }
+}
+
+/// The Flow group's rows (K-088): shown while the option is on, beside
+/// Transform and Effects, carrying the engine parameters.
+fn flow_group_rows(ui: &mut egui::Ui, ctx: &RowCtx, pending: &mut Option<lumit_core::Op>) {
+    use lumit_core::retime::Interpolation;
+    let lumit_core::model::LayerKind::Footage {
+        retime: Some(rt), ..
+    } = &ctx.layer.kind
+    else {
+        return;
+    };
+    let Interpolation::Flow(params) = &rt.interpolation else {
+        return;
+    };
+    let (_row, mut c) = row_frame(ui, ctx, false);
+    c.label(
+        egui::RichText::new("Quality")
+            .small()
+            .color(ctx.theme.text_muted),
+    );
+    let cur = if params.half_resolution {
+        "Half"
+    } else {
+        "Full"
+    };
+    bare_dropdown(&mut c, egui::RichText::new(cur).small(), |ui| {
+        for (label, half) in [("Half (fast)", true), ("Full", false)] {
+            if ui
+                .selectable_label(params.half_resolution == half, label)
+                .clicked()
+            {
+                let mut r = rt.clone();
+                let mut p = params.clone();
+                p.half_resolution = half;
+                r.interpolation = Interpolation::Flow(p);
+                *pending = Some(lumit_core::Op::SetLayerRetime {
+                    comp: ctx.comp_id,
+                    layer: ctx.layer.id,
+                    retime: Some(r),
+                });
+                ui.close_menu();
+            }
+        }
+    });
 }
 
 /// Mute subcolumn (footage layers).

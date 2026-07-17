@@ -87,11 +87,13 @@ pub enum Icon {
     TwirlOpen,
     /// Collapse transformations (Precomp layers): the AE-style sunburst.
     Collapse,
+    /// The Flow option on footage layers (K-088): optical-flow interpolation.
+    Flow,
 }
 
 impl Icon {
     /// Every variant, for exhaustive iteration (tests, palettes).
-    pub const ALL: [Icon; 34] = [
+    pub const ALL: [Icon; 35] = [
         Icon::Pointer,
         Icon::Move,
         Icon::Rectangle,
@@ -126,6 +128,7 @@ impl Icon {
         Icon::TwirlClosed,
         Icon::TwirlOpen,
         Icon::Collapse,
+        Icon::Flow,
     ];
 
     /// The Iconoir icon this variant renders.
@@ -165,6 +168,7 @@ impl Icon {
             Icon::TwirlClosed => "nav-arrow-right",
             Icon::TwirlOpen => "nav-arrow-down",
             Icon::Collapse => "flare",
+            Icon::Flow => "wind",
         }
     }
 
