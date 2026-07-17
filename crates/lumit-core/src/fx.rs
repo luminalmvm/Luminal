@@ -285,8 +285,11 @@ pub const BUILTINS: &[EffectSchema] = &[
     },
     // Chromatic aberration (docs/08 §3.6): R and B sample offset positions,
     // G stays put, alpha follows the green channel so mattes never fringe.
-    // Operates premultiplied. The §3.6 Centre/Falloff/channel-blur extras
-    // land later; radial mode grows the offset from the frame centre.
+    // Operates premultiplied. The Wavelength Bool (K-090 quality tier)
+    // swaps the three-channel split for a nine-sample spectral dispersion
+    // sharing the same parameters. The §3.6 Centre/Falloff/channel-blur
+    // extras land later; radial mode grows the offset from the frame
+    // centre.
     EffectSchema {
         match_name: "rgb_split",
         label: "RGB split",
@@ -327,6 +330,17 @@ pub const BUILTINS: &[EffectSchema] = &[
                 label: "Radial",
                 // Off: one shared shift. On: offsets grow from the centre,
                 // like lens fringing.
+                kind: ParamKind::Bool { default: false },
+            },
+            ParamSchema {
+                id: "wavelength",
+                label: "Wavelength",
+                // K-090 quality tier: off = the classic three-channel
+                // split (byte-identical to before this Bool existed); on =
+                // wavelength-based dispersion — nine spectral samples along
+                // the same offset, weighted by SPECTRAL_BASIS and
+                // recombined in linear, for the higher-quality rainbow
+                // fringe. All other parameters are shared between modes.
                 kind: ParamKind::Bool { default: false },
             },
             MIX_PARAM,
@@ -663,6 +677,19 @@ pub enum Resolved {
         /// 0..1.
         mix: f32,
     },
+    /// The RGB split's Wavelength mode (docs/08 §3.6, K-090): its own
+    /// variant, exactly as Blur's Directional mode is — so the classic
+    /// mode's path stays byte-identical.
+    SpectralSplit {
+        /// Peak spectral offset in raster pixels.
+        amount_px: f32,
+        /// Linear-mode shift direction, degrees (0° = +x, y-down raster).
+        angle_deg: f32,
+        /// True: offsets grow from the frame centre instead.
+        radial: bool,
+        /// 0..1.
+        mix: f32,
+    },
     Flash {
         /// The evaluated envelope × intensity, 0..1 (0 = no flash).
         strength: f32,
@@ -797,6 +824,40 @@ pub fn rgb_split_offset(amount_px: f32, angle_deg: f32) -> (f32, f32) {
     (amount_px * rad.cos(), amount_px * rad.sin())
 }
 
+/// The wavelength → linear-sRGB basis behind the RGB split's Wavelength
+/// mode (docs/08 §3.6, K-090): nine taps across the visible spectrum. Tap
+/// `i` sits at spectral fraction `t = i/4 − 1`, sampling `position +
+/// t·offset` — so the red end (t = −1, 650 nm) lands where the classic
+/// mode's R samples and the blue end (t = +1, 450 nm) where its B does,
+/// and the two modes disperse in the same direction. Derived offline: CIE
+/// 1931 x̄ȳz̄ via the Wyman et al. (2013) multi-lobe Gaussian fits at
+/// 650–450 nm in 25 nm steps, through the sRGB D65 matrix, negatives
+/// clipped, then each channel's column normalised to sum 1 (within one
+/// f32 ULP) so a uniform image passes through unchanged. The CPU reference
+/// reads this table directly and the WGSL kernel receives it in its
+/// uniform, so both paths consume bit-identical numbers.
+pub const SPECTRAL_BASIS: [[f32; 3]; 9] = [
+    [0.112_422_91, 0.0, 0.0],           // 650 nm
+    [0.294_590_23, 0.0, 0.0],           // 625 nm
+    [0.365_333_56, 0.036_021_75, 0.0],  // 600 nm
+    [0.201_592_3, 0.192_775_3, 0.0],    // 575 nm
+    [0.0, 0.311_754_2, 0.0],            // 550 nm
+    [0.0, 0.300_619_63, 0.0],           // 525 nm
+    [0.0, 0.134_424_22, 0.068_714_05],  // 500 nm
+    [0.0, 0.024_404_911, 0.339_951_04], // 475 nm
+    [0.026_061_023, 0.0, 0.591_334_94], // 450 nm — the violet re-red bump
+];
+
+/// [`SPECTRAL_BASIS`] as vec4 rows (w zero) for the GPU uniform — the
+/// kernel reads the very same numbers the CPU reference does.
+pub fn spectral_basis_vec4() -> [[f32; 4]; 9] {
+    let mut out = [[0.0; 4]; 9];
+    for (dst, src) in out.iter_mut().zip(SPECTRAL_BASIS.iter()) {
+        dst[..3].copy_from_slice(src);
+    }
+    out
+}
+
 /// Resolve a layer's live stack at layer time `lt` for a raster whose
 /// diagonal is `diag_px` pixels; `px_scale` is raster pixels per comp pixel
 /// (the §2.3 preview-resolution factor — 1.0 at full resolution), which
@@ -868,12 +929,28 @@ pub fn resolve_stack(
                     Some(EffectValue::Bool(b)) => *b,
                     _ => false,
                 };
+                // Instances saved before the Wavelength mode existed carry
+                // no such parameter and resolve as the classic split.
+                let wavelength = match e.param("wavelength") {
+                    Some(EffectValue::Bool(b)) => *b,
+                    _ => false,
+                };
                 let mix = (e.float_at("mix", lt).unwrap_or(100.0) as f32 / 100.0).clamp(0.0, 1.0);
-                Some(Resolved::RgbSplit {
-                    amount_px: (amount_pct / 100.0 * diag_px).max(0.0),
-                    angle_deg,
-                    radial,
-                    mix,
+                let amount_px = (amount_pct / 100.0 * diag_px).max(0.0);
+                Some(if wavelength {
+                    Resolved::SpectralSplit {
+                        amount_px,
+                        angle_deg,
+                        radial,
+                        mix,
+                    }
+                } else {
+                    Resolved::RgbSplit {
+                        amount_px,
+                        angle_deg,
+                        radial,
+                        mix,
+                    }
                 })
             }
             "flash" => {
@@ -967,6 +1044,12 @@ pub mod cpu {
                 radial,
                 mix,
             } => rgb_split(rgba, w, h, *amount_px, *angle_deg, *radial, *mix),
+            Resolved::SpectralSplit {
+                amount_px,
+                angle_deg,
+                radial,
+                mix,
+            } => spectral_split(rgba, w, h, *amount_px, *angle_deg, *radial, *mix),
             Resolved::Flash {
                 strength,
                 colour,
@@ -1201,6 +1284,54 @@ pub mod cpu {
                 let r = bilinear(&original, w, h, pos.0 - ox, pos.1 - oy)[0];
                 let b = bilinear(&original, w, h, pos.0 + ox, pos.1 + oy)[2];
                 let split = [r, original[i + 1], b, original[i + 3]];
+                for c in 0..4 {
+                    rgba[i + c] = original[i + c] * (1.0 - mix) + split[c] * mix;
+                }
+            }
+        }
+    }
+
+    /// The RGB split's Wavelength mode (docs/08 §3.6, K-090): instead of
+    /// three channels at three offsets, nine spectral samples spread across
+    /// `±offset` (tap i at fraction i/4 − 1), each weighted by its
+    /// wavelength's linear-RGB basis colour ([`super::SPECTRAL_BASIS`]) and
+    /// summed — real dispersion's rainbow fringe rather than the classic
+    /// hard R/G/B rim. The basis columns are normalised, so a uniform image
+    /// passes through unchanged. Offsets (linear or radial) and edge
+    /// handling match the classic mode exactly; alpha still follows the
+    /// green channel's rule and stays put, so mattes never fringe.
+    pub fn spectral_split(
+        rgba: &mut [f32],
+        w: u32,
+        h: u32,
+        amount_px: f32,
+        angle_deg: f32,
+        radial: bool,
+        mix: f32,
+    ) {
+        let original = rgba.to_vec();
+        let (dx, dy) = super::rgb_split_offset(amount_px, angle_deg);
+        let (fw, fh) = (w as f32, h as f32);
+        let diag = (fw * fw + fh * fh).sqrt();
+        let k = amount_px / (0.5 * diag);
+        for y in 0..h {
+            for x in 0..w {
+                let i = ((y * w + x) * 4) as usize;
+                let pos = (x as f32 + 0.5, y as f32 + 0.5);
+                let (ox, oy) = if radial {
+                    ((pos.0 - fw * 0.5) * k, (pos.1 - fh * 0.5) * k)
+                } else {
+                    (dx, dy)
+                };
+                let mut acc = [0.0f32; 3];
+                for (tap, weight) in super::SPECTRAL_BASIS.iter().enumerate() {
+                    let t = tap as f32 * 0.25 - 1.0;
+                    let s = bilinear(&original, w, h, pos.0 + t * ox, pos.1 + t * oy);
+                    for c in 0..3 {
+                        acc[c] += weight[c] * s[c];
+                    }
+                }
+                let split = [acc[0], acc[1], acc[2], original[i + 3]];
                 for c in 0..4 {
                     rgba[i + c] = original[i + c] * (1.0 - mix) + split[c] * mix;
                 }
@@ -1667,6 +1798,103 @@ mod tests {
         cpu::rgb_split(&mut c, w, h, 20.0, 0.0, true, 1.0);
         assert_eq!(c[mid], 1.0, "frame-centre red is unmoved");
         assert_eq!(c[mid + 2], 1.0, "frame-centre blue is unmoved");
+    }
+
+    #[test]
+    fn rgb_split_wavelength_bool_selects_the_variant() {
+        // A fresh instance defaults to the classic split — and resolves to
+        // the exact same Resolved value it did before the Bool existed.
+        let mut e = instantiate("rgb_split").unwrap();
+        assert!(matches!(
+            e.param("wavelength"),
+            Some(EffectValue::Bool(false))
+        ));
+        let classic = Resolved::RgbSplit {
+            amount_px: 4.0,
+            angle_deg: 0.0,
+            radial: false,
+            mix: 1.0,
+        };
+        let r = resolve_stack(std::slice::from_ref(&e), 0.0, 1000.0, 1.0);
+        assert_eq!(r, vec![classic]);
+
+        // Wavelength on: the same numbers arrive as SpectralSplit.
+        for p in &mut e.params {
+            if p.id == "wavelength" {
+                p.value = EffectValue::Bool(true);
+            }
+        }
+        let r = resolve_stack(std::slice::from_ref(&e), 0.0, 1000.0, 1.0);
+        assert_eq!(
+            r,
+            vec![Resolved::SpectralSplit {
+                amount_px: 4.0,
+                angle_deg: 0.0,
+                radial: false,
+                mix: 1.0
+            }]
+        );
+
+        // A legacy instance (saved before the Bool existed) has no
+        // wavelength parameter and still resolves as the classic split.
+        e.params.retain(|p| p.id != "wavelength");
+        let r = resolve_stack(std::slice::from_ref(&e), 0.0, 1000.0, 1.0);
+        assert_eq!(r, vec![classic]);
+    }
+
+    #[test]
+    fn spectral_basis_columns_sum_to_one() {
+        // The normalisation that makes a uniform image pass through
+        // unchanged: each channel's nine weights sum to 1 (within f32
+        // rounding of the summation itself).
+        for c in 0..3 {
+            let sum: f32 = SPECTRAL_BASIS.iter().map(|w| w[c]).sum();
+            assert!((sum - 1.0).abs() < 1e-6, "channel {c} sums to {sum}");
+        }
+    }
+
+    #[test]
+    fn cpu_spectral_split_disperses_and_preserves_uniform() {
+        let (w, h) = (17u32, 9u32);
+        let at = |x: u32, y: u32| ((y * w + x) * 4) as usize;
+
+        // A uniform image is unchanged (the basis is normalised, and clamp
+        // addressing keeps edges uniform too).
+        let mut uniform = vec![0.0f32; (w * h * 4) as usize];
+        for px in uniform.chunks_exact_mut(4) {
+            px.copy_from_slice(&[0.5, 0.25, 0.125, 1.0]);
+        }
+        let before = uniform.clone();
+        cpu::spectral_split(&mut uniform, w, h, 3.0, 25.0, false, 1.0);
+        for (i, (a, b)) in uniform.iter().zip(&before).enumerate() {
+            assert!((a - b).abs() < 1e-6, "texel {i}: {a} vs {b}");
+        }
+
+        // A white impulse on an opaque black frame disperses: red mass
+        // lands ahead of the impulse (the classic mode's R direction), blue
+        // behind, green astride it — and alpha never moves.
+        let mut img = vec![0.0f32; (w * h * 4) as usize];
+        for px in img.chunks_exact_mut(4) {
+            px[3] = 1.0;
+        }
+        let mid = at(8, 4);
+        img[mid..mid + 3].copy_from_slice(&[1.0, 1.0, 1.0]);
+
+        // Mix 0 is the exact identity.
+        let mut m0 = img.clone();
+        cpu::spectral_split(&mut m0, w, h, 3.0, 45.0, false, 0.0);
+        assert_eq!(m0, img);
+
+        let mut s = img.clone();
+        cpu::spectral_split(&mut s, w, h, 2.0, 0.0, false, 1.0);
+        assert!(s[at(10, 4)] > 0.1, "red end lands +2x of the impulse");
+        assert!(s[at(6, 4) + 2] > 0.3, "blue end lands -2x of the impulse");
+        assert!(s[mid + 1] > 0.3, "green stays astride the impulse");
+        assert!(s[at(10, 4) + 2] < 1e-6, "no blue leaks toward the red end");
+        assert!(
+            s.iter().skip(3).step_by(4).all(|a| *a == 1.0),
+            "alpha stays put: mattes never fringe"
+        );
     }
 
     #[test]

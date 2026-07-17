@@ -112,7 +112,19 @@ Two mechanisms make this safe, and you'll see them by name in the code:
 - `crates/lumit-core/src/model.rs` — **What a project is.** Structs for the document,
   comps, layers, footage items. Each has an `extra` field that preserves anything a future
   Lumit version adds — so old and new versions can share project files.
-- **The Transform effect** (K-090, replacing the dropped smooth-zoom idea) is the layer
+- **RGB split gains a Wavelength mode** (K-090's quality-tier pattern: where physical
+  accuracy is optional, it hides behind a Bool next to the fast look). Off — the
+  default, and exactly the effect as it was, byte for byte — the split is three
+  samples: red pulled one way, blue the other, green in place. On, the kernel instead
+  takes *nine* samples spread along the same line, one per slice of the visible
+  spectrum from 650 nm red to 450 nm blue-violet, and weights each by that
+  wavelength's actual colour in linear RGB before summing — how real lens dispersion
+  works, so the fringe is a graded rainbow rather than a hard red/blue rim. The
+  wavelength→colour table lives in `lumit-core` next to the CPU reference and is
+  handed to the GPU kernel through its parameter block, so both paths read literally
+  the same numbers (the same trick as the host-computed sines). The table's columns
+  are normalised so a flat image passes through unchanged, and alpha still refuses to
+  move — mattes never grow coloured rims in either mode.
   transform group — Anchor, Position, Scale, Rotation, Opacity, same names and units —
   packaged as a stack effect. Why would you want a second transform? *Adjustment
   layers.* An adjustment layer's effects apply to the composite of everything below

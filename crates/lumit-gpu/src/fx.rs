@@ -113,6 +113,37 @@ struct RgbSplitParams {
     _pad: [f32; 3],
 }
 
+/// One resolved spectral split — the RGB split's Wavelength mode (docs/08
+/// §3.6, K-090), its own kernel so the classic mode stays byte-identical.
+/// The offset vector and the wavelength basis both arrive host-computed
+/// (`lumit_core::fx::rgb_split_offset` / `spectral_basis_vec4`), so the
+/// kernel consumes exactly the CPU reference's numbers.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SpectralSplitOp {
+    /// Linear-mode peak offset, raster pixels.
+    pub dx: f32,
+    pub dy: f32,
+    /// Radial-mode peak offset (reached at the corner distance), raster px.
+    pub amount_px: f32,
+    pub radial: bool,
+    /// Wavelength → linear-RGB basis rows (w unused), columns normalised.
+    pub basis: [[f32; 4]; 9],
+    /// 0..1, blended against the unprocessed input.
+    pub mix: f32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct SpectralSplitParams {
+    basis: [[f32; 4]; 9],
+    dx: f32,
+    dy: f32,
+    amount: f32,
+    radial: u32,
+    mix_amt: f32,
+    _pad: [f32; 3],
+}
+
 /// One resolved flash (docs/08 §3.7, manual form): the trigger envelope is
 /// already evaluated host-side into a plain strength.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -208,6 +239,7 @@ pub struct FxEngine {
     sharpen_unpremultiply: wgpu::ComputePipeline,
     sharpen_combine: wgpu::ComputePipeline,
     rgb_split: wgpu::ComputePipeline,
+    spectral_split: wgpu::ComputePipeline,
     flash: wgpu::ComputePipeline,
     colour_balance: wgpu::ComputePipeline,
     saturation: wgpu::ComputePipeline,
@@ -275,6 +307,7 @@ impl FxEngine {
         let dir_blur_mod = module(include_str!("fx_dirblur.wgsl"), "fx-dir-blur");
         let sharpen_mod = module(include_str!("fx_sharpen.wgsl"), "fx-sharpen");
         let rgb_split_mod = module(include_str!("fx_rgbsplit.wgsl"), "fx-rgb-split");
+        let spectral_mod = module(include_str!("fx_spectral.wgsl"), "fx-spectral-split");
         let flash_mod = module(include_str!("fx_flash.wgsl"), "fx-flash");
         let balance_mod = module(include_str!("fx_colourbalance.wgsl"), "fx-colour-balance");
         let saturation_mod = module(include_str!("fx_saturation.wgsl"), "fx-saturation");
@@ -284,6 +317,7 @@ impl FxEngine {
         let sharpen_unpremultiply = pipeline(&sharpen_mod, "fx-sharpen-un", "unpremultiply");
         let sharpen_combine = pipeline(&sharpen_mod, "fx-sharpen", "sharpen_combine");
         let rgb_split = pipeline(&rgb_split_mod, "fx-rgb-split", "rgb_split");
+        let spectral_split = pipeline(&spectral_mod, "fx-spectral-split", "spectral_split");
         let flash = pipeline(&flash_mod, "fx-flash", "flash");
         let colour_balance = pipeline(&balance_mod, "fx-colour-balance", "colour_balance");
         let saturation = pipeline(&saturation_mod, "fx-saturation", "saturate_fx");
@@ -294,6 +328,7 @@ impl FxEngine {
             sharpen_unpremultiply,
             sharpen_combine,
             rgb_split,
+            spectral_split,
             flash,
             colour_balance,
             saturation,
@@ -476,6 +511,40 @@ impl FxEngine {
             w,
             h,
             bytemuck::bytes_of(&RgbSplitParams {
+                dx: op.dx,
+                dy: op.dy,
+                amount: op.amount_px,
+                radial: u32::from(op.radial),
+                mix_amt: op.mix,
+                _pad: [0.0; 3],
+            }),
+        );
+        out
+    }
+
+    /// Apply one spectral split — the RGB split's Wavelength mode (docs/08
+    /// §3.6, K-090) — to a linear working texture, returning a new texture
+    /// of the same size. Single pointwise pass, nine offset bilinear taps
+    /// weighted by the host-supplied wavelength basis.
+    pub fn spectral_split(
+        &self,
+        ctx: &GpuContext,
+        src: &wgpu::Texture,
+        w: u32,
+        h: u32,
+        op: &SpectralSplitOp,
+    ) -> wgpu::Texture {
+        let out = work_texture(ctx, w, h, "fx-spectral-split-out");
+        self.dispatch(
+            ctx,
+            &self.spectral_split,
+            src,
+            src,
+            &out,
+            w,
+            h,
+            bytemuck::bytes_of(&SpectralSplitParams {
+                basis: op.basis,
                 dx: op.dx,
                 dy: op.dy,
                 amount: op.amount_px,
@@ -1034,6 +1103,57 @@ mod tests {
             let out2 = fx.rgb_split(&ctx, &tex, w, h, &op);
             let gpu2 = readback_linear_f32(&ctx, &out2, w, h).unwrap();
             assert_eq!(gpu, gpu2, "GPU rgb split must be bit-stable");
+        }
+    }
+
+    /// The §1.6 oracle for the RGB split's Wavelength mode (docs/08 §3.6,
+    /// K-090): both sides accumulate the same nine host-supplied basis
+    /// weights over the same fp16-quantised taps in f32, in the same order,
+    /// so the cheap-class ≤ 2 fp16 ULP bound holds despite the longer sum;
+    /// the GPU is bit-stable (§2.4). The classic mode's oracle above is
+    /// untouched — separate kernel, separate maths.
+    #[test]
+    fn wgsl_spectral_split_matches_the_cpu_oracle() {
+        let Ok(ctx) = GpuContext::headless() else {
+            eprintln!("no GPU adapter; skipping WGSL parity test");
+            return;
+        };
+        let fx = FxEngine::new(&ctx);
+        let (w, h) = (32u32, 24u32);
+        let img = corpus(w, h);
+        for (amount, angle, radial, mix) in [
+            (3.0f32, 0.0f32, false, 1.0f32),
+            (2.5, 33.0, false, 0.6),
+            (4.0, 0.0, true, 1.0),
+            (0.0, 90.0, false, 1.0),
+        ] {
+            let mut cpu = img.clone();
+            lumit_core::fx::cpu::spectral_split(&mut cpu, w, h, amount, angle, radial, mix);
+
+            let (dx, dy) = lumit_core::fx::rgb_split_offset(amount, angle);
+            let tex = upload_linear_f32(&ctx, &img, w, h);
+            let op = SpectralSplitOp {
+                dx,
+                dy,
+                amount_px: amount,
+                radial,
+                basis: lumit_core::fx::spectral_basis_vec4(),
+                mix,
+            };
+            let out = fx.spectral_split(&ctx, &tex, w, h, &op);
+            let gpu = readback_linear_f32(&ctx, &out, w, h).unwrap();
+
+            let worst = worst_f16_ulp(&cpu, &gpu);
+            eprintln!("spectral split a={amount} ang={angle} radial={radial}: worst {worst} ulp");
+            assert!(
+                worst <= 2,
+                "amount {amount} angle {angle} radial {radial} mix {mix}: \
+                 worst {worst} fp16 ULP"
+            );
+
+            let out2 = fx.spectral_split(&ctx, &tex, w, h, &op);
+            let gpu2 = readback_linear_f32(&ctx, &out2, w, h).unwrap();
+            assert_eq!(gpu, gpu2, "GPU spectral split must be bit-stable");
         }
     }
 
