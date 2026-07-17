@@ -198,6 +198,29 @@ pub fn run_ops(fx: &FxEngine, ctx: &GpuContext, tex: Tex, w: u32, h: u32, ops: &
                     },
                 );
             }
+            Resolved::Glow {
+                radius_px,
+                threshold,
+                knee,
+                intensity,
+                tint,
+                mix,
+            } => {
+                tex = fx.glow(
+                    ctx,
+                    &tex,
+                    w,
+                    h,
+                    &lumit_gpu::fx::GlowOp {
+                        radius_px: *radius_px,
+                        threshold: *threshold,
+                        knee: *knee,
+                        intensity: *intensity,
+                        tint: *tint,
+                        mix: *mix,
+                    },
+                );
+            }
         }
     }
     tex

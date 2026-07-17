@@ -112,6 +112,18 @@ Two mechanisms make this safe, and you'll see them by name in the code:
 - `crates/lumit-core/src/model.rs` — **What a project is.** Structs for the document,
   comps, layers, footage items. Each has an `extra` field that preserves anything a future
   Lumit version adds — so old and new versions can share project files.
+- **Glow.** The montage bloom: anything brighter than Threshold spills light. The
+  pipeline is three steps — keep only the light *above* the threshold (with Knee
+  easing the cut so it doesn't snap on), blur that leftover wide (Radius, measured
+  like Blur's), then add it back on top, scaled by Intensity and coloured by Tint.
+  Because Lumit works in scene-linear light, an HDR value of 4 has four times the
+  energy of white and blooms accordingly — which is why Threshold is the first
+  parameter with a *one-sided* hard range (design rule K-090): it clamps at zero
+  below but you can type any value above the slider's 4, because HDR pixels really
+  do sit up there. The halo carries alpha too: glow blooming past a layer's edge
+  raises coverage there, so the spill reads as light over transparency instead of
+  stopping dead at the matte. At Intensity 0 the effect passes pixels through
+  bit-exactly — a test pins that promise.
 - **RGB split gains a Wavelength mode** (K-090's quality-tier pattern: where physical
   accuracy is optional, it hides behind a Bool next to the fast look). Off — the
   default, and exactly the effect as it was, byte for byte — the split is three
@@ -125,6 +137,7 @@ Two mechanisms make this safe, and you'll see them by name in the code:
   the same numbers (the same trick as the host-computed sines). The table's columns
   are normalised so a flat image passes through unchanged, and alpha still refuses to
   move — mattes never grow coloured rims in either mode.
+- **The Transform effect** (K-090, replacing the dropped smooth-zoom idea) is the layer
   transform group — Anchor, Position, Scale, Rotation, Opacity, same names and units —
   packaged as a stack effect. Why would you want a second transform? *Adjustment
   layers.* An adjustment layer's effects apply to the composite of everything below
@@ -140,6 +153,7 @@ Two mechanisms make this safe, and you'll see them by name in the code:
   engine code never faults. Its Anchor and Position are measured in comp pixels, so
   the resolver now carries the preview-resolution factor as well as the diagonal:
   half-resolution preview frames exactly like full, only softer (design rule §2.3).
+- **Blur grows a Directional mode.** The Blur effect now has a Mode switch: *Gaussian*
   (the soft circular blur it has always been) or *Directional* — a streak along an
   angle, the speed-line look. Under the hood directional blur is a *line integral*:
   for each pixel, the kernel walks a short line through it (Length long, pointing

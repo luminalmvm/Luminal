@@ -277,6 +277,18 @@ band or clip prematurely.
 Cost class `moderate`; ROI `padded(radius)`. The mip chain makes large radii near-constant
 cost — the "radius 200 makes AE cry" failure mode does not exist here.
 
+**Status (v1 core, shipped):** the bright-pass → separable gaussian → additive recombine
+spine, with Threshold (hard range clamped at zero below and unbounded above — the K-090
+one-sided shape; HDR values glow harder), Knee, Radius, Intensity, Tint and the host Mix.
+The knee is pinned as `max(0, c − threshold) · smoothstep(threshold − knee,
+threshold + knee, c)` per channel. The bright pass thresholds all four premultiplied
+channels alike, so the halo carries alpha and glow spreads over transparency like light;
+output alpha saturates at 1. The internal gaussian uses Repeat edges (fixed), so the halo
+holds its strength along frame borders. Intensity 0 is the neutral point — a bit-exact
+passthrough, pinned by test. The progressive mip chain, and with it Falloff, Chromatic
+aberration and the Screen recombine, replace the single gaussian later; every shipped
+parameter is stable when they do.
+
 ### 3.4 Shake — parameterised camera shake (S_Shake-class)
 
 Seeded-noise transform wobble, the beatshake workhorse. Implemented as a transform-domain

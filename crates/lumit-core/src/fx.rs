@@ -591,6 +591,86 @@ pub const BUILTINS: &[EffectSchema] = &[
             MIX_PARAM,
         ],
     },
+    // Glow (docs/08 §3.3): exposure-aware bloom in scene-linear light —
+    // bright-pass with a soft knee, a wide gaussian on the leftover light,
+    // additive recombine. The v1 core ships Threshold/Knee/Radius/Intensity/
+    // Tint; the §3.3 mip-chain items (Falloff, Chromatic aberration, the
+    // Screen recombine) land with the progressive chain later and these
+    // parameters stay stable when they do. The bright pass thresholds all
+    // four premultiplied channels alike, so the halo carries alpha and glow
+    // spreads over transparency like light.
+    EffectSchema {
+        match_name: "glow",
+        label: "Glow",
+        version: 1,
+        category: FxCategory::Stylise,
+        traits: EffectTraits {
+            cost: CostClass::Moderate,
+            roi: Roi::PaddedPctDiag(50.0),
+            temporal: &[0],
+            premultiplied: true,
+            seeded: false,
+            beat_input: false,
+        },
+        params: &[
+            ParamSchema {
+                id: "threshold",
+                label: "Threshold",
+                // Linear-light value above which pixels bloom. The K-090
+                // one-sided hard range made concrete: clamped at zero below,
+                // unbounded above — HDR values beyond the slider are legal
+                // and glow harder (§2.1).
+                kind: ParamKind::Float {
+                    default: 1.0,
+                    slider: (0.0, 4.0),
+                    hard: (Some(0.0), None),
+                },
+            },
+            ParamSchema {
+                id: "knee",
+                label: "Knee",
+                // Soft-knee width: the threshold's onset is eased by a
+                // smoothstep over ±knee around it (§3.3 step 1), so the
+                // bloom fades in rather than snapping on.
+                kind: ParamKind::Float {
+                    default: 0.5,
+                    slider: (0.0, 1.0),
+                    hard: (Some(0.0), Some(1.0)),
+                },
+            },
+            ParamSchema {
+                id: "radius",
+                label: "Radius",
+                // % of the comp diagonal (§2.3), the halo gaussian's
+                // half-width — measured exactly like Blur's Radius.
+                kind: ParamKind::Float {
+                    default: 8.0,
+                    slider: (0.0, 50.0),
+                    hard: (Some(0.0), Some(100.0)),
+                },
+            },
+            ParamSchema {
+                id: "intensity",
+                label: "Intensity",
+                // Gain on the added halo; 0 is the effect's neutral point
+                // (bit-exact passthrough, pinned by test).
+                kind: ParamKind::Float {
+                    default: 1.0,
+                    slider: (0.0, 10.0),
+                    hard: (Some(0.0), None),
+                },
+            },
+            ParamSchema {
+                id: "tint",
+                label: "Tint",
+                kind: ParamKind::Colour {
+                    default: [1.0, 1.0, 1.0, 1.0],
+                    range: (0.0, 4.0), // linear light: HDR tints are legal
+                },
+            },
+            MIX_PARAM,
+        ],
+    },
 ];
 
 /// Look a schema up by its match name.
@@ -730,6 +810,21 @@ pub enum Resolved {
         /// 0..1.
         mix: f32,
     },
+    Glow {
+        /// The halo gaussian's half-width in raster pixels.
+        radius_px: f32,
+        /// Linear-light bright threshold, ≥ 0 (unbounded above, K-090).
+        threshold: f32,
+        /// Soft-knee width around the threshold, 0..1.
+        knee: f32,
+        /// Gain on the added halo; 0 is the neutral point.
+        intensity: f32,
+        /// Scene-linear RGBA halo tint (alpha unused: the halo's own alpha
+        /// is untinted coverage).
+        tint: [f32; 4],
+        /// 0..1.
+        mix: f32,
+    },
 }
 
 /// The inverse affine of a Transform effect (docs/08 §3.5): the forward map
@@ -812,6 +907,25 @@ pub fn flash_envelope(trigger: &Property, t: f64, decay_s: f64) -> f64 {
             env
         }
     }
+}
+
+/// The glow bright pass on one channel (docs/08 §3.3 step 1):
+/// `max(0, x − threshold)` with a soft knee — the hinge's onset is weighted
+/// by a smoothstep over `threshold ± knee`, so the bloom fades in over the
+/// knee width instead of snapping on at the threshold. Knee 0 is the hard
+/// subtract. Written with the exact arithmetic order the WGSL kernel uses
+/// (§1.6: both paths must agree), and shared with the CPU reference below.
+pub fn glow_bright(x: f32, threshold: f32, knee: f32) -> f32 {
+    let d = x - threshold;
+    if d <= 0.0 {
+        return 0.0;
+    }
+    if knee > 0.0 {
+        let t = ((x - (threshold - knee)) / (2.0 * knee)).clamp(0.0, 1.0);
+        let w = t * t * (3.0 - 2.0 * t);
+        return d * w;
+    }
+    d
 }
 
 /// The linear-mode channel offset vector for an RGB split: `amount_px`
@@ -987,6 +1101,22 @@ pub fn resolve_stack(
                 let mix = (e.float_at("mix", lt).unwrap_or(100.0) as f32 / 100.0).clamp(0.0, 1.0);
                 Some(Resolved::Saturation { saturation, mix })
             }
+            "glow" => {
+                let radius_pct = e.float_at("radius", lt).unwrap_or(8.0) as f32;
+                let threshold = (e.float_at("threshold", lt).unwrap_or(1.0) as f32).max(0.0);
+                let knee = (e.float_at("knee", lt).unwrap_or(0.5) as f32).clamp(0.0, 1.0);
+                let intensity = (e.float_at("intensity", lt).unwrap_or(1.0) as f32).max(0.0);
+                let tint = e.colour_at("tint", lt).unwrap_or([1.0; 4]);
+                let mix = (e.float_at("mix", lt).unwrap_or(100.0) as f32 / 100.0).clamp(0.0, 1.0);
+                Some(Resolved::Glow {
+                    radius_px: (radius_pct / 100.0 * diag_px).max(0.0),
+                    threshold,
+                    knee,
+                    intensity,
+                    tint: tint.map(|c| c as f32),
+                    mix,
+                })
+            }
             "transform" => {
                 // px@comp parameters scale by the preview factor (§2.3) so
                 // Half preview frames exactly like Full, only softer.
@@ -1080,6 +1210,58 @@ pub mod cpu {
                 *opacity,
                 *mix,
             ),
+            Resolved::Glow {
+                radius_px,
+                threshold,
+                knee,
+                intensity,
+                tint,
+                mix,
+            } => glow(
+                rgba, w, h, *radius_px, *threshold, *knee, *intensity, *tint, *mix,
+            ),
+        }
+    }
+
+    /// Glow (docs/08 §3.3, v1 core): bright-pass every premultiplied channel
+    /// through [`super::glow_bright`] — alpha included, so the halo carries
+    /// coverage and glow spreads over transparency like light — blur the
+    /// leftover light with the shared gaussian (Repeat edges, fixed: the
+    /// halo holds its strength along frame borders instead of dimming), then
+    /// recombine additively in linear: `out = input + intensity · tint ·
+    /// halo`, output alpha saturating at 1 (full coverage). Highlights are
+    /// never clipped (§2.1). Intensity 0 is the effect's neutral point and
+    /// short-circuits to the bit-exact identity (the WGSL twin matches).
+    #[allow(clippy::too_many_arguments)]
+    pub fn glow(
+        rgba: &mut [f32],
+        w: u32,
+        h: u32,
+        radius_px: f32,
+        threshold: f32,
+        knee: f32,
+        intensity: f32,
+        tint: [f32; 4],
+        mix: f32,
+    ) {
+        if intensity == 0.0 {
+            return; // neutral: bit-exact identity (the WGSL twin matches)
+        }
+        let original = rgba.to_vec();
+        let mut halo = vec![0.0f32; rgba.len()];
+        for (dst, src) in halo.iter_mut().zip(original.iter()) {
+            *dst = super::glow_bright(*src, threshold, knee);
+        }
+        blur_gaussian(&mut halo, w, h, radius_px, 1, 1.0);
+        for i in (0..rgba.len()).step_by(4) {
+            let o = &original[i..i + 4];
+            let hl = &halo[i..i + 4];
+            for c in 0..3 {
+                let glowed = o[c] + intensity * (hl[c] * tint[c]);
+                rgba[i + c] = o[c] * (1.0 - mix) + glowed * mix;
+            }
+            let a = (o[3] + intensity * hl[3]).min(1.0);
+            rgba[i + 3] = o[3] * (1.0 - mix) + a * mix;
         }
     }
 
@@ -2243,6 +2425,123 @@ mod tests {
                 mix: 1.0
             }]
         );
+    }
+
+    #[test]
+    fn glow_instantiates_resolves_and_pins_the_one_sided_threshold() {
+        // The K-090 poster child: the Threshold hard range is clamped at
+        // zero below and unbounded above — HDR values glow harder.
+        let s = schema("glow").unwrap();
+        let threshold = s.params.iter().find(|p| p.id == "threshold").unwrap();
+        assert!(matches!(
+            threshold.kind,
+            ParamKind::Float {
+                hard: (Some(0.0), None),
+                ..
+            }
+        ));
+
+        let e = instantiate("glow").unwrap();
+        assert_eq!(e.float_at("threshold", 0.0), Some(1.0));
+        assert_eq!(e.float_at("knee", 0.0), Some(0.5));
+        assert_eq!(e.float_at("radius", 0.0), Some(8.0));
+        assert_eq!(e.float_at("intensity", 0.0), Some(1.0));
+        assert_eq!(e.colour_at("tint", 0.0), Some([1.0; 4]));
+        // 8% of a 1000px diagonal = 80px.
+        let r = resolve_stack(&[e], 0.0, 1000.0, 1.0);
+        assert_eq!(
+            r,
+            vec![Resolved::Glow {
+                radius_px: 80.0,
+                threshold: 1.0,
+                knee: 0.5,
+                intensity: 1.0,
+                tint: [1.0; 4],
+                mix: 1.0
+            }]
+        );
+    }
+
+    #[test]
+    fn glow_bright_gates_eases_and_passes_hdr() {
+        // Below the threshold: nothing, knee or not.
+        assert_eq!(glow_bright(0.5, 1.0, 0.0), 0.0);
+        assert_eq!(glow_bright(0.5, 1.0, 0.5), 0.0);
+        assert_eq!(glow_bright(1.0, 1.0, 0.5), 0.0);
+        // Knee 0 is the hard subtract.
+        assert_eq!(glow_bright(3.0, 1.0, 0.0), 2.0);
+        // Inside the knee the onset is eased below the hard hinge.
+        let eased = glow_bright(1.25, 1.0, 0.5);
+        assert!(eased > 0.0 && eased < 0.25, "eased onset: {eased}");
+        // Beyond threshold + knee the smoothstep saturates: hard subtract.
+        assert_eq!(glow_bright(3.0, 1.0, 0.5), 2.0);
+        // Monotone across the knee (no dips as the smoothstep engages).
+        let mut prev = 0.0;
+        for i in 0..=40 {
+            let x = 0.4 + i as f32 * 0.05;
+            let b = glow_bright(x, 1.0, 0.5);
+            assert!(b >= prev, "monotone at x={x}");
+            prev = b;
+        }
+    }
+
+    #[test]
+    fn cpu_glow_blooms_spreads_alpha_and_keeps_neutral_exact() {
+        // An HDR spike on an opaque dark frame, plus a transparent border.
+        let (w, h) = (17u32, 9u32);
+        let at = |x: u32, y: u32| ((y * w + x) * 4) as usize;
+        let mut img = vec![0.0f32; (w * h * 4) as usize];
+        for y in 0..h {
+            for x in 2..w - 2 {
+                let i = at(x, y);
+                img[i..i + 4].copy_from_slice(&[0.1, 0.1, 0.1, 1.0]);
+            }
+        }
+        let mid = at(8, 4);
+        img[mid..mid + 4].copy_from_slice(&[6.0, 3.0, 1.5, 1.0]);
+
+        // Intensity 0 is the bit-exact identity (the neutral pin).
+        let mut n = img.clone();
+        cpu::glow(&mut n, w, h, 4.0, 1.0, 0.5, 0.0, [1.0; 4], 1.0);
+        assert_eq!(n, img);
+
+        // Mix 0 is the exact identity whatever the parameters.
+        let mut m0 = img.clone();
+        cpu::glow(&mut m0, w, h, 4.0, 0.2, 0.1, 2.0, [1.0; 4], 0.0);
+        assert_eq!(m0, img);
+
+        // A frame entirely below the threshold gains nothing: the halo is
+        // zero everywhere and the add is exact.
+        let dim = {
+            let mut d = img.clone();
+            d[mid..mid + 4].copy_from_slice(&[0.1, 0.1, 0.1, 1.0]);
+            d
+        };
+        let mut quiet = dim.clone();
+        cpu::glow(&mut quiet, w, h, 4.0, 1.0, 0.5, 1.0, [1.0; 4], 1.0);
+        assert_eq!(quiet, dim);
+
+        // The spike blooms: neighbours gain light, the spike itself gains
+        // its own halo back (additive, §2.1: nothing clips).
+        let mut g = img.clone();
+        cpu::glow(&mut g, w, h, 3.0, 1.0, 0.5, 1.0, [1.0; 4], 1.0);
+        assert!(g[at(10, 4)] > img[at(10, 4)], "neighbour catches the halo");
+        assert!(g[mid] > img[mid], "the spike gains its own bloom");
+
+        // The halo carries alpha over transparency: with a threshold low
+        // enough that opaque coverage passes it, the transparent border
+        // next to the footprint gains coverage — glow reads as light there.
+        let mut a = img.clone();
+        cpu::glow(&mut a, w, h, 3.0, 0.05, 0.0, 1.0, [1.0; 4], 1.0);
+        assert!(a[at(1, 4) + 3] > 0.0, "coverage bloomed past the edge");
+        assert!(a[at(8, 4) + 3] <= 1.0, "alpha saturates at full coverage");
+
+        // Tint colours the halo, not the underlying image: with a red tint,
+        // the transparent border gains red light only.
+        let mut t = img.clone();
+        cpu::glow(&mut t, w, h, 3.0, 0.05, 0.0, 1.0, [1.0, 0.0, 0.0, 1.0], 1.0);
+        assert!(t[at(1, 4)] > 0.0, "red halo over the border");
+        assert_eq!(t[at(1, 4) + 1], 0.0, "no green in a red-tinted halo");
     }
 
     #[test]
