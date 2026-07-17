@@ -666,7 +666,7 @@ impl Renderer<'_> {
         // raster pixels (§2.3 factor 1).
         let resolved = lumit_core::fx::resolve_stack(&layer.effects, lt, comp_diag, 1.0, markers);
         let (w, h) = (tex.width(), tex.height());
-        crate::fxops::run_ops(&self.fx, self.gpu, tex, w, h, &resolved, neighbours)
+        crate::fxops::run_ops(&self.fx, self.gpu, tex, w, h, &resolved, neighbours, None)
     }
 
     /// Render a whole comp at time `t` into a linear fp16 texture (recursive
@@ -912,9 +912,10 @@ impl Renderer<'_> {
                     comp.height,
                     &fx,
                     // An adjustment layer processes the composite below; no
-                    // footage neighbour frames (temporal on adjustment layers
-                    // is a later refinement).
+                    // footage neighbour frames or flow field (temporal effects
+                    // on adjustment layers are a later refinement).
                     &[],
+                    None,
                 );
                 let coverage = self.adjust_coverage(comp, l, lt, camera);
                 let opacity = (l.transform.opacity.value_at(lt) as f32 / 100.0).clamp(0.0, 1.0);

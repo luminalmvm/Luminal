@@ -192,6 +192,7 @@ impl GpuViewer {
                 height,
                 &l.fx,
                 &[],
+                None,
             );
             let coverage = self.coverage_texture(camera, width, height, l);
             acc = Some(self.fx.adjust_blend(
@@ -303,7 +304,7 @@ impl GpuViewer {
                         (*offset, self.engine.linearise(&self.ctx, &src))
                     })
                     .collect();
-                crate::fxops::run_ops(&self.fx, &self.ctx, tex, w, h, &l.fx, &neighbours)
+                crate::fxops::run_ops(&self.fx, &self.ctx, tex, w, h, &l.fx, &neighbours, None)
             };
             linear_textures.push(tex);
         }
