@@ -1594,9 +1594,8 @@ impl AppState {
     }
 
     /// Add an adjustment layer at the top of the stack — a comp-sized effect
-    /// container whose stack applies to every layer beneath it within its span
-    /// (docs/01-GLOSSARY.md). Inert until the effect suite lands, but it already
-    /// takes its place in the evaluation graph.
+    /// container whose stack applies to everything beneath it within its span
+    /// (docs/01-GLOSSARY.md), staged and blended by coverage as of K-091.
     pub fn add_adjustment_layer(&mut self) {
         use lumit_core::model::{Layer, LayerKind, Switches, TransformGroup};
         use lumit_core::time::CompTime;

@@ -17,16 +17,19 @@ the interface is truly the user's.
 
 ## 1. Application shell and docking
 
-> **v1 status (K-074, K-086):** the shell is a tiling dock (egui_tiles). Panels stacked
-> together form a tab group with a title tab per panel, draggable to re-arrange the
-> workspace; a panel that sits alone renders as a bare pane with no tab bar — the Viewer's
-> look on every solo panel — so the default workspace shows tabs only on the left
-> Project/effects stack. A tab's pop-out button lifts its panel into its own OS window and
-> closing that window docks the panel back; the solo Timeline, having no tab, pops out from
-> a right-click on an empty spot of its comp-tab strip (Pop out timeline). This delivers the
-> substance of the section below — tabs, drag-to-dock, re-arrangeable layouts, pop-out —
-> though the exact five-drop-zone visuals and in-window frame trees described below are
-> still approximated by egui_tiles' own affordances.
+> **v1 status (K-074, K-086, refined by owner request):** the shell is a tiling dock
+> (egui_tiles). Panels stacked together form a tab group with a title tab per panel,
+> draggable to re-arrange the workspace; a panel that sits alone renders as a bare pane with
+> no tab bar — the Viewer's look on every solo panel — so the default workspace shows tabs
+> only on the left Project/effects stack. A tabbed panel's pop-out button lifts it into its
+> own OS window, and dragging its tab moves it; a bare pane, having no tab bar to carry
+> either, gets both a different way — right-click anywhere empty in it for the same pop-out,
+> and a small grip in its top-right corner to drag it (the Timeline's own comp-tab-strip
+> right-click pop-out is this same mechanism, not a special case). Closing a popped-out
+> window docks the panel back. This delivers the substance of the section below — tabs,
+> drag-to-dock, re-arrangeable layouts, pop-out — though the exact five-drop-zone visuals and
+> in-window frame trees described below are still approximated by egui_tiles' own
+> affordances.
 
 ### 1.1 Frames, groups, tabs
 

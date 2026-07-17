@@ -285,12 +285,15 @@ Two mechanisms make this safe, and you'll see them by name in the code:
   **effect stack** in the project model: each entry says *which* effect (a stable name +
   a version, so cached frames from older maths retire themselves), whether it's bypassed,
   and its parameters — which are real animatable properties like Position or Opacity, so
-  keyframes and the graph editor will work on a Glow radius exactly as they do on a scale.
-  A layer-level **fx switch** mutes the whole stack. Edits go through ops (one op replaces
-  the stack — add, remove, reorder and parameter changes are all undoable in one step), and
-  the cache knows a live effect changes pixels while a bypassed one doesn't. The renderers
-  don't *run* effects yet — that's the next slice: the effect registry, the GPU passes and
-  the Effect Controls panel.
+  keyframes and the graph editor work on a Glow radius exactly as they do on a scale. A
+  layer-level **fx switch** mutes the whole stack. Edits go through ops (one op replaces the
+  stack — add, remove, reorder and parameter changes are all undoable in one step), and the
+  cache knows a live effect changes pixels while a bypassed one doesn't. The registry (a
+  growing built-in catalogue — blur, sharpen, RGB split, glow, shake, colour balance and
+  more, grouped by category), the GPU passes, and adjustment-layer staging (K-091) all run
+  for real now; the one piece still catching up is the dedicated **Effect Controls** dock
+  panel — today the effect stack is edited inline on the layer's own row in the Timeline,
+  and Effect Controls just says so, rather than duplicating that editor in a second place.
 - `crates/lumit-core/src/ops.rs` — **Every possible edit, as data.** An edit is an `Op`
   (AddLayer, SetLayerSpan…). Applying an op returns its exact inverse — that pair is what
   makes undo *provably* correct instead of hopefully correct.
@@ -739,12 +742,23 @@ Two mechanisms make this safe, and you'll see them by name in the code:
   panels together and the tab bar appears by itself; drag a tab to move a panel somewhere
   else — beside another panel, stacked as tabs, above or below — and drag the edge between
   two panels to resize. Tabbed panels keep the small pop-out button that lifts them into
-  their own separate window; the tabless Timeline pops out instead from a right-click on an
-  empty spot of its comp-tab strip (the bar naming the open compositions) — choose "Pop out
-  timeline" — and closing any popped-out window drops the panel back where it was. A
-  workspace saved before this change tidies itself the first time it loads. Under the bonnet
-  this uses a "tiling" layout engine that, unlike the docking library we tried first, is
-  happy to leave any lone pane without a tab bar.
+  their own separate window, and dragging a tab does the moving; a bare panel has no tab bar
+  to carry either, so it gets its own pair of affordances (owner request): **right-click
+  anywhere empty in it** for a "Pop out into its own window" menu (the Timeline's existing
+  right-click-the-comp-strip pop-out still works exactly as before — it is the same
+  mechanism, just no longer a special case), and **a small grip in its top-right corner** to
+  drag it to a new spot, the same as dragging a tab would. The grip sits in its own tiny
+  corner rather than spreading the drag gesture across the whole empty top strip, because of
+  an egui quirk worth knowing if you touch this code: a region that senses dragging does not
+  automatically step aside for an ordinary button drawn on top of it the way a plain click
+  does — dragging is tracked per-widget from the moment the mouse is pressed, not by "whoever
+  is visually on top" at release, so a wide drag-sensing strip sitting *underneath* a panel's
+  own buttons could reach in and steal an ordinary click-and-slightly-move as a pane-drag
+  instead. Keeping the grip small, and adding it *after* (visually on top of) the panel's own
+  content, keeps it out of that trap. Closing any popped-out window drops the panel back
+  where it was. A workspace saved before this change tidies itself the first time it loads.
+  Under the bonnet this uses a "tiling" layout engine that, unlike the docking library we
+  tried first, is happy to leave any lone pane without a tab bar.
 - The **Project panel** — AE-shaped (K-068): the selected item's details up top, the
   folder tree below, and drag-and-drop everywhere. Drag footage onto the Timeline or
   Viewer to make a layer; with no comp open yet, the composition dialogue appears

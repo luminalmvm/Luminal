@@ -112,8 +112,8 @@ fn render_panel(
         Panel::EffectControls => empty_hint(
             ui,
             theme,
-            "No layer selected",
-            "Select a layer to see its effect stack.",
+            "Effect controls",
+            "For now, edit a layer's effect stack on its own row in the Timeline.",
         ),
         Panel::EffectsAndPresets => effects_panel(ui, theme),
         Panel::Scopes => empty_hint(
@@ -133,6 +133,27 @@ fn tile_id_of(tree: &egui_tiles::Tree<Panel>, panel: Panel) -> Option<egui_tiles
     })
 }
 
+/// Every pane rendering bare this frame (K-086): a pane is bare unless its
+/// parent tile is a Tabs container — single-child Tabs get pruned by
+/// [`dock_simplification_options`], so this is exactly the condition
+/// `render_panel` draws without a surrounding tab bar. Bare panes get
+/// `DockBehavior::bare_pane_ui`'s pop-out and drag-grip affordances; tabbed
+/// panes already have both, via the tab bar's own button and tab drag.
+fn bare_tile_ids(tree: &egui_tiles::Tree<Panel>) -> std::collections::HashSet<egui_tiles::TileId> {
+    tree.tiles
+        .iter()
+        .filter(|(_, tile)| matches!(tile, egui_tiles::Tile::Pane(_)))
+        .map(|(id, _)| *id)
+        .filter(|id| match tree.tiles.parent_of(*id) {
+            None => true,
+            Some(parent) => !matches!(
+                tree.tiles.get(parent),
+                Some(egui_tiles::Tile::Container(egui_tiles::Container::Tabs(_)))
+            ),
+        })
+        .collect()
+}
+
 /// Bridges the tiling tree to Lumit's panels and house styling.
 struct DockBehavior<'a> {
     theme: &'a Theme,
@@ -143,17 +164,113 @@ struct DockBehavior<'a> {
     pop_out: Option<Panel>,
     /// Every docked pane's rect this frame, for the active-panel highlight.
     panel_rects: Vec<(Panel, egui::Rect)>,
+    /// The dock's own id (`Tree::id`), needed to build the same `egui::Id`
+    /// egui_tiles uses to track a dragged tile (`TileId::egui_id`) — a bare
+    /// pane's home-grown drag handle hands off to that same machinery, so a
+    /// dragged bare pane re-docks exactly like a dragged tab.
+    tree_id: egui::Id,
+    /// Panes with no tab bar (K-086): only these get the generic pop-out and
+    /// drag-to-move affordances `pane_ui` adds. Tabbed panes already have
+    /// both, via the tab bar's own pop-out button and tab drag.
+    bare_tiles: std::collections::HashSet<egui_tiles::TileId>,
+}
+
+/// The drag-grip's footprint in the top-right corner of a bare pane (a
+/// square this many points on a side).
+const BARE_PANE_GRIP_SIZE: f32 = 16.0;
+
+/// Paint the drag grip: a small 2×3 dot grid, the house convention for "grab
+/// here", `text_muted` normally and brightening to `text_secondary` on
+/// hover/drag so it reads as interactive without shouting (K-015 calm UI).
+fn paint_bare_pane_grip(ui: &egui::Ui, theme: &Theme, rect: egui::Rect, lit: bool) {
+    let colour = if lit {
+        theme.text_secondary
+    } else {
+        theme.text_muted.gamma_multiply(0.5)
+    };
+    let pad = 4.0;
+    let inner = rect.shrink(pad);
+    for col in 0..2 {
+        for row in 0..3 {
+            let x = inner.left() + col as f32 * (inner.width());
+            let y = inner.top() + row as f32 * (inner.height() / 2.0);
+            ui.painter().circle_filled(egui::pos2(x, y), 1.0, colour);
+        }
+    }
+}
+
+impl DockBehavior<'_> {
+    /// A bare (tabless) pane's body: the same content, plus two affordances
+    /// a tabbed pane gets from its tab bar instead.
+    ///
+    /// Right-click anywhere offers "pop out into its own window": a
+    /// whole-pane `Sense::click()` background, registered *before* the
+    /// content is drawn, so anything the panel renders on top still claims
+    /// its own clicks first (the comp-tab-strip background trick,
+    /// generalised — pinned by
+    /// `strip_background_takes_the_right_click_only_off_the_buttons` and
+    /// `bare_pane_background_right_click_pops_out_only_off_content`).
+    ///
+    /// A small grip in the top-right corner drags the pane: on
+    /// `drag_started` it hands off to egui_tiles' own tile-drag machinery
+    /// (`Tree::dragged_id`/`move_tile`) via the tile's own `egui::Id`, so
+    /// the pane re-docks exactly like a dragged tab. It is interacted
+    /// *after* the content, winning its own tiny footprint the way a later,
+    /// smaller widget wins over an earlier, larger one — deliberately NOT a
+    /// drag sense shared with a wider "near the top" region: proven the
+    /// hard way that a drag-sensing region does not yield to overlapping
+    /// click-only content the way two click-only widgets do
+    /// (`Response::dragged()` needs `Sense::drag`; egui_tiles' own tab
+    /// buttons sense `click_and_drag` too, which is *why* a background drag
+    /// there correctly steps aside — a plain click-only button has nothing
+    /// to contest the drag with, so a shared region always loses it to the
+    /// background). See
+    /// `bare_pane_drag_grip_moves_the_pane_only_from_its_own_corner`.
+    fn bare_pane_ui(&mut self, ui: &mut egui::Ui, tile_id: egui_tiles::TileId, pane: &mut Panel) {
+        let pane_rect = ui.max_rect();
+        let bg = ui.scope_builder(egui::UiBuilder::new().sense(egui::Sense::click()), |ui| {
+            render_panel(ui, self.theme, self.app, self.preview_display, *pane);
+            // Claim the full pane rect regardless of what content used,
+            // so leftover empty space still answers to `bg` below.
+            ui.expand_to_include_rect(pane_rect);
+        });
+        bg.response.context_menu(|ui| {
+            if ui.button("Pop out into its own window").clicked() {
+                self.pop_out = Some(*pane);
+                ui.close_menu();
+            }
+        });
+        let grip = egui::Rect::from_min_size(
+            egui::pos2(pane_rect.right() - BARE_PANE_GRIP_SIZE, pane_rect.top()),
+            egui::vec2(BARE_PANE_GRIP_SIZE, BARE_PANE_GRIP_SIZE),
+        );
+        let handle = ui
+            .interact(
+                grip,
+                ui.id().with("bare-pane-grip"),
+                egui::Sense::click_and_drag(),
+            )
+            .on_hover_cursor(egui::CursorIcon::Grab);
+        if handle.drag_started() {
+            ui.ctx().set_dragged_id(tile_id.egui_id(self.tree_id));
+        }
+        paint_bare_pane_grip(ui, self.theme, grip, handle.hovered() || handle.dragged());
+    }
 }
 
 impl egui_tiles::Behavior<Panel> for DockBehavior<'_> {
     fn pane_ui(
         &mut self,
         ui: &mut egui::Ui,
-        _tile_id: egui_tiles::TileId,
+        tile_id: egui_tiles::TileId,
         pane: &mut Panel,
     ) -> egui_tiles::UiResponse {
         self.panel_rects.push((*pane, ui.max_rect()));
-        render_panel(ui, self.theme, self.app, self.preview_display, *pane);
+        if self.bare_tiles.contains(&tile_id) {
+            self.bare_pane_ui(ui, tile_id, pane);
+        } else {
+            render_panel(ui, self.theme, self.app, self.preview_display, *pane);
+        }
         egui_tiles::UiResponse::None
     }
 
@@ -7825,19 +7942,76 @@ fn upsert_key(
     keys
 }
 
+/// The effects browser (docs/07-UI-SPEC §7): the built-in catalogue
+/// (docs/08-EFFECTS.md), grouped by category and filtered by the search
+/// field, mirroring the Add-effect menu's grouping (`effects_rows`).
+/// Read-only for now: applying an effect lives on the layer's own Effects
+/// group in the Timeline; drag/double-click apply from here, presets, and
+/// favourites are later steps of the same spec section.
 fn effects_panel(ui: &mut egui::Ui, theme: &Theme) {
+    use lumit_core::fx;
     ui.add_space(6.0);
-    let mut search = String::new();
-    ui.add(
+    let search_id = ui.id().with("effects-panel-search");
+    let mut search = ui
+        .data_mut(|d| d.get_temp::<String>(search_id))
+        .unwrap_or_default();
+    let resp = ui.add(
         egui::TextEdit::singleline(&mut search)
             .hint_text("Search effects and presets")
             .desired_width(f32::INFINITY),
     );
+    if resp.changed() {
+        ui.data_mut(|d| d.insert_temp(search_id, search.clone()));
+    }
     ui.add_space(8.0);
+    let needle = search.trim().to_lowercase();
+    let mut any_shown = false;
+    egui::ScrollArea::vertical()
+        .id_salt("effects-panel-scroll")
+        .show(ui, |ui| {
+            for cat in fx::FxCategory::ALL {
+                let members: Vec<_> = fx::BUILTINS
+                    .iter()
+                    .filter(|s| {
+                        s.category == cat
+                            && (needle.is_empty() || s.label.to_lowercase().contains(&needle))
+                    })
+                    .collect();
+                if members.is_empty() {
+                    continue;
+                }
+                any_shown = true;
+                egui::CollapsingHeader::new(
+                    egui::RichText::new(cat.label())
+                        .small()
+                        .color(theme.text_secondary),
+                )
+                .default_open(true)
+                .show(ui, |ui| {
+                    for schema in members {
+                        ui.label(
+                            egui::RichText::new(schema.label)
+                                .small()
+                                .color(theme.text_primary),
+                        );
+                    }
+                });
+            }
+        });
+    if !any_shown {
+        ui.label(
+            egui::RichText::new("No effects match.")
+                .small()
+                .color(theme.text_muted),
+        );
+    }
+    ui.add_space(6.0);
     ui.label(
-        egui::RichText::new("The effect suite arrives in phase 3.")
-            .small()
-            .color(theme.text_muted),
+        egui::RichText::new(
+            "Apply an effect from a layer's Effects group in the Timeline for now.",
+        )
+        .small()
+        .color(theme.text_muted),
     );
 }
 
@@ -8558,9 +8732,10 @@ impl Shell {
         lines.push(BootLine::ok(
             "Hibiki audio: cpal (clock starts with playback)",
         ));
-        lines.push(BootLine::ok(
-            "Effects: none registered — suite arrives in phase 3",
-        ));
+        lines.push(BootLine::ok(format!(
+            "Effects: {} built-in registered",
+            lumit_core::fx::BUILTINS.len()
+        )));
 
         #[cfg(target_os = "macos")]
         {
@@ -9933,6 +10108,8 @@ impl Shell {
             ..
         } = self;
         let preview_display = *preview_display;
+        let tree_id = dock.id();
+        let bare_tiles = bare_tile_ids(dock);
         let (pop_out, panel_rects) = {
             let mut behavior = DockBehavior {
                 theme,
@@ -9940,6 +10117,8 @@ impl Shell {
                 preview_display,
                 pop_out: None,
                 panel_rects: Vec::new(),
+                tree_id,
+                bare_tiles,
             };
             egui::CentralPanel::default()
                 .frame(egui::Frame::default().fill(theme.surface_0))
@@ -10849,6 +11028,27 @@ mod dock_tests {
         assert!(in_tabs, "a stacked panel keeps its tab bar");
     }
 
+    /// `bare_tile_ids` (the set `DockBehavior` wraps in `bare_pane_ui`)
+    /// matches tab membership on the real default layout: the three
+    /// tab-stacked panels are excluded, the three solo ones are included.
+    #[test]
+    fn bare_tile_ids_matches_tab_membership_on_the_default_layout() {
+        let tree = default_layout();
+        let bare = bare_tile_ids(&tree);
+        for panel in [Panel::Viewer, Panel::Timeline, Panel::Scopes] {
+            let id = tile_id_of(&tree, panel).unwrap();
+            assert!(bare.contains(&id), "{panel:?} should render bare");
+        }
+        for panel in [
+            Panel::Project,
+            Panel::EffectControls,
+            Panel::EffectsAndPresets,
+        ] {
+            let id = tile_id_of(&tree, panel).unwrap();
+            assert!(!bare.contains(&id), "{panel:?} is tab-stacked, not bare");
+        }
+    }
+
     // The comp strip's "Pop out timeline" menu hangs off the strip's background
     // (a click-sensing Ui registered before the tab buttons, expanded to the
     // panel's right edge). Pins the egui layering it relies on: a right-click
@@ -10921,6 +11121,185 @@ mod dock_tests {
         )));
         // On the tab button → the button wins; the background stays silent.
         assert!(!scene(|_bg, btn| btn.center()));
+    }
+
+    /// `bare_pane_ui`'s right-click affordance (owner request, K-091 era): a
+    /// bare pane's whole rect senses right-click for "pop out into its own
+    /// window", registered before the panel's own content — mirroring
+    /// `strip_background_takes_the_right_click_only_off_the_buttons`. A
+    /// button the content draws anywhere in the pane must still claim
+    /// right-clicks over its own footprint.
+    #[test]
+    fn bare_pane_background_right_click_pops_out_only_off_content() {
+        fn scene(pick: impl Fn(egui::Rect, egui::Rect) -> egui::Pos2) -> bool {
+            let ctx = egui::Context::default();
+            let bg_rect = std::cell::Cell::new(egui::Rect::NOTHING);
+            let btn_rect = std::cell::Cell::new(egui::Rect::NOTHING);
+            let bg_secondary = std::cell::Cell::new(false);
+            let run = |events: Vec<egui::Event>| {
+                let ri = egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::pos2(0.0, 0.0),
+                        egui::vec2(400.0, 400.0),
+                    )),
+                    events,
+                    ..Default::default()
+                };
+                let _ = ctx.run(ri, |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        // bare_pane_ui in miniature: the whole-pane background
+                        // scope, one button drawn inside it as its content.
+                        let bg = ui.scope_builder(
+                            egui::UiBuilder::new().sense(egui::Sense::click()),
+                            |ui| {
+                                let pane_rect = ui.max_rect();
+                                btn_rect.set(ui.button("content").rect);
+                                ui.expand_to_include_rect(pane_rect);
+                            },
+                        );
+                        bg_rect.set(bg.response.rect);
+                        if bg.response.secondary_clicked() {
+                            bg_secondary.set(true);
+                        }
+                    });
+                });
+            };
+            let m = egui::Modifiers::default();
+            let btn = egui::PointerButton::Secondary;
+            run(vec![]); // lay out twice so the background's rect has settled
+            run(vec![]);
+            let pos = pick(bg_rect.get(), btn_rect.get());
+            run(vec![egui::Event::PointerMoved(pos)]);
+            run(vec![egui::Event::PointerButton {
+                pos,
+                button: btn,
+                pressed: true,
+                modifiers: m,
+            }]);
+            run(vec![egui::Event::PointerButton {
+                pos,
+                button: btn,
+                pressed: false,
+                modifiers: m,
+            }]);
+            bg_secondary.get()
+        }
+        // Empty pane space below the button → the background pops out.
+        assert!(scene(|bg, btn| egui::pos2(
+            btn.center().x,
+            (btn.bottom() + bg.bottom()) * 0.5
+        )));
+        // On the content button → the button wins; the background stays silent.
+        assert!(!scene(|_bg, btn| btn.center()));
+    }
+
+    /// `bare_pane_ui`'s drag grip: a small top-right handle senses
+    /// `click_and_drag` and, on `drag_started`, hands off to egui_tiles' own
+    /// tile-drag id (`TileId::egui_id`) so the pane re-docks like a dragged
+    /// tab. It is interacted *after* the content (mirroring how the
+    /// right-click background's content wins its own footprint above), so a
+    /// widget the panel draws underneath the grip's corner keeps its clicks
+    /// everywhere *else*, and the grip still claims drags starting in its
+    /// own tiny footprint. This is deliberately NOT a drag sense spread over
+    /// a wider region: an earlier version tried exactly that (a top-strip
+    /// `click_and_drag` interact registered *before* content) and a plain
+    /// button drawn inside it had its click hijacked into a pane-drag once
+    /// the pointer moved past the click threshold — `Response::dragged()`
+    /// only needs the *sense*, not being topmost, so a click-only sibling
+    /// has nothing to contest a drag-sensing one with (confirmed against
+    /// egui_tiles' own tab bar, whose background AND its individual tab
+    /// buttons both sense `click_and_drag` — that symmetry is what lets one
+    /// yield to the other; a plain button can't).
+    #[test]
+    fn bare_pane_drag_grip_moves_the_pane_only_from_its_own_corner() {
+        fn scene(press_pos: impl Fn(egui::Rect, egui::Rect) -> egui::Pos2) -> (bool, bool) {
+            let ctx = egui::Context::default();
+            let content_rect = std::cell::Cell::new(egui::Rect::NOTHING);
+            let grip_rect = std::cell::Cell::new(egui::Rect::NOTHING);
+            let content_clicked = std::cell::Cell::new(false);
+            let tree_id = egui::Id::new("test-dock");
+            let tile_id = egui_tiles::TileId::from_u64(7);
+            let expect_id = tile_id.egui_id(tree_id);
+            let dragged = std::cell::Cell::new(false);
+            let run = |events: Vec<egui::Event>| {
+                let ri = egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::pos2(0.0, 0.0),
+                        egui::vec2(400.0, 400.0),
+                    )),
+                    events,
+                    ..Default::default()
+                };
+                let _ = ctx.run(ri, |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        let rect = ui.max_rect();
+                        // Content: a plain button spanning the corner where
+                        // the grip will sit, mirroring a panel whose header
+                        // reaches the same area (Project's toolbar row).
+                        let content = ui.put(
+                            egui::Rect::from_min_size(
+                                rect.left_top(),
+                                egui::vec2(200.0, BARE_PANE_GRIP_SIZE),
+                            ),
+                            egui::Button::new("content"),
+                        );
+                        content_rect.set(content.rect);
+                        if content.clicked() {
+                            content_clicked.set(true);
+                        }
+                        // The grip, added last exactly as bare_pane_ui does.
+                        let grip = egui::Rect::from_min_size(
+                            egui::pos2(rect.right() - BARE_PANE_GRIP_SIZE, rect.top()),
+                            egui::vec2(BARE_PANE_GRIP_SIZE, BARE_PANE_GRIP_SIZE),
+                        );
+                        grip_rect.set(grip);
+                        let handle = ui.interact(
+                            grip,
+                            ui.id().with("bare-pane-grip"),
+                            egui::Sense::click_and_drag(),
+                        );
+                        if handle.drag_started() {
+                            ui.ctx().set_dragged_id(expect_id);
+                        }
+                        dragged.set(ctx.is_being_dragged(expect_id));
+                    });
+                });
+            };
+            let m = egui::Modifiers::default();
+            let btn = egui::PointerButton::Primary;
+            run(vec![]);
+            run(vec![]);
+            let pos = press_pos(content_rect.get(), grip_rect.get());
+            run(vec![egui::Event::PointerMoved(pos)]);
+            run(vec![egui::Event::PointerButton {
+                pos,
+                button: btn,
+                pressed: true,
+                modifiers: m,
+            }]);
+            // Move past the drag threshold while held (a plain press+release
+            // at the same spot is a click, not a drag — same distinction
+            // `dragging_a_row_delivers_its_payload_to_a_drop_target` relies on).
+            let moved = pos + egui::vec2(8.0, 0.0);
+            run(vec![egui::Event::PointerMoved(moved)]);
+            let got_dragged = dragged.get();
+            run(vec![egui::Event::PointerButton {
+                pos: moved,
+                button: btn,
+                pressed: false,
+                modifiers: m,
+            }]);
+            (content_clicked.get(), got_dragged)
+        }
+        // Dragging from the grip's own corner starts the tile drag.
+        let (_, dragged) = scene(|_content, grip| grip.center());
+        assert!(dragged, "dragging the grip should start the tile drag");
+        // Dragging from elsewhere on the content (away from the grip
+        // corner) must not — the button there keeps its own interaction.
+        let (clicked, dragged) =
+            scene(|content, _grip| content.left_center() + egui::vec2(20.0, 0.0));
+        assert!(!dragged, "dragging the content must not hijack a pane-drag");
+        assert!(!clicked, "a drag, even off the grip, is not a click");
     }
 
     // Each keyframe's glyph codes its interpolation (graph-editor ergonomics).
