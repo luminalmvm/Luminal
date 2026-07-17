@@ -63,6 +63,11 @@ pub mod preview {
         pub flow: bool,
         /// Full-resolution flow fields (FlowParams.half_resolution = false).
         pub flow_full: bool,
+        /// Neighbour source frames a temporal effect stack needs (echo, flow
+        /// motion blur, datamosh): `(offset, source_frame)`, one per non-zero
+        /// offset in the stack's temporal window. Empty for a plain layer, so
+        /// a single-frame stack decodes exactly one frame.
+        pub temporal: Vec<(i32, usize)>,
     }
 
     pub struct CompLayerPixels {
@@ -73,6 +78,9 @@ pub mod preview {
         /// Native source size (see [`CompJob::natural_w`]); drives geometry.
         pub natural_w: u32,
         pub natural_h: u32,
+        /// Decoded neighbour frames for a temporal effect (see
+        /// [`CompJob::temporal`]): `(offset, rgba)`, same size as `rgba`.
+        pub temporal: Vec<(i32, Vec<u8>)>,
     }
 
     pub struct CompFrame {
@@ -299,6 +307,26 @@ pub mod preview {
             } else {
                 px.rgba
             };
+            // Neighbour frames for a temporal effect (job.temporal is empty
+            // for a plain layer, so this loop does nothing then). A neighbour
+            // that fails to decode is simply dropped — a missing echo tap
+            // degrades the effect, never the frame.
+            let temporal: Vec<(i32, Vec<u8>)> = job
+                .temporal
+                .iter()
+                .filter_map(|&(offset, frame)| {
+                    let nreq = Request {
+                        generation: 0,
+                        item: job.item,
+                        path: job.path.clone(),
+                        frame,
+                        target_width: job.target_width,
+                    };
+                    decode(decoders, cache, &nreq)
+                        .ok()
+                        .map(|p| (offset, p.rgba))
+                })
+                .collect();
             layers.push(CompLayerPixels {
                 layer: job.layer,
                 width: px.width,
@@ -306,6 +334,7 @@ pub mod preview {
                 rgba,
                 natural_w: job.natural_w,
                 natural_h: job.natural_h,
+                temporal,
             });
         }
         Ok(CompFrame {
@@ -2847,6 +2876,10 @@ impl AppState {
                                     blend,
                                     flow,
                                     flow_full,
+                                    // Temporal effects on Sequence clips are a
+                                    // later refinement (clip-relative neighbour
+                                    // resolution); footage layers first.
+                                    temporal: Vec::new(),
                                 });
                             }
                         }
@@ -2889,6 +2922,34 @@ impl AppState {
                         matches!(interp, Some(Interpolation::Flow(p)) if !p.half_resolution);
                     let (source_frame, blend) =
                         crate::pixels::frame_pick(source_time, video.fps(), *src_frames, blend_on);
+                    // Neighbour source frames for a temporal effect stack
+                    // (echo/trails, flow motion blur, datamosh): the layer's
+                    // source at each non-zero offset in the stack's window,
+                    // mapped through the retime like the primary frame. Empty
+                    // unless the stack actually reads other frames, so a plain
+                    // footage layer decodes exactly one frame.
+                    let temporal =
+                        if lumit_core::fx::stack_is_temporal(&layer.effects, layer.switches.fx) {
+                            let comp_dt = 1.0 / comp.frame_rate.fps().max(1.0);
+                            lumit_core::fx::stack_temporal_window(&layer.effects, layer.switches.fx)
+                                .into_iter()
+                                .filter(|&o| o != 0)
+                                .map(|o| {
+                                    let nlt = lt + f64::from(o) * comp_dt;
+                                    let nst =
+                                        retime.as_ref().map(|r| r.evaluate(nlt)).unwrap_or(nlt);
+                                    let (nf, _) = crate::pixels::frame_pick(
+                                        nst,
+                                        video.fps(),
+                                        *src_frames,
+                                        false,
+                                    );
+                                    (o, nf)
+                                })
+                                .collect()
+                        } else {
+                            Vec::new()
+                        };
                     jobs.push(preview::CompJob {
                         layer: layer.id,
                         item: *item,
@@ -2900,6 +2961,7 @@ impl AppState {
                         blend,
                         flow,
                         flow_full,
+                        temporal,
                     });
                 }
             }
