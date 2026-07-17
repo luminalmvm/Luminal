@@ -141,6 +141,8 @@ struct DockBehavior<'a> {
     /// Set when the user clicks a tab group's pop-out button; applied after the
     /// tree is drawn (the panel is hidden here and shown in its own window).
     pop_out: Option<Panel>,
+    /// Every docked pane's rect this frame, for the active-panel highlight.
+    panel_rects: Vec<(Panel, egui::Rect)>,
 }
 
 impl egui_tiles::Behavior<Panel> for DockBehavior<'_> {
@@ -150,6 +152,7 @@ impl egui_tiles::Behavior<Panel> for DockBehavior<'_> {
         _tile_id: egui_tiles::TileId,
         pane: &mut Panel,
     ) -> egui_tiles::UiResponse {
+        self.panel_rects.push((*pane, ui.max_rect()));
         render_panel(ui, self.theme, self.app, self.preview_display, *pane);
         egui_tiles::UiResponse::None
     }
@@ -7724,6 +7727,10 @@ pub struct Shell {
     /// default. Persisted with the workspace.
     #[serde(default)]
     accent_override: Option<[u8; 3]>,
+    /// The panel that last took a click — it wears the accent boundary so the
+    /// keyboard's home is always visible (AE's focused-panel edge).
+    #[serde(skip, default)]
+    active_panel: Option<Panel>,
     #[serde(skip, default)]
     app: AppState,
     /// Boot splash (K-008); None once the application window has expanded.
@@ -7852,6 +7859,7 @@ impl Default for Shell {
             theme: Theme::dark(),
             theme_variant: crate::theme::ThemeVariant::default(),
             accent_override: None,
+            active_panel: None,
             app: AppState::default(),
             splash: None,
             preview_tex: None,
@@ -9307,18 +9315,42 @@ impl Shell {
             ..
         } = self;
         let preview_display = *preview_display;
-        let pop_out = {
+        let (pop_out, panel_rects) = {
             let mut behavior = DockBehavior {
                 theme,
                 app,
                 preview_display,
                 pop_out: None,
+                panel_rects: Vec::new(),
             };
             egui::CentralPanel::default()
                 .frame(egui::Frame::default().fill(theme.surface_0))
                 .show(ctx, |ui| dock.ui(&mut behavior, ui));
-            behavior.pop_out
+            (behavior.pop_out, behavior.panel_rects)
         };
+
+        // Active-panel boundary (owner request): a press inside a pane makes
+        // it the focused one, and it wears a 1px accent edge so the eye always
+        // knows where shortcuts land.
+        if let Some(pos) = ctx.input(|i| i.pointer.press_origin()) {
+            if let Some((panel, _)) = panel_rects.iter().find(|(_, r)| r.contains(pos)) {
+                self.active_panel = Some(*panel);
+            }
+        }
+        if let Some(active) = self.active_panel {
+            if let Some((_, rect)) = panel_rects.iter().find(|(p, _)| *p == active) {
+                ctx.layer_painter(egui::LayerId::new(
+                    egui::Order::Foreground,
+                    egui::Id::new("active-panel-edge"),
+                ))
+                .rect_stroke(
+                    rect.shrink(0.5),
+                    0.0,
+                    egui::Stroke::new(1.0_f32, theme.accent.gamma_multiply(0.55)),
+                    egui::StrokeKind::Inside,
+                );
+            }
+        }
 
         // Apply a pop-out request: hide the panel in the dock, float it. A
         // solo Timeline has no dock tab (K-086), so its request arrives from

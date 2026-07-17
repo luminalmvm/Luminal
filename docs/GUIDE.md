@@ -677,6 +677,9 @@ Two mechanisms make this safe, and you'll see them by name in the code:
   and **Accent** lets you pick any colour for the app's single accent — selection, the
   playhead, active states all follow it, since they are one token. Both persist with your
   workspace; Reset returns the clay default.
+  The **focused panel** also wears a thin accent edge: whichever panel you last clicked is
+  where keyboard shortcuts land, and the edge keeps that visible at a glance (the After
+  Effects convention).
 - `crates/lumit-ui/src/icons.rs` — **the icons: Iconoir, shipped as a font** (K-085).
   Little pictures like the play triangle or the padlock come from Iconoir, a free
   professionally drawn icon family, baked into the program as a small font file — each icon
