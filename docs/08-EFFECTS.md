@@ -908,7 +908,9 @@ half-width of the sharp band around focus), Aperture (px@comp, default 8, slider
 **master** maximum circle-of-confusion radius, scaling both per-side radii about its default 8),
 Near blur (px@comp, default 8, slider 0–40, the max circle-of-confusion on the **near** side,
 `d < focus`) and Far blur (px@comp, default 8, slider 0–40, the **far** side, `d ≥ focus`) — the
-owner's "adjust close/far blur separately", Mix.
+owner's "adjust close/far blur separately", Display (choice, default Rendered — a diagnostic
+view: **Rendered** the normal blurred output, **Depth map** the post-invert depth as greyscale,
+**Focus map** the smooth in-focus mask, white where sharp), Mix.
 
 **Algorithm sketch.** Per output pixel, read the depth from the referenced layer's **red
 channel** (0..1; by convention 0 = near, 1 = far, though the effect is symmetric about
@@ -918,8 +920,11 @@ circle-of-confusion radius: `s ·` (**Near blur** where `d < focus`, else **Far 
 per-side radius already scaled by the **Aperture** master (`radius · Aperture / 8`). Because the
 near/far select flips only at `d = focus`, where `s = 0`, the radius is continuous, so the
 §1.6 ULP oracle still holds. A box-weighted integer disc of that radius is averaged from the
-source (edges clamped), then blended by Mix. Operates on **premultiplied** colour (the disc
-gathers the working premultiplied image, so coverage and colour blur together). `moderate`
+source (edges clamped), then blended by Mix. The **Display** diagnostic modes (Depth map, Focus
+map) short-circuit before the gather and write their view directly, ignoring the blur and Mix;
+every shipped mode is continuous, so the §1.6 oracle covers them all (none excluded). Operates
+on **premultiplied** colour (the disc gathers the working premultiplied image, so coverage and
+colour blur together). `moderate`
 cost, ROI a padded gather (the static declaration covers the 40 px aperture at ≥ 1080p), `{0}`
 temporal. Category **Blur & sharpen**. A zero effective aperture (master or both sides at 0), a
 depth everywhere inside the sharp band, or `Mix 0` are all bit-exact passthroughs, pinned by
@@ -933,8 +938,10 @@ binds). Preview and export render the depth through **one shared helper**
 the referenced layer's source and transform (the same content a matte's key hashes), so
 editing the depth pass retires stale frames.
 
-**Status (v1, shipped, K-124):** the depth-driven disc blur above, with a depth layer +
-Focus/Range/Aperture/Mix. Deliberate v1 limitations (documented, follow-ups tracked): the
+**Status (v1, shipped, K-124; extended K-126):** the depth-driven disc blur above, with a depth
+layer + Focus/Range/Aperture/Mix, plus (K-126) Depth invert, separate Near/Far blur under the
+Aperture master, and the Rendered/Depth map/Focus map Display views. Deliberate v1 limitations
+(documented, follow-ups tracked): the
 depth layer is rendered **source-only** (its own effect stack is not applied) and **resampled
 to the consuming layer's raster** to align with the pixels the blur runs on — a
 placement-aware or effects-aware depth is a follow-up; a depth layer built purely from

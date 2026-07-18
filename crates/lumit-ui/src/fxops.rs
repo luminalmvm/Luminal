@@ -634,6 +634,7 @@ pub fn run_ops(
                 near_aperture,
                 far_aperture,
                 depth_invert,
+                display,
                 mix,
             } => {
                 // The k-th Dof op binds the k-th `layer_inputs` slot (docs/08
@@ -657,6 +658,7 @@ pub fn run_ops(
                         *near_aperture,
                         *far_aperture,
                         *depth_invert,
+                        *display,
                         *mix,
                     );
                 }

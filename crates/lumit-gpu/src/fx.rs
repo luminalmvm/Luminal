@@ -632,9 +632,9 @@ struct DatamoshParams {
 /// scalars the kernel turns a depth into a circle-of-confusion radius with,
 /// plus the host Mix. The near side (`d < focus`) uses `near_aperture`, the far
 /// side `far_aperture`; both zero (or every pixel inside the sharp band) is a
-/// bit-exact passthrough. `depth_invert` is a 0/1 flag (u32 to match the WGSL
-/// uniform's scalar packing). 32 bytes: six scalars plus two words of tail
-/// padding to the 16-byte uniform stride.
+/// bit-exact passthrough. `depth_invert` and `display` are u32 flags (to match
+/// the WGSL uniform's scalar packing). 32 bytes: seven scalars plus one word of
+/// tail padding to the 16-byte uniform stride.
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct DofParams {
@@ -647,7 +647,9 @@ struct DofParams {
     mix_amt: f32,
     /// 0 = read the depth as-is, 1 = invert it (`d' = 1 - d`) before the CoC.
     depth_invert: u32,
-    _pad: [f32; 2],
+    /// Diagnostic view: 0 = Rendered, 1 = Depth map, 2 = Focus map.
+    display: u32,
+    _pad: f32,
 }
 
 #[repr(C)]
@@ -1290,7 +1292,11 @@ impl FxEngine {
     /// to `near_aperture` raster pixels on the near side (`d < focus`) or
     /// `far_aperture` on the far side at the depth extreme — and averages a
     /// box-weighted integer disc of that radius from `src`, edges clamped,
-    /// then blends against the input by the host Mix. `depth` must be the same
+    /// then blends against the input by the host Mix. `display` selects the
+    /// output view: 0 = Rendered (the blur above), 1 = Depth map (the
+    /// post-invert depth as greyscale), 2 = Focus map (the smooth `1 - s`
+    /// in-focus mask); the diagnostic views ignore the blur and Mix and are
+    /// continuous, so the oracle covers them. `depth` must be the same
     /// size as `src`; because only its red is read (via `textureLoad`, not a
     /// sampler), it may be **any float texture** — the referenced depth layer
     /// rendered in the working `rgba16float` format (the effect's real depth
@@ -1313,6 +1319,7 @@ impl FxEngine {
         near_aperture: f32,
         far_aperture: f32,
         depth_invert: bool,
+        display: u32,
         mix: f32,
     ) -> wgpu::Texture {
         use wgpu::util::DeviceExt;
@@ -1328,7 +1335,8 @@ impl FxEngine {
                     far_aperture,
                     mix_amt: mix,
                     depth_invert: u32::from(depth_invert),
-                    _pad: [0.0; 2],
+                    display,
+                    _pad: 0.0,
                 }),
                 usage: wgpu::BufferUsages::UNIFORM,
             });
@@ -4758,6 +4766,7 @@ mod tests {
         near_aperture: f32,
         far_aperture: f32,
         depth_invert: bool,
+        display: u32,
         mix: f32,
     ) -> Vec<f32> {
         let wi = w as i32;
@@ -4766,6 +4775,7 @@ mod tests {
         for y in 0..hi {
             for x in 0..wi {
                 let pi = (y * wi + x) as usize;
+                let oi = pi * 4;
                 let raw = depth[pi];
                 // Depth invert (swap near and far): the shader's
                 // `select(raw, 1 - raw, invert)`, bit-identical here.
@@ -4777,6 +4787,25 @@ mod tests {
                 // smoothstep zero and coincides in fp16), so parity holds.
                 let e = ((dist - range) / denom).clamp(0.0, 1.0);
                 let s = e * e * (3.0 - 2.0 * e);
+                // Diagnostic views (mirror the kernel): write the view directly,
+                // ignoring the disc gather and Mix.
+                if display == 1 {
+                    // Depth map: post-invert depth as opaque greyscale.
+                    out[oi] = d;
+                    out[oi + 1] = d;
+                    out[oi + 2] = d;
+                    out[oi + 3] = 1.0;
+                    continue;
+                }
+                if display == 2 {
+                    // Focus map: 1 - s, white where sharp.
+                    let m = 1.0 - s;
+                    out[oi] = m;
+                    out[oi + 1] = m;
+                    out[oi + 2] = m;
+                    out[oi + 3] = 1.0;
+                    continue;
+                }
                 // Per-side aperture: the shader's
                 // `select(far, near, d < focus)`, far at equality.
                 let ap = if d < focus {
@@ -4804,7 +4833,6 @@ mod tests {
                         }
                     }
                 }
-                let oi = pi * 4;
                 for c in 0..4 {
                     let v = acc[c] / wsum;
                     let o = img[oi + c];
@@ -4846,9 +4874,11 @@ mod tests {
         }
         let depth_t = upload_depth_map(&ctx, &ramp, w, h);
 
-        // (focus, range, near, far, invert, mix, name). Invert, and an
-        // asymmetric near/far pair, both stay continuous (the aperture select
-        // flips only where s == 0), so the cheap-class ≤ 2 fp16 ULP bound holds.
+        // (focus, range, near, far, invert, display, mix, name). Invert, an
+        // asymmetric near/far pair, and every shipped Display mode all stay
+        // continuous (the aperture select flips only where s == 0; Depth/Focus
+        // maps are smooth in depth), so the cheap-class ≤ 2 fp16 ULP bound holds
+        // across modes — none is excluded.
         let cases = [
             (
                 0.5f32,
@@ -4856,22 +4886,29 @@ mod tests {
                 6.0f32,
                 6.0f32,
                 false,
+                0u32,
                 1.0f32,
                 "centre-focus",
             ),
-            (0.0, 0.05, 8.0, 8.0, false, 1.0, "near-focus"),
-            (0.5, 0.1, 6.0, 6.0, false, 0.5, "partial mix"),
-            (0.5, 0.2, 10.0, 10.0, false, 1.0, "wide aperture"),
-            (0.2, 0.1, 8.0, 8.0, true, 1.0, "inverted near-focus"),
-            (0.5, 0.1, 6.0, 6.0, true, 1.0, "inverted centre-focus"),
-            (0.5, 0.05, 12.0, 3.0, false, 1.0, "asymmetric near>far"),
-            (0.5, 0.05, 3.0, 12.0, false, 1.0, "asymmetric far>near"),
-            (0.5, 0.05, 12.0, 3.0, true, 1.0, "asymmetric inverted"),
+            (0.0, 0.05, 8.0, 8.0, false, 0, 1.0, "near-focus"),
+            (0.5, 0.1, 6.0, 6.0, false, 0, 0.5, "partial mix"),
+            (0.5, 0.2, 10.0, 10.0, false, 0, 1.0, "wide aperture"),
+            (0.2, 0.1, 8.0, 8.0, true, 0, 1.0, "inverted near-focus"),
+            (0.5, 0.1, 6.0, 6.0, true, 0, 1.0, "inverted centre-focus"),
+            (0.5, 0.05, 12.0, 3.0, false, 0, 1.0, "asymmetric near>far"),
+            (0.5, 0.05, 3.0, 12.0, false, 0, 1.0, "asymmetric far>near"),
+            (0.5, 0.05, 12.0, 3.0, true, 0, 1.0, "asymmetric inverted"),
+            (0.5, 0.1, 8.0, 8.0, false, 1, 1.0, "depth map"),
+            (0.5, 0.1, 8.0, 8.0, true, 1, 1.0, "depth map inverted"),
+            (0.5, 0.1, 8.0, 8.0, false, 2, 1.0, "focus map"),
+            (0.3, 0.15, 12.0, 4.0, false, 2, 1.0, "focus map asymmetric"),
         ];
-        for (focus, range, near, far, invert, mix, name) in cases {
-            let cpu = dof_reference(&img, &ramp, w, h, focus, range, near, far, invert, mix);
+        for (focus, range, near, far, invert, display, mix, name) in cases {
+            let cpu = dof_reference(
+                &img, &ramp, w, h, focus, range, near, far, invert, display, mix,
+            );
             let out = fx.dof(
-                &ctx, &src, w, h, &depth_t, focus, range, near, far, invert, mix,
+                &ctx, &src, w, h, &depth_t, focus, range, near, far, invert, display, mix,
             );
             let gpu = readback_linear_f32(&ctx, &out, w, h).unwrap();
             let worst = worst_f16_ulp(&cpu, &gpu);
@@ -4879,7 +4916,7 @@ mod tests {
             assert!(worst <= 2, "{name}: worst {worst} fp16 ULP");
             // Determinism (§2.4): a second run is bit-identical to the first.
             let out2 = fx.dof(
-                &ctx, &src, w, h, &depth_t, focus, range, near, far, invert, mix,
+                &ctx, &src, w, h, &depth_t, focus, range, near, far, invert, display, mix,
             );
             assert_eq!(
                 gpu,
@@ -4888,8 +4925,11 @@ mod tests {
             );
         }
 
-        // Mix 0 is the bit-exact input regardless of depth or aperture.
-        let out = fx.dof(&ctx, &src, w, h, &depth_t, 0.5, 0.1, 10.0, 10.0, false, 0.0);
+        // Mix 0 is the bit-exact input regardless of depth or aperture (Rendered
+        // mode).
+        let out = fx.dof(
+            &ctx, &src, w, h, &depth_t, 0.5, 0.1, 10.0, 10.0, false, 0, 0.0,
+        );
         assert_eq!(
             readback_linear_f32(&ctx, &out, w, h).unwrap(),
             img,
@@ -4899,7 +4939,7 @@ mod tests {
         // Both apertures zero collapses every disc to the centre tap — a
         // bit-exact passthrough at full Mix, whatever the depth (invert cannot
         // change a zero radius).
-        let out = fx.dof(&ctx, &src, w, h, &depth_t, 0.5, 0.1, 0.0, 0.0, true, 1.0);
+        let out = fx.dof(&ctx, &src, w, h, &depth_t, 0.5, 0.1, 0.0, 0.0, true, 0, 1.0);
         assert_eq!(
             readback_linear_f32(&ctx, &out, w, h).unwrap(),
             img,
@@ -4910,7 +4950,7 @@ mod tests {
         // zero for every pixel — also a bit-exact passthrough at full Mix,
         // even with large apertures. Inverting a flat 0.5 leaves it in-band.
         let flat = upload_depth_map(&ctx, &vec![0.5f32; n], w, h);
-        let out = fx.dof(&ctx, &src, w, h, &flat, 0.5, 0.1, 10.0, 10.0, false, 1.0);
+        let out = fx.dof(&ctx, &src, w, h, &flat, 0.5, 0.1, 10.0, 10.0, false, 0, 1.0);
         assert_eq!(
             readback_linear_f32(&ctx, &out, w, h).unwrap(),
             img,

@@ -1097,6 +1097,20 @@ pub const BUILTINS: &[EffectSchema] = &[
                     hard: (Some(0.0), None),
                 },
             },
+            ParamSchema {
+                // Diagnostic views (the realistic subset the reference plugins
+                // ship). Rendered is the normal blurred output; Depth map shows
+                // the post-invert depth as greyscale; Focus map is the smooth
+                // in-focus mask (white where sharp, darkening out of focus).
+                // Every mode is continuous, so the §1.6 ULP oracle holds across
+                // them. Absent on pre-feature projects → Rendered (default 0).
+                id: "display",
+                label: "Display",
+                kind: ParamKind::Choice {
+                    options: &["Rendered", "Depth map", "Focus map"],
+                    default: 0,
+                },
+            },
             MIX_PARAM,
         ],
     },
@@ -2336,6 +2350,10 @@ pub enum Resolved {
         /// circle-of-confusion, swapping near and far. A `Copy` scalar, so the
         /// enum stays `Copy` and threads beside the depth texture unchanged.
         depth_invert: bool,
+        /// Diagnostic view: 0 = Rendered (the blurred output), 1 = Depth map
+        /// (post-invert greyscale), 2 = Focus map (the smooth in-focus mask).
+        /// Modes 1/2 ignore the blur and Mix and write the view directly.
+        display: u32,
         /// 0..1.
         mix: f32,
     },
@@ -3116,6 +3134,12 @@ pub fn resolve_stack(
                 // Depth invert (a plain Bool; absent on pre-feature projects,
                 // where it reads false — the historical, unchanged behaviour).
                 let depth_invert = matches!(e.param("depth_invert"), Some(EffectValue::Bool(true)));
+                // Diagnostic view (clamped to the shipped modes; absent on
+                // pre-feature projects → 0 Rendered, the normal output).
+                let display = match e.param("display") {
+                    Some(EffectValue::Choice(c)) => (*c).min(2),
+                    _ => 0,
+                };
                 let mix = (e.float_at("mix", lt).unwrap_or(100.0) as f32 / 100.0).clamp(0.0, 1.0);
                 Some(Resolved::Dof {
                     focus,
@@ -3123,6 +3147,7 @@ pub fn resolve_stack(
                     near_aperture,
                     far_aperture,
                     depth_invert,
+                    display,
                     mix,
                 })
             }
@@ -4717,6 +4742,8 @@ mod tests {
             e.param("depth_invert"),
             Some(EffectValue::Bool(false))
         ));
+        // Display defaults to Rendered (the normal blurred output).
+        assert!(matches!(e.param("display"), Some(EffectValue::Choice(0))));
 
         // resolve_stack carries only the scalars; the depth is threaded beside
         // the op. The default Aperture master (8) is unity, so each side
@@ -4733,6 +4760,7 @@ mod tests {
                 near_aperture: 4.0,
                 far_aperture: 4.0,
                 depth_invert: false,
+                display: 0,
                 mix: 1.0,
             }]
         );
@@ -4766,6 +4794,7 @@ mod tests {
                 near_aperture: 20.0, // 10 · (16/8)
                 far_aperture: 8.0,   // 4 · (16/8)
                 depth_invert: false,
+                display: 0,
                 mix: 1.0,
             }]
         );
@@ -4797,6 +4826,7 @@ mod tests {
                 near_aperture: 12.0, // 8 (default) · (12/8)
                 far_aperture: 12.0,
                 depth_invert: false,
+                display: 0,
                 mix: 1.0,
             }]
         );
