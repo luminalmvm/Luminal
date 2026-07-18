@@ -979,3 +979,21 @@ unpremultiply round trip and alpha is untouched. Continuous, so the §1.6 oracle
 fp16 ULP (0–1 on the dev RTX). 0° resolves to the exact identity matrix (the bit-exact neutral
 point, pinned by test); Mix 0 is likewise the identity. The rotation runs in scene-linear
 working space, consistent with the other grades. Wired at the usual four sites.
+
+**K-110 · DECIDED · Contrast ships as a new single-frame grade effect (docs/08 §3.18).**
+The fourth one-knob colour grade beside Exposure, Hue shift and Saturation: it expands or
+compresses each RGB channel about a fixed pivot, `out = (in − pivot) × k + pivot`, with
+`k = Contrast ÷ 100` (default 100 % = identity, slider 0–200, hard min 0 and unbounded above,
+matching Exposure/Saturation's one-sided bound) and `pivot = 0.5`. The pivot is a plain
+mid-grey 0.5, not the 0.18 scene-linear mid-grey, so the control behaves like a photo-editor
+contrast slider (symmetric about 50 %) rather than a light-meter grey card — the one
+substantive design call, flagged for the owner to review. Because the `− pivot` offset makes
+this an affine grade, not a pure scale, it does not commute with premultiplied alpha: it
+declares `premultiplied: false` and the host unpremultiplies → grades → re-premultiplies (like
+Colour balance and Saturation), so matte edges do not shift — unlike Exposure, whose pure
+multiply is alpha-safe. Alpha is untouched and the maths runs in the scene-linear working
+space. Continuous everywhere (no round/clamp/quantize), so the §1.6 oracle holds (worst 1 fp16
+ULP on the dev RTX, partial-alpha pixels tested); Contrast 100 % and Mix 0 are bit-exact
+passthroughs. Resolve clamps `k` at `max(0.0)` to honour the schema's hard min; the kernel
+itself clamps nothing, staying continuous. Wired at the usual sites, built in an isolated
+worktree and merged.

@@ -263,6 +263,15 @@ pub fn run_ops(
                     &lumit_gpu::fx::HueShiftOp { m: *m, mix: *mix },
                 );
             }
+            Resolved::Contrast { k, mix } => {
+                tex = fx.contrast(
+                    ctx,
+                    &tex,
+                    w,
+                    h,
+                    &lumit_gpu::fx::ContrastOp { k: *k, mix: *mix },
+                );
+            }
             Resolved::Transform {
                 anchor,
                 position,

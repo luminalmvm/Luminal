@@ -422,6 +422,15 @@ Two mechanisms make this safe, and you'll see them by name in the code:
   0° leaves the picture exactly as it was. Under the hood it is a small fixed colour-mixing
   matrix worked out once for the angle, so the preview and the export apply the identical
   numbers.
+- **Contrast (K-110).** The familiar contrast slider: push everything further from a middle
+  grey (brights brighter, darks darker) or pull it toward that grey to flatten the image.
+  100 % leaves the picture exactly as it was; below 100 % flattens, above 100 % punches. The
+  middle grey it pivots around is a plain 50 %, like a photo editor's contrast control. One
+  subtlety worth knowing: because it *shifts* colours toward or away from a fixed point rather
+  than simply scaling them, it has to be done on the "straight" colour of a semi-transparent
+  pixel — Lumit briefly divides the alpha back out, applies the contrast, then multiplies it
+  back in, so soft edges keep their shape instead of fringing. Exposure does not need that
+  step because a plain multiply already behaves the same with or without the alpha folded in.
 - `crates/lumit-core/src/lut.rs` — **reading a colour LUT (`.cube` file).** A LUT
   (look-up table) is a colour recipe a colourist bakes elsewhere: feed it a red/green/blue
   and it hands back a graded red/green/blue. The common `.cube` text format stores that as a
