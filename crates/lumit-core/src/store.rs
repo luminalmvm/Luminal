@@ -655,6 +655,7 @@ mod tests {
             },
             enabled: true,
             params: Vec::new(),
+            sample_temporally: true,
             extra: serde_json::Map::new(),
         }];
         store

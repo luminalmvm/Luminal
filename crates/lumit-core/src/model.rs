@@ -395,6 +395,13 @@ pub struct EffectInstance {
     pub enabled: bool,
     /// Ordered as declared by the effect's schema.
     pub params: Vec<EffectParam>,
+    /// Whether a temporal re-render effect (accumulation motion blur, Posterize
+    /// Time — docs/impl/temporal-rerender.md) re-evaluates this effect at each
+    /// sub-frame / held sample. Default true; set false to hold a stochastic or
+    /// costly effect (a particle system) at the frame time instead of running
+    /// it N times. Ignored unless a temporal re-render effect is sampling.
+    #[serde(default = "default_true")]
+    pub sample_temporally: bool,
     #[serde(flatten, default, skip_serializing_if = "serde_json::Map::is_empty")]
     pub extra: serde_json::Map<String, serde_json::Value>,
 }
@@ -887,6 +894,18 @@ mod tests {
 
     fn secs(s: i64) -> CompTime {
         CompTime(Rational::new(s, 1).unwrap())
+    }
+
+    #[test]
+    fn effect_instance_sample_temporally_defaults_true() {
+        // An effect saved before the temporal-rerender flag existed loads with
+        // it on (docs/10 §1.1 forward compat), so old projects behave as before.
+        let e = crate::fx::instantiate("blur").unwrap();
+        assert!(e.sample_temporally);
+        let mut v = serde_json::to_value(&e).unwrap();
+        v.as_object_mut().unwrap().remove("sample_temporally");
+        let back: EffectInstance = serde_json::from_value(v).unwrap();
+        assert!(back.sample_temporally);
     }
 
     #[test]
