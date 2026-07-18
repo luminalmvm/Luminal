@@ -80,6 +80,24 @@ correct form — do it if the visited-set makes it clean.
 - Preview==export: the referenced-layer render + threading go through one shared
   helper (asserted by construction / reviewed by hand, as for the LUT).
 
+## Follow-up: reference the layer BEFORE or AFTER its own effects (owner request)
+Both a **track matte** and a **layer-input** (depth) should offer a boolean —
+take the referenced layer's pixels **before** its own effect stack runs, or
+**after** (the fully processed layer). A depth pass you graded, or a matte you
+did not want blurred, is the motivating case.
+- Model: add `pre_effects: bool` to `MatteRef`, and to the layer-input value
+  (either `EffectValue::Layer` becomes `{ id: Option<Uuid>, pre_effects: bool }`,
+  or the effect carries a companion `Bool` param, e.g. DoF's "Depth before
+  effects"). `#[serde(default)]` so existing projects load with `false`
+  (after-effects, today's behaviour).
+- Render: the ONE shared "render layer X alone at comp size" helper (§2) takes
+  the flag and, when `pre_effects`, renders **source → masks → transform** but
+  **skips the effect stack** — the pipeline already has the stack as a discrete
+  step, so this is one branch. Preview and export pass the same flag (K-031).
+- Do this as a small increment AFTER the layer-input + matte referencing lands,
+  so it touches a settled helper. Applies uniformly to mattes and every
+  layer-input effect.
+
 ## Status / follow-ups
 This unblocks **DoF v1** (a depth layer + focus/aperture/mix). The fuller
 "DOF PRO" second effect, shaped bokeh highlights, and the deferred bright-rim
