@@ -492,8 +492,12 @@ pub(crate) fn viewer_footage(
                 egui::Sense::click_and_drag(),
             );
             if view.hovered() {
+                // While the eyedropper is armed, Shift+scroll grows its sample
+                // region instead of zooming the view (handled in its overlay).
+                let shift = ui.ctx().input(|i| i.modifiers.shift);
+                let region_scroll = app.eyedropper.is_some() && shift;
                 let scroll = ui.ctx().input(|i| i.smooth_scroll_delta.y);
-                if scroll.abs() > 0.1 {
+                if !region_scroll && scroll.abs() > 0.1 {
                     let factor = (scroll * 0.003).exp();
                     app.view_zoom = (app.view_zoom * factor).clamp(0.05, 32.0);
                     if app.preview_auto_res {
@@ -501,8 +505,12 @@ pub(crate) fn viewer_footage(
                     }
                 }
             }
-            // Drag pans in Select/Hand; Shape and Pen intercept it below.
-            if view.dragged() && matches!(app.tool, ToolMode::Select | ToolMode::Hand) {
+            // Drag pans in Select/Hand; Shape and Pen intercept it below. Held
+            // off while the eyedropper is armed so a sampling click never pans.
+            if view.dragged()
+                && app.eyedropper.is_none()
+                && matches!(app.tool, ToolMode::Select | ToolMode::Hand)
+            {
                 app.view_pan += view.drag_delta();
             }
             if matches!(app.tool, ToolMode::Hand) && view.hovered() {
@@ -537,6 +545,9 @@ pub(crate) fn viewer_footage(
             shape_overlay(ui, theme, app, draw, scale, &view);
             #[cfg(feature = "media")]
             anchor_overlay(ui, theme, app, draw, scale);
+            // The eyedropper's magnifier + sample-on-click, when armed.
+            #[cfg(feature = "media")]
+            eyedropper::viewer_overlay(ui, theme, app, draw, image_area, &view);
         }
     } else {
         ui.painter().text(

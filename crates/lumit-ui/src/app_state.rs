@@ -636,6 +636,35 @@ pub enum ToolMode {
     Pen,
 }
 
+/// What an armed eyedropper samples from the Viewer, and how it is committed
+/// back to its target parameter.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum EyedropperMode {
+    /// Sample a colour and write it to a Colour parameter's RGB channels
+    /// (converted to the scene-linear values the parameter holds).
+    Colour,
+    /// Sample a depth proxy (the luma of the picked pixel) and write it to a
+    /// Float parameter — the depth-of-field Focus pick.
+    Depth,
+}
+
+/// An armed eyedropper: which effect parameter the next Viewer click writes,
+/// and what it samples. Set by the inspector's eyedropper button, consumed by
+/// the Viewer overlay ([`crate::shell::eyedropper`]) — a click samples and
+/// commits an undoable `SetLayerEffects`, then disarms; Escape or a click
+/// outside the image cancels.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct EyedropperTarget {
+    /// The layer whose effect stack carries the parameter.
+    pub layer: Uuid,
+    /// Index of the effect within that layer's stack.
+    pub effect: usize,
+    /// Index of the parameter within that effect.
+    pub param: usize,
+    /// What to sample and how to commit it.
+    pub mode: EyedropperMode,
+}
+
 pub struct CompDialog {
     /// Some = editing an existing comp; None = creating a new one.
     pub editing: Option<Uuid>,
@@ -952,6 +981,20 @@ pub struct AppState {
     pub mask_drag: Option<(usize, usize, (f64, f64))>,
     /// The active pointer tool (toolbar): what a Viewer drag/click does.
     pub tool: ToolMode,
+    /// An armed eyedropper (colour or depth pick from the Viewer), or None.
+    /// While Some, the Viewer shows a magnifier and the next click over the
+    /// image samples and commits to this parameter (see [`EyedropperTarget`]).
+    pub eyedropper: Option<EyedropperTarget>,
+    /// The eyedropper's averaging region side length in image pixels: 1 (a
+    /// single pixel), 2, 3, … Shift+scroll over the Viewer grows it so a wider
+    /// sample beats grain; the committed value is the average over the region.
+    /// Reset to 1 each time the eyedropper is armed.
+    pub eyedropper_region: u32,
+    /// False on the frame the eyedropper is armed, true afterwards: keeps the
+    /// same click that armed it (over another panel) from immediately reading
+    /// as a click outside the Viewer and cancelling — the docked panels can
+    /// draw in either order within a frame.
+    pub eyedropper_primed: bool,
     /// The shape the shape tool draws (its last-picked kind).
     pub shape_kind: ShapeKind,
     /// Shape-tool rubber-band start in layer space; Some while dragging.
@@ -1216,6 +1259,9 @@ impl Default for AppState {
             selected_item: None,
             mask_drag: None,
             tool: ToolMode::default(),
+            eyedropper: None,
+            eyedropper_region: 1,
+            eyedropper_primed: false,
             shape_kind: ShapeKind::default(),
             shape_drag: None,
             origin_drag: None,
@@ -1244,6 +1290,15 @@ impl AppState {
         self.graph_auto_fit = true;
         self.graph_view_y = None;
         self.graph_view_h = None;
+    }
+
+    /// Arm the eyedropper on a target parameter: the next Viewer click samples
+    /// and commits to it. Resets the averaging region to a single pixel and
+    /// leaves it unprimed for one frame (see [`AppState::eyedropper_primed`]).
+    pub fn arm_eyedropper(&mut self, target: EyedropperTarget) {
+        self.eyedropper = Some(target);
+        self.eyedropper_region = 1;
+        self.eyedropper_primed = false;
     }
 
     /// All document mutation funnels through here: commit, journal, dirty.
