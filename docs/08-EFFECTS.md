@@ -864,7 +864,7 @@ hue direction (`normalize(key chroma)`) from its chroma, desaturating the kept p
 own luma along the key hue so green fringes fade; a grey key has no hue direction, so spill is
 then a no-op. `cheap` cost, `exact` ROI, `{0}` temporal. Category **Utility**, beside Transform.
 
-**Status (v1, shipped):** the chroma metric, soft key and spill model above, with the default
+**Status (v1, shipped, K-121):** the chroma metric, soft key and spill model above, with the default
 green key + 20 % Tolerance visibly keying a typical green screen ("drop it on and it works",
 §1.2). The key's chroma and hue direction are derived from the resolved colour identically on
 the CPU reference and in the WGSL kernel, so both paths use the same numbers; the effect is

@@ -1143,3 +1143,25 @@ and guaranteed to end in `.mp4`; `None`, or a template blank once trimmed, repro
 the user visits the page. Today's date comes from a small hand-rolled UTC civil-date conversion
 (Howard Hinnant's `civil_from_days` over `SystemTime`) rather than a new `chrono`/`time`
 dependency. Built in an isolated worktree and merged.
+
+**K-121 · DECIDED · Matte key ships as a soft chroma-key effect (docs/08 §3.21).**
+A greenscreen keyer in the Utility category: alpha is driven down where a pixel's chroma is
+close to a chosen key colour. The metric is Euclidean distance in the chroma plane — a
+colour's chroma is `rgb − Rec.709-luma`, so distance ignores brightness and a green of any
+exposure keys alike. The keep-factor is `smoothstep(tolerance, tolerance + softness, d)` —
+fully keyed (alpha ×0) at/below tolerance, fully kept at/above tolerance+softness, smooth
+between — so it is continuous everywhere (no hard step, which would blow the cheap-class ULP
+oracle). It runs on straight colour (`premultiplied: false`, §2.2): unpremultiply → key +
+despill → re-premultiply, like Saturation, so edges are judged by true colour not coverage.
+Spill suppression removes a fraction of the pixel's projection onto the key-hue direction,
+desaturating kept pixels toward their own luma along the key hue so green fringes fade (a grey
+key has no hue, so spill is a no-op). The key colour is a `ParamKind::Colour` resolved to a
+scene-linear array at frame time; CPU reference and WGSL kernel derive the chroma/hue from that
+identical resolved colour, holding the §1.6 oracle to ≤ 2 fp16 ULP (measured 1). Default green
++ Tolerance 20 % key a typical screen out of the box (the tasteful-default rule, §1.2, so no
+neutral no-op); Mix 0 is the bit-exact identity. Chroma-distance was chosen over a hue-angle
+metric to avoid per-pixel trig and keep CPU/GPU byte-identical (trade-off: saturation-sensitive,
+which Tolerance widens for). A viewer eyedropper to pick the key off the image, and a
+matte-choker / luma-key companion, are noted follow-ups. Built in an isolated worktree and
+merged. (Numbered after K-120 per-layer motion blur, which lands from a parallel worktree; the
+two are independent, so the log briefly carries K-121 before K-120.)
