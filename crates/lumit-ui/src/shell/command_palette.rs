@@ -33,6 +33,10 @@ pub(crate) enum PaletteAction {
     OpenSettings,
     SetScheme(crate::theme::ColorScheme),
     SetShape(crate::theme::ThemeShape),
+    /// Apply a built-in effect (by `match_name`) to the selected layer — the
+    /// palette's "effects" category (docs/07 §12). Only offered when a layer
+    /// is selected.
+    ApplyEffect(&'static str),
     #[cfg(feature = "media")]
     ExportComp,
 }
@@ -46,6 +50,21 @@ pub(crate) struct PaletteCommand {
 }
 
 impl Shell {
+    /// The (composition, layer) an effect would apply to, if a layer is
+    /// selected in a real composition.
+    fn selected_layer_target(&self) -> Option<(uuid::Uuid, uuid::Uuid)> {
+        let comp = self.app.selected_comp?;
+        let layer = self.app.selected_layer?;
+        self.app
+            .store
+            .snapshot()
+            .comp(comp)?
+            .layers
+            .iter()
+            .any(|l| l.id == layer)
+            .then_some((comp, layer))
+    }
+
     /// Open the palette: cleared query, first row selected, search focused.
     pub(crate) fn open_command_palette(&mut self) {
         self.palette_open = true;
@@ -131,6 +150,17 @@ impl Shell {
             "Shape: round",
             "panels cards floating",
         ));
+        // Effects apply to the selected layer, so only offer them when there
+        // is one (docs/07 §12 effects category).
+        if self.selected_layer_target().is_some() {
+            for schema in lumit_core::fx::BUILTINS {
+                v.push(cmd(
+                    PaletteAction::ApplyEffect(schema.match_name),
+                    &format!("Apply effect: {}", schema.label),
+                    "effect fx add filter",
+                ));
+            }
+        }
         v
     }
 
@@ -158,6 +188,27 @@ impl Shell {
             PaletteAction::SetShape(shape) => {
                 self.theme_shape = shape;
                 self.recompose(ctx);
+            }
+            PaletteAction::ApplyEffect(name) => {
+                if let Some((comp, layer_id)) = self.selected_layer_target() {
+                    let doc = self.app.store.snapshot();
+                    let current = doc
+                        .comp(comp)
+                        .and_then(|c| c.layers.iter().find(|l| l.id == layer_id))
+                        .map(|l| l.effects.clone());
+                    if let (Some(mut effects), Some(inst)) =
+                        (current, lumit_core::fx::instantiate(name))
+                    {
+                        effects.push(inst);
+                        self.app.commit(lumit_core::Op::SetLayerEffects {
+                            comp,
+                            layer: layer_id,
+                            effects,
+                        });
+                        #[cfg(feature = "media")]
+                        self.app.refresh_preview();
+                    }
+                }
             }
             #[cfg(feature = "media")]
             PaletteAction::ExportComp => {
