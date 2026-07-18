@@ -1184,8 +1184,19 @@ Two mechanisms make this safe, and you'll see them by name in the code:
   the frames around wherever the playhead sits, so scrubbing nearby feels instant — switch it
   off and Lumit does nothing until you actually ask for a frame, trading that warm cache for a
   quieter machine when you're doing something else at the same time. On by default, matching
-  what Lumit always did. (More performance controls — CUDA acceleration, worker counts —
-  arrive on this page as those systems gain their knobs.)
+  what Lumit always did. Underneath that, a **Cache root folder** row shows where the on-disk
+  frame cache currently lives — "Default (next to the project file)" until you change it — with
+  a **Choose…** button that opens a folder picker and a **Use default** button that puts it
+  back. This is for moving the cache off a slow or crowded drive: point it at a fast NVMe (or
+  any other drive with room) and every project's on-disk cache is parked there instead of
+  beside the project file, which also keeps a slow network or removable drive holding your
+  project files from also taking the brunt of cache writes. Each project still gets its own
+  cache folder under whatever root you choose — two differently-named projects, or even two
+  projects that happen to share a file name in different folders, never collide. Changing this
+  takes effect straight away, the next time Lumit notices the setting changed (well under a
+  second): it does not require a restart or a re-open of the project. (More performance
+  controls — CUDA acceleration, worker counts — arrive on this page as those systems gain their
+  knobs.)
   The **General** page holds an **Autosave** group: how often Lumit quietly saves a spare copy
   of a saved project (in minutes) and how many timestamped copies it keeps, so a crash or a
   mistake never costs more than the interval. The defaults are the same 5 minutes / 5 copies

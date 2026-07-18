@@ -2784,14 +2784,15 @@ impl AppState {
         Some(bars)
     }
 
-    /// Keep the disk tier pointed at the saved project's sidecar, starting
-    /// the IO worker on first use. Cheap to call every frame.
+    /// Keep the disk tier pointed at the saved project's sidecar (or the
+    /// user's Settings → Performance → Cache root override, when set),
+    /// starting the IO worker on first use. Cheap to call every frame.
     #[cfg(feature = "media")]
-    pub fn disk_sync_root(&mut self) {
+    pub fn disk_sync_root(&mut self, cache_root_override: Option<&std::path::Path>) {
         let root = self
             .path
             .as_deref()
-            .and_then(lumit_cache::disk::sidecar_root);
+            .and_then(|p| lumit_cache::disk::cache_root_for(p, cache_root_override));
         if root == self.disk_root {
             return;
         }

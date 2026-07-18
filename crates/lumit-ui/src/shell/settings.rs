@@ -48,7 +48,7 @@ impl SettingsPage {
 /// workspace, like the theme choices. Defaults reproduce today's hardcoded
 /// budgets exactly, so an existing install is unchanged until the user moves
 /// a slider.
-#[derive(Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub(crate) struct PerformanceSettings {
     /// RAM frame-cache budget, in mebibytes (the `comp_frame_cache` LRU).
@@ -62,6 +62,12 @@ pub(crate) struct PerformanceSettings {
     /// (docs/06 §5.4). On by default; off trades a colder cache for zero
     /// background decode/render work when the machine is busy elsewhere.
     pub background_fill: bool,
+    /// Where the on-disk frame cache is stored. `None` (the default) keeps
+    /// today's behaviour — a `<project>.lum-cache` folder beside the project
+    /// file. `Some` redirects new project caches to a folder under the given
+    /// root instead (e.g. a fast NVMe), per project
+    /// (`lumit_cache::disk::cache_root_for`).
+    pub cache_root: Option<std::path::PathBuf>,
 }
 
 /// Autosave settings (Settings → General; docs/07-UI-SPEC §15). Persisted
@@ -95,6 +101,8 @@ impl Default for PerformanceSettings {
             vram_cache_mb: 512,
             // Matches today's unconditional idle-fill behaviour.
             background_fill: true,
+            // Matches today's unconditional beside-the-project behaviour.
+            cache_root: None,
         }
     }
 }
@@ -428,6 +436,36 @@ impl Shell {
                 ),
                 |ui| {
                     ui.checkbox(&mut self.settings.background_fill, "");
+                },
+            );
+            settings_divider(ui, theme);
+            settings_row(
+                ui,
+                theme,
+                "Cache root folder",
+                Some(
+                    "Where the on-disk frame cache is stored. Choosing a folder moves new \
+                     project caches there instead of next to the project file.",
+                ),
+                |ui| {
+                    if self.settings.cache_root.is_some() && ui.button("Use default").clicked() {
+                        self.settings.cache_root = None;
+                    }
+                    if ui.button("Choose…").clicked() {
+                        if let Some(path) = rfd::FileDialog::new().pick_folder() {
+                            self.settings.cache_root = Some(path);
+                        }
+                    }
+                    let label = match &self.settings.cache_root {
+                        Some(p) => p.display().to_string(),
+                        None => "Default (next to the project file)".to_string(),
+                    };
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(label).small().color(theme.text_muted),
+                        )
+                        .truncate(),
+                    );
                 },
             );
         });
