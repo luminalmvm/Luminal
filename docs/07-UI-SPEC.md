@@ -679,19 +679,23 @@ project file, [10-FILE-FORMAT.md](10-FILE-FORMAT.md) §2):
   per-plugin overrides).
 
 **Shipped (v1, K-098; VRAM budget and Clear cache added K-100; Background fill added K-115;
-Cache root folder added K-116):** the Settings window exists — a macOS-System-Settings-style
-surface, a sidebar of pages with grouped cards, honouring the Sharp/Round shape. It opens from
-**Window → Settings…** or **Ctrl/Cmd+comma**. Its v1 pages are a subset of the inventory above:
-**Appearance** (Theme Mode, Background ramp, Accent, Shape, Interface motion — all migrated
-here out of the Window menu, K-092), **Performance** (RAM frame-cache budget, disk-cache cap
-and VRAM frame-cache budget, all applied live, a Clear cache action that empties the RAM and
+Cache root folder added K-117; Interface page added K-118):** the Settings window exists — a
+macOS-System-Settings-style surface, a sidebar of pages with grouped cards, honouring the
+Sharp/Round shape. It opens from **Window → Settings…** or **Ctrl/Cmd+comma**. Its v1 pages are
+a subset of the inventory above: **Appearance** (Theme Mode, Background ramp, Accent, Shape,
+Interface motion — all migrated here out of the Window menu, K-092), **Interface** (UI scale,
+75–200%, applied live via egui's own zoom mechanism; a Show tooltips switch that suppresses
+hover tooltips app-wide when off, K-118), **Performance** (RAM frame-cache budget, disk-cache
+cap and VRAM frame-cache budget, all applied live, a Clear cache action that empties the RAM and
 VRAM tiers at once, a Background fill toggle gating the idle-fill loop, and a Cache root folder
 picker that redirects new project on-disk caches to a chosen folder instead of always sitting
-beside the project file), and **General** (reset workspace, an **Autosave** group — interval in
-minutes and copies kept, defaulting to the previous 5 min / 5 copies — and version). The
-remaining groups (CUDA, decoder pool size, worker thread cap, proxy generation policy, Preview,
-Colour, Export, Keymap, Plugins) fill in on this same surface as those systems gain their
-controls.
+beside the project file, K-117), and **General** (reset workspace, an **Autosave** group —
+interval in minutes and copies kept, defaulting to the previous 5 min / 5 copies — and version).
+Reduced motion stays on the Appearance page as Interface motion (K-092), not this Interface
+page — the inventory line above groups it with Interface conceptually, but it shipped earlier
+under Appearance and stays there. The remaining groups (CUDA, decoder pool size, worker thread
+cap, proxy generation policy, Preview, Colour, Export, Keymap, Plugins) fill in on this same
+surface as those systems gain their controls.
 
 All bindings are remappable in Settings → Keymap (search, conflict detection, per-context
 display); the keymap serialises to a shareable file. An "After Effects" alternate preset
