@@ -1554,7 +1554,9 @@ pub(crate) fn graph_plot(
                 } else {
                     // Retime features snap to beats (docs/09-AUDIO v1): a Time
                     // key dragged near a marker lands exactly on it, so a ramp
-                    // hits the beat. Transform keys stay free.
+                    // hits the beat. Otherwise the magnet (note 2.7, on by
+                    // default) snaps the key to the nearest whole frame the
+                    // playhead can land on; toggling it off drags freely.
                     let mut nt = t_of(p.x);
                     if is_retime {
                         let thr = 6.0 / px_per_sec.max(1e-6);
@@ -1564,6 +1566,9 @@ pub(crate) fn graph_plot(
                             rational_at(thr),
                         )
                         .to_f64();
+                    } else if app.magnet_snap {
+                        let fps = comp.frame_rate.fps().max(1.0);
+                        nt = (nt * fps).round() / fps;
                     }
                     app.graph_edit = Some((idx, nt, v_of(p.y)));
                     if !selected {
