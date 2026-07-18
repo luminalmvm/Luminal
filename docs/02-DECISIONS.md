@@ -1207,3 +1207,32 @@ panel is fixed — the old drop tested a lane-clipped rect, so the visible half
 never registered; it now uses occlusion-proof `contains_pointer` full-row drop
 zones. Layer-area width is session state, not persisted (like every timeline
 preference). Built in an isolated worktree and merged.
+
+**K-123 · DECIDED · Layer-reference effect parameter kind (docs/03 §8, docs/08 §1.2).**
+Effects gain a parameter referencing **another layer** in the same composition as an auxiliary
+picture — `ParamKind::Layer {}` / `EffectValue::Layer(Option<Uuid>)`, the shape a track matte's
+`MatteRef` uses minus channel/invert (static in v1). The host renders that layer **alone,
+source-only** (its own effect stack skipped) and threads its texture to the effect beside the
+resolved ops via the one shared `fxops::render_layer_input`, exactly as the matte stage renders
+a matte layer alone; preview and export call that one helper so they match (K-031). Source-only
+rendering makes reference **cycles structurally impossible** (the depth render never re-enters an
+effect stack). An unset or dangling reference resolves to **identity** — the sanctioned no-op
+exception the File parameter also takes, since a layer the user must supply has no tasteful
+default. The frame cache key hashes the referenced layer's source + transform (the matte block's
+shape). The inspector **Layer picker** and an undoable set-param op are a follow-up; until then
+an unpicked Layer renders as nothing via the inspector's existing wildcard. First consumer is
+the DoF effect (K-124). Built in an isolated worktree and merged.
+
+**K-124 · DECIDED · Depth of field ships as a depth-driven lens blur (docs/08 §3.22).**
+A variable-radius disc blur whose per-pixel circle-of-confusion comes from a **depth pass**
+supplied by a Layer-reference parameter (K-123) — the first effect to take a whole layer as
+input. Params: Depth layer, Focus distance (0.5), Focus range (0.1), Aperture (px@comp, 8,
+slider 0–40), Mix; premultiplied, Moderate cost, padded ROI, `{0}` temporal, Blur & sharpen
+category. It drives the pre-existing `lumit_gpu::fx::dof` kernel and its §1.6 oracle (depth read
+from the referenced layer's red channel, 0 near / 1 far, symmetric about Focus). v1: the depth
+layer is rendered source-only and **resampled to the effect's working raster** `(w, h)` — not
+comp size, since the kernel reads depth at the consuming layer's own grid, which shrinks under
+reduced-resolution preview; a framing-matched depth pass is expected, and the depth layer must be
+visible + in-span in preview (the decode-planner gate, a recorded follow-up to lift). Placement/
+effects-aware depth and the shaped-bokeh "DOF PRO" second effect are post-v1. Preview == export
+via the one shared render helper. Built in an isolated worktree and merged.

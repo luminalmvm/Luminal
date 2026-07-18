@@ -314,6 +314,11 @@ struct EffectInstance {
 parameter dump, render as identity with a badge, and round-trip through save untouched
 ([11-AE-IMPORT.md](11-AE-IMPORT.md)).
 
+An effect parameter may also **reference another layer** as an auxiliary input (a
+Layer-reference parameter, [08-EFFECTS.md](08-EFFECTS.md) §1.2 — a depth pass for Depth of
+field): the stored value is an optional layer id, the same by-id cross-reference §5.1's matte
+uses, and a dangling reference degrades to a no-op exactly as a dangling matte does.
+
 ## 9. Rich layer payloads
 
 ### 9.1 Text

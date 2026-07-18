@@ -1272,19 +1272,23 @@ impl FxEngine {
     }
 
     /// Apply one depth-of-field lens blur to a linear working texture,
-    /// returning a new texture of the same size. The foundation for the
-    /// planned DoF effects: one pass where each output pixel reads its depth
-    /// from `depth` (a single-channel field the same size as `src`, exact
-    /// f32, values in `[0, 1]` by convention), turns it into a circle-of-
-    /// confusion radius — zero inside `range` of `focus`, ramping smoothstep
+    /// returning a new texture of the same size. Backs the `dof` effect
+    /// (docs/08 §3.22, docs/impl/layer-input.md): one pass where each output
+    /// pixel reads its depth from the **red channel** of `depth` (values in
+    /// `[0, 1]` by convention; the shader reads `.x`), turns it into a circle-
+    /// of-confusion radius — zero inside `range` of `focus`, ramping smoothstep
     /// to `aperture` raster pixels at the far depth extreme — and averages a
     /// box-weighted integer disc of that radius from `src`, edges clamped,
-    /// then blends against the input by the host Mix. `depth` is consumed
-    /// exactly as `dof_reference` (the §1.6 CPU oracle) reads it and the tap
-    /// disc is byte-identical, so the two agree. Shares [`Self::mb_layout`]
-    /// with Motion blur — the depth field is the one extra sampled input over
-    /// the two-input convention. `aperture == 0`, or a Mix of 0, is a
-    /// bit-exact passthrough.
+    /// then blends against the input by the host Mix. `depth` must be the same
+    /// size as `src`; because only its red is read (via `textureLoad`, not a
+    /// sampler), it may be **any float texture** — the referenced depth layer
+    /// rendered in the working `rgba16float` format (the effect's real depth
+    /// input), or the exact R32Float map the §1.6 oracle uploads; both read the
+    /// same red. `depth` is consumed exactly as `dof_reference` (the CPU
+    /// oracle) reads it and the tap disc is byte-identical, so the two agree.
+    /// Shares [`Self::mb_layout`] with Motion blur — the depth field is the one
+    /// extra sampled input over the two-input convention. `aperture == 0`, or a
+    /// Mix of 0, is a bit-exact passthrough.
     #[allow(clippy::too_many_arguments)]
     pub fn dof(
         &self,

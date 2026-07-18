@@ -573,8 +573,28 @@ impl Renderer<'_> {
             let markers = lumit_core::fx::MarkerContext::for_layer(nested, l);
             let neighbours = self.footage_neighbours(l, lt, nested)?;
             let flow = self.footage_flow_field(l, lt, nested)?;
+            // Depth-of-field depth inputs, resolved within this nested comp at
+            // its time base `t` (the same recursion the preview's draw list
+            // performs), 1:1 with the stack's Resolved::Dof ops (§3.22, K-031).
+            let layer_inputs = self.build_dof_inputs(
+                nested,
+                &l.effects,
+                t,
+                p.tex.width(),
+                p.tex.height(),
+                visited,
+            )?;
             let p = Prepared {
-                tex: self.apply_fx(p.tex, l, lt, diag, &markers, &neighbours, flow.as_ref()),
+                tex: self.apply_fx(
+                    p.tex,
+                    l,
+                    lt,
+                    diag,
+                    &markers,
+                    &neighbours,
+                    flow.as_ref(),
+                    &layer_inputs,
+                ),
                 natural: p.natural,
                 mask: p.mask,
             };
@@ -780,6 +800,7 @@ impl Renderer<'_> {
         markers: &lumit_core::fx::MarkerContext,
         neighbours: &[(i32, Tex)],
         flow_field: Option<&Tex>,
+        layer_inputs: &[Option<Tex>],
     ) -> Tex {
         if !layer.switches.fx || layer.effects.is_empty() {
             return tex;
@@ -795,8 +816,76 @@ impl Renderer<'_> {
         // the same load the preview runs (K-031).
         let luts = self.layer_luts(&layer.effects, lt);
         crate::fxops::run_ops(
-            &self.fx, self.gpu, tex, w, h, &resolved, neighbours, flow, &luts,
+            &self.fx,
+            self.gpu,
+            tex,
+            w,
+            h,
+            &resolved,
+            neighbours,
+            flow,
+            &luts,
+            layer_inputs,
         )
+    }
+
+    /// The depth inputs of a layer's enabled built-in `dof` effects (docs/08
+    /// §3.22, docs/impl/layer-input.md), 1:1 and in order with its
+    /// `Resolved::Dof` ops (the same filter `resolve_stack` applies, and a
+    /// `dof` effect always resolves to exactly one op). Each referenced layer
+    /// is rendered SOURCE-ONLY (its own effect stack is not applied — the
+    /// `prepare` result, before `apply_fx`), resampled into the consuming
+    /// layer's raster `(w, h)` by the shared `render_layer_input` the preview
+    /// also calls (K-031). The depth layer must be **visible and in-span**, the
+    /// same gate the preview applies (its decode planner only decodes those),
+    /// so a hidden reference degrades to a passthrough in both. Unset, dangling
+    /// or undecodable references are `None` — a labelled no-op, never a fault.
+    #[allow(clippy::too_many_arguments)]
+    fn build_dof_inputs(
+        &mut self,
+        comp: &Composition,
+        effects: &[lumit_core::model::EffectInstance],
+        t: f64,
+        w: u32,
+        h: u32,
+        visited: &mut Vec<Uuid>,
+    ) -> Result<Vec<Option<Tex>>, String> {
+        use lumit_core::model::EffectNamespace;
+        let mut out = Vec::new();
+        for e in effects.iter().filter(|e| {
+            e.enabled
+                && e.effect.namespace == EffectNamespace::Builtin
+                && e.effect.match_name == "dof"
+        }) {
+            let slot = match e.layer_ref("depth") {
+                Some(id) => match comp.layers.iter().find(|l| l.id == id) {
+                    Some(src)
+                        if src.switches.visible
+                            && t >= src.in_point.0.to_f64()
+                            && t < src.out_point.0.to_f64() =>
+                    {
+                        // Render source-only (the pre-fx `prepare` result), so
+                        // the depth matches the preview and cannot recurse.
+                        match self.prepare(src, t, visited)? {
+                            Some(p) => Some(crate::fxops::render_layer_input(
+                                &self.compositor,
+                                self.gpu,
+                                w,
+                                h,
+                                &p.tex,
+                                p.tex.width() as f32,
+                                p.tex.height() as f32,
+                            )),
+                            None => None,
+                        }
+                    }
+                    _ => None,
+                },
+                None => None,
+            };
+            out.push(slot);
+        }
+        Ok(out)
     }
 
     /// Render a whole comp at time `t` into a linear fp16 texture (recursive
@@ -942,8 +1031,29 @@ impl Renderer<'_> {
                 let markers = lumit_core::fx::MarkerContext::for_layer(comp, l);
                 let neighbours = self.footage_neighbours(l, lt, comp)?;
                 let flow = self.footage_flow_field(l, lt, comp)?;
+                // Depth-of-field depth inputs, resampled to this layer's raster
+                // (its prepared source size), 1:1 with the stack's Resolved::Dof
+                // ops (§3.22); the same render the preview runs (K-031). Built
+                // before apply_fx so run_ops can bind them.
+                let layer_inputs = self.build_dof_inputs(
+                    comp,
+                    &l.effects,
+                    t,
+                    p.tex.width(),
+                    p.tex.height(),
+                    visited,
+                )?;
                 let p = Prepared {
-                    tex: self.apply_fx(p.tex, l, lt, diag, &markers, &neighbours, flow.as_ref()),
+                    tex: self.apply_fx(
+                        p.tex,
+                        l,
+                        lt,
+                        diag,
+                        &markers,
+                        &neighbours,
+                        flow.as_ref(),
+                        &layer_inputs,
+                    ),
                     natural: p.natural,
                     mask: p.mask,
                 };
@@ -1079,10 +1189,14 @@ impl Renderer<'_> {
                     acc.as_ref(),
                 );
                 draws.clear();
-                // The adjustment layer's LUT effects apply to the composite
-                // below (§3.11); loaded exactly as the per-layer path and the
-                // preview do (K-031).
+                // The adjustment layer's LUT and depth-of-field effects apply
+                // to the composite below (§3.11, §3.22); loaded/rendered exactly
+                // as the per-layer path and the preview do (K-031). The stack
+                // runs on the comp-sized composite, so its depth inputs resample
+                // to comp size.
                 let luts = self.layer_luts(&l.effects, lt);
+                let layer_inputs =
+                    self.build_dof_inputs(comp, &l.effects, t, comp.width, comp.height, visited)?;
                 let processed = crate::fxops::run_ops(
                     &self.fx,
                     self.gpu,
@@ -1096,6 +1210,7 @@ impl Renderer<'_> {
                     &[],
                     None,
                     &luts,
+                    &layer_inputs,
                 );
                 let coverage = self.adjust_coverage(comp, l, lt, camera);
                 let opacity = (l.transform.opacity.value_at(lt) as f32 / 100.0).clamp(0.0, 1.0);
