@@ -83,6 +83,19 @@ pub enum DrawSource {
     Adjust,
 }
 
+/// The below-stack re-rendered at a held/sample time for a temporal adjustment
+/// (Posterize Time, docs/08 §3.25; docs/impl/temporal-rerender.md): the draws
+/// beneath the effect's layer, built by `build_comp_draws` at the held comp
+/// time `tau`, plus the comp's camera at `tau`. Carried on the adjustment's
+/// [`DrawSource::Adjust`] draw so `Realiser::realise` composites the held
+/// version in place of the plain below-composite — the same `build_comp_draws`
+/// + `realise` export drives, so preview equals export (K-031).
+#[cfg(feature = "media")]
+pub struct TemporalBelow {
+    pub draws: Vec<CompLayerDraw>,
+    pub camera: Option<lumit_core::model::CameraPose>,
+}
+
 #[cfg(feature = "media")]
 pub struct CompLayerDraw {
     pub source: DrawSource,
@@ -142,6 +155,14 @@ pub struct CompLayerDraw {
     /// these and averages them into one smeared layer; the single-placement
     /// fields above stay the frame-time (k=0-ish) representative placement.
     pub mb: Vec<lumit_gpu::MbSample>,
+    /// The below-stack re-rendered at a held time for a temporal adjustment
+    /// (Posterize Time, docs/08 §3.25). Some only on an adjustment
+    /// [`DrawSource::Adjust`] draw whose stack holds a Posterize Time effect
+    /// scoped to *everything below*: `realise` then composites this held
+    /// version (with the adjustment's own remaining effects) in place of the
+    /// plain below-composite, blended by the adjustment's coverage. None on
+    /// every ordinary draw, so nothing changes when no temporal effect is live.
+    pub temporal_below: Option<TemporalBelow>,
 }
 
 /// GPU display path (slice 5 completion): decoded sRGB bytes → linear fp16
@@ -260,10 +281,7 @@ impl GpuViewer {
     /// viewport and the file (K-031).
     fn realiser(&self) -> Realiser<'_> {
         Realiser {
-            ctx: lumit_gpu::GpuContext::from_parts(
-                self.ctx.device.clone(),
-                self.ctx.queue.clone(),
-            ),
+            ctx: lumit_gpu::GpuContext::from_parts(self.ctx.device.clone(), self.ctx.queue.clone()),
             engine: &self.engine,
             compositor: &self.compositor,
             fx: &self.fx,
@@ -413,10 +431,21 @@ impl Realiser<'_> {
             // comp-sized composite, so its depth inputs resample to comp size.
             let luts = self.load_luts(&l.lut_files);
             let layer_inputs = self.render_dof_inputs(&l.dof_inputs, width, height);
+            // Posterize Time everything-below (docs/08 §3.25): the input this
+            // adjustment's own effects run on is the below-stack held at the
+            // posterised time, not the plain below-composite. The held draws and
+            // camera were built by the shared `below_draws_at` (identical to the
+            // texture export's `render_below_at` produces, K-031); the coverage
+            // blend below still lays the result over the live below-at-t, so a
+            // mask reveals the held region. None on an ordinary adjustment.
+            let fx_input = match &l.temporal_below {
+                Some(tb) => self.realise(tb.camera, width, height, background, &tb.draws),
+                None => below.clone(),
+            };
             let processed = crate::fxops::run_ops(
                 self.fx,
                 &self.ctx,
-                below.clone(),
+                fx_input,
                 width,
                 height,
                 &l.fx,
