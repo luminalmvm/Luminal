@@ -114,6 +114,18 @@ pub enum Op {
         layer: Uuid,
         solo: bool,
     },
+    /// Toggle a layer's per-layer motion-blur switch (K-120).
+    SetLayerMotionBlur {
+        comp: Uuid,
+        layer: Uuid,
+        motion_blur: bool,
+    },
+    /// Set a composition's motion-blur shutter (K-120): the master enable plus
+    /// the shutter angle/phase and sample count.
+    SetCompMotionBlur {
+        comp: Uuid,
+        motion_blur: crate::model::MotionBlur,
+    },
     /// Toggle a Precomp layer's collapse-transformations switch (docs/06 §1.4).
     SetLayerCollapse {
         comp: Uuid,
@@ -457,6 +469,32 @@ pub fn apply(doc: &mut Document, op: &Op) -> Result<Op, OpError> {
                 comp: *comp,
                 layer: *layer,
                 solo: previous,
+            })
+        }
+        Op::SetLayerMotionBlur {
+            comp,
+            layer,
+            motion_blur,
+        } => {
+            let c = doc.comp_mut(*comp).ok_or(OpError::UnknownComp)?;
+            let l = c
+                .layers
+                .iter_mut()
+                .find(|l| l.id == *layer)
+                .ok_or(OpError::UnknownLayer)?;
+            let previous = std::mem::replace(&mut l.switches.motion_blur, *motion_blur);
+            Ok(Op::SetLayerMotionBlur {
+                comp: *comp,
+                layer: *layer,
+                motion_blur: previous,
+            })
+        }
+        Op::SetCompMotionBlur { comp, motion_blur } => {
+            let c = doc.comp_mut(*comp).ok_or(OpError::UnknownComp)?;
+            let previous = std::mem::replace(&mut c.motion_blur, *motion_blur);
+            Ok(Op::SetCompMotionBlur {
+                comp: *comp,
+                motion_blur: previous,
             })
         }
         Op::SetTextDocument {
