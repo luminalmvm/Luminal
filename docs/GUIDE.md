@@ -450,6 +450,23 @@ Two mechanisms make this safe, and you'll see them by name in the code:
   fuller version, which shifts the picture along real colour-temperature lines and adds a
   green/magenta Tint axis, is a later Tier-2 job); it is the everyday "make it feel warmer"
   control, and it animates like every other grade.
+- **LUT (K-114).** Drop this on a layer and press its **Select Cube LUT…** button to pick a
+  `.cube` file — a colour recipe a colourist baked elsewhere (the loader below reads it) — and
+  the whole picture is regraded through it; the **Mix** slider dials the look back toward the
+  original. Until you pick a file it simply passes the picture through unchanged (so does a file
+  that is missing, unreadable, or the older one-dimensional kind — it never errors, just shows
+  as doing nothing). Because a colour look is a whole file, you cannot smoothly *blend* from one
+  LUT to another; you *step* between them with hold keyframes (the picture snaps to the new look
+  at each key). One honest limitation to know: the file is applied to the picture in Lumit's own
+  internal light space exactly as written, without first translating it into whatever space the
+  LUT was authored for — a proper "input space" control is a later job — so a LUT built for a
+  very different encoding may look off. This grade runs **only on the graphics card**: unlike
+  Contrast or Gamma there is no slow CPU stand-in, so if Lumit ever has to fall back to
+  CPU-only drawing a LUT layer shows through ungraded. Under the hood the cube of sample points
+  is handed to the card as a **3D texture** — an ordinary image has width and height, a 3D
+  texture adds a third dimension (depth), so the card can look a colour up by its red, green and
+  blue coordinates in one fetch — the first effect in Lumit to need one. The preview and the
+  export load and apply the LUT the same way, so an exported file matches what you saw.
 - `crates/lumit-core/src/lut.rs` — **reading a colour LUT (`.cube` file).** A LUT
   (look-up table) is a colour recipe a colourist bakes elsewhere: feed it a red/green/blue
   and it hands back a graded red/green/blue. The common `.cube` text format stores that as a

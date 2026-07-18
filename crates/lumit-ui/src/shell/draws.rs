@@ -331,6 +331,10 @@ pub(crate) fn build_comp_draws(
                     // footage frames — no neighbours or flow field here.
                     neighbours: Vec::new(),
                     flow_field: None,
+                    // Ordered file paths of the enabled built-in `lut` effects,
+                    // 1:1 with the stack's Resolved::Lut ops (docs/08 §3.11);
+                    // the same `lt` resolve_stack used above.
+                    lut_files: lut_files(&layer.effects, lt),
                 });
                 continue;
             }
@@ -472,9 +476,34 @@ pub(crate) fn build_comp_draws(
             fx,
             neighbours,
             flow_field,
+            // Ordered file paths of the enabled built-in `lut` effects, 1:1
+            // with the stack's Resolved::Lut ops (docs/08 §3.11); the same `lt`
+            // resolve_stack used for `fx`.
+            lut_files: lut_files(&layer.effects, lt),
         });
     }
     draws
+}
+
+/// The ordered file paths of a layer's enabled built-in `lut` effects
+/// (docs/08 §3.11, K-114), each resolved at layer time `lt` (None = unset).
+/// `resolve_stack` filters on the identical `e.enabled && namespace == Builtin`
+/// predicate and preserves order, and a `lut` effect always resolves to exactly
+/// one `Resolved::Lut`, so this list is 1:1 and in the same order as the stack's
+/// `Resolved::Lut` ops — the alignment `run_ops` relies on to bind LUT k to op
+/// k. Preview (here) and export build it the same way, so the two match (K-031).
+#[cfg(feature = "media")]
+fn lut_files(effects: &[lumit_core::model::EffectInstance], lt: f64) -> Vec<Option<String>> {
+    use lumit_core::model::EffectNamespace;
+    effects
+        .iter()
+        .filter(|e| {
+            e.enabled
+                && e.effect.namespace == EffectNamespace::Builtin
+                && e.effect.match_name == "lut"
+        })
+        .map(|e| e.path_at("file", lt).map(str::to_owned))
+        .collect()
 }
 
 #[cfg(all(test, feature = "media"))]

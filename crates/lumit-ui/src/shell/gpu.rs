@@ -83,6 +83,13 @@ pub struct CompLayerDraw {
     /// blur (docs/08 §3.2), carried from its decode job — `w × h` matches the
     /// decoded source. None unless the stack wants one.
     pub flow_field: Option<(Vec<f32>, Vec<f32>, u32, u32)>,
+    /// The ordered file paths of the layer's enabled built-in `lut` effects
+    /// (docs/08 §3.11; None = unset). Because `resolve_stack` keeps the same
+    /// filter and order and a `lut` effect always resolves to exactly one
+    /// `Resolved::Lut`, this list is 1:1 and in order with the stack's `Lut`
+    /// ops — the caller loads each path and passes the parallel `luts` to
+    /// `run_ops`. No GPU work happens here; these are just the strings.
+    pub lut_files: Vec<Option<String>>,
 }
 
 /// GPU display path (slice 5 completion): decoded sRGB bytes → linear fp16
@@ -105,6 +112,12 @@ pub struct GpuViewer {
     /// The live VRAM-tier budget (Settings → Performance, K-100). Starts at
     /// [`VRAM_TIER_CAP`] and moves when the owner drags the slider.
     vram_cap: u64,
+    /// Parsed-and-uploaded `.cube` LUTs keyed by path (docs/08 §3.11,
+    /// docs/impl/lut.md §4): parse + upload happen once per distinct file, not
+    /// per frame. `RefCell` because `realise`/`realise_segment` take `&self`.
+    /// Path-only key for now — mtime invalidation and bounding are documented
+    /// follow-ups (an edited-on-disk LUT needs the app reopened).
+    lut_cache: std::cell::RefCell<std::collections::HashMap<String, crate::fxops::LoadedLut>>,
 }
 
 /// One VRAM-tier entry: the display texture, its egui registration, and size.
@@ -160,7 +173,46 @@ impl GpuViewer {
             vram: Vec::new(),
             vram_bytes: 0,
             vram_cap: VRAM_TIER_CAP,
+            lut_cache: std::cell::RefCell::new(std::collections::HashMap::new()),
         }
+    }
+
+    /// Turn a layer's ordered `lut_files` into the parallel `luts` list
+    /// `run_ops` binds (docs/08 §3.11): each `Some(path)` is parsed and
+    /// uploaded once (cached by path), a 1D or unreadable/absent file yields a
+    /// `None` slot (a labelled no-op, never a fault — docs/impl/lut.md §8). The
+    /// output is 1:1 and in order with `files`, so the k-th slot lines up with
+    /// the k-th `Resolved::Lut` op.
+    fn load_luts(&self, files: &[Option<String>]) -> Vec<Option<crate::fxops::LoadedLut>> {
+        let mut cache = self.lut_cache.borrow_mut();
+        files
+            .iter()
+            .map(|slot| {
+                let path = slot.as_ref()?;
+                if !cache.contains_key(path) {
+                    // Any IO/parse error, or a 1D LUT, leaves the slot empty:
+                    // the effect is a passthrough, never a panic (§3.11).
+                    if let Some(loaded) = std::fs::read_to_string(path)
+                        .ok()
+                        .and_then(|text| lumit_core::lut::parse_cube(&text).ok())
+                        .and_then(|lut| match lut {
+                            lumit_core::lut::Lut::Cube3d(l) => Some(crate::fxops::LoadedLut {
+                                texture: lumit_gpu::fx::upload_lut_3d(
+                                    &self.ctx,
+                                    l.size as u32,
+                                    &l.data,
+                                ),
+                                size: l.size as u32,
+                            }),
+                            lumit_core::lut::Lut::Cube1d(_) => None,
+                        })
+                    {
+                        cache.insert(path.clone(), loaded);
+                    }
+                }
+                cache.get(path).cloned()
+            })
+            .collect()
     }
 
     /// A second handle to the shared device for the export thread.
@@ -191,7 +243,10 @@ impl GpuViewer {
                 self.realise_segment(camera, width, height, background, &layers[start..i], &acc);
             // An adjustment layer processes the composite below, which has no
             // footage neighbour frames — temporal effects on an adjustment
-            // layer are a later refinement, so no neighbours here.
+            // layer are a later refinement, so no neighbours here. Its LUT
+            // effects still apply (§3.11): load them the same way the per-layer
+            // path does, so preview stays identical to export (K-031).
+            let luts = self.load_luts(&l.lut_files);
             let processed = crate::fxops::run_ops(
                 &self.fx,
                 &self.ctx,
@@ -201,6 +256,7 @@ impl GpuViewer {
                 &l.fx,
                 &[],
                 None,
+                &luts,
             );
             let coverage = self.coverage_texture(camera, width, height, l);
             acc = Some(self.fx.adjust_blend(
@@ -318,6 +374,9 @@ impl GpuViewer {
                     (*fw == w && *fh == h)
                         .then(|| lumit_gpu::fx::upload_flow_field(&self.ctx, u, v, w, h))
                 });
+                // The parsed-and-uploaded `.cube` LUTs, 1:1 with the stack's
+                // `Resolved::Lut` ops (§3.11); the same load export uses (K-031).
+                let luts = self.load_luts(&l.lut_files);
                 crate::fxops::run_ops(
                     &self.fx,
                     &self.ctx,
@@ -327,6 +386,7 @@ impl GpuViewer {
                     &l.fx,
                     &neighbours,
                     flow.as_ref(),
+                    &luts,
                 )
             };
             linear_textures.push(tex);

@@ -536,6 +536,23 @@ render failure ([13-PERFORMANCE-RULES.md](13-PERFORMANCE-RULES.md) never-crash r
 file's content hash joins the cache key; project save embeds small LUTs (K-040) so shared
 projects survive relinking.
 
+**Status (v1, shipped, K-114):** **File + Mix** only. The File parameter picks a `.cube`
+cube (animatable by stepping between paths with hold keys — two files cannot be blended,
+K-111) and Mix blends the graded result over the input. **3D trilinear** only (the manual
+eight-corner interpolation of [docs/impl/lut.md](impl/lut.md) §2–3, matching the CPU oracle
+`lut::Lut3d::sample` to ≤ 2 fp16 ULP; Tetrahedral is deferred). The LUT is applied in the
+compositor's **scene-linear working space as-is** — no Input-space transfer, so a `.cube`
+authored for a display- or log-encoded input is applied directly (flagged for the owner).
+Unpremultiplied (§2.2). An **unset, missing, 1D or unreadable** file is a labelled no-op,
+never a fault. GPU-only: the parsed cube is threaded beside the resolved op (like Echo's
+neighbour frames and Motion blur's flow field), so the CPU-degradation rung renders a LUT as
+identity — its §1.6 oracle reference is `lut::Lut3d::sample` used directly in the lumit-gpu
+test, the one effect whose reference lives outside `cpu::apply` (its parameter is a file, not
+a number). Preview and export load and apply it identically (K-031). **Follow-ups:** the
+Input-space control, Tetrahedral interpolation, the content-hash cache key (the cache is
+path-only for now, so an edited-on-disk LUT needs the app reopened), and embedding small LUTs
+in the project (K-040).
+
 ### 3.12 Glitch family — block glitch, scanlines, datamosh
 
 Three separate effects, formerly shipped as one "Glitch" effect with enableable sections
