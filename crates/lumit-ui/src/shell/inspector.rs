@@ -869,15 +869,25 @@ pub(crate) fn linked_pair_block(
     ui.data_mut(|d| d.insert_temp(id, unlinked));
 }
 
-/// Allocate one 18px timeline row and return (row_rect, left-column child ui).
-/// The child is clipped so widgets never spill into the track area.
+/// The height of one property row on the timeline. 20 px matches the collapsed
+/// layer rows above (an even vertical rhythm) and, crucially, gives each row's
+/// value DragValue box (egui's ~18 px `interact_size.y`) a pixel of breathing
+/// room top and bottom — at the old 18 px the box filled the row exactly and its
+/// frame was shaved by the clip (note 2.8.3, the "slightly clipped" defect).
+pub(crate) const ROW_H: f32 = 20.0;
+
+/// Allocate one property timeline row (`ROW_H` tall) and return (row_rect,
+/// left-column child ui). The child is clipped so widgets never spill into the
+/// track area.
 pub(crate) fn row_frame(
     ui: &mut egui::Ui,
     ctx: &RowCtx,
     highlight: bool,
 ) -> (egui::Rect, egui::Ui) {
-    let (row_rect, _resp) =
-        ui.allocate_exact_size(egui::vec2(ui.available_width(), 18.0), egui::Sense::hover());
+    let (row_rect, _resp) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), ROW_H),
+        egui::Sense::hover(),
+    );
     if highlight {
         // Left of the lanes → replace the clip; with_clip_rect would intersect the
         // lane clip and hide this highlight.
