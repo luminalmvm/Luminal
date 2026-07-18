@@ -1022,6 +1022,13 @@ Two mechanisms make this safe, and you'll see them by name in the code:
   the whole run of rows between it and the last one you clicked. A plain click still picks a
   single row and opens its curve; a Ctrl/Shift-click only changes the highlight and leaves the
   graphed channel alone.
+  **Copy and paste keyframes (note 2.2).** With keys selected, **Ctrl/Cmd+C** copies them —
+  bezier handles and all — remembering each key's time relative to the earliest one in the
+  set. Move the playhead and **Ctrl/Cmd+V** drops them back down at the playhead, keeping their
+  spacing and their easing, and **overwriting** any key that already sits at the same time. A
+  paste is one undo step. (Copying a key on a linked Position/Scale/Anchor row carries both
+  axes, so the pair pastes back together.) These only fire when no text box is focused, so
+  typing still copies and pastes text as normal.
   (When the layer is twirled shut, the layer bar still shows a summary of all its keys.)
   Scale is special: by default x and y are locked together on a single "Scale %" row that
   keeps their ratio as you drag; the 🔓 button unlocks them into two separate rows for
