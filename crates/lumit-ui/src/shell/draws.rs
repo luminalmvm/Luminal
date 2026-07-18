@@ -22,6 +22,37 @@ pub(crate) fn patch_layer_prop(
     patched
 }
 
+/// A copy of `comp` with one Float effect parameter overridden to a fixed
+/// `value` — the effect twin of [`patch_layer_prop`], for the live effect-
+/// value drag. Only the previewed frame renders this, so pinning the param to
+/// a constant is exactly its value at that instant; the effect stack re-runs
+/// with it (`build_comp_draws` re-resolves the layer's effects). Out-of-range
+/// indices or a non-Float param leave the comp unchanged (a no-op, never a
+/// panic).
+#[cfg(feature = "media")]
+pub(crate) fn patch_layer_effect_param(
+    comp: &lumit_core::model::Composition,
+    layer: uuid::Uuid,
+    effect_idx: usize,
+    param_idx: usize,
+    value: f64,
+) -> lumit_core::model::Composition {
+    let mut patched = comp.clone();
+    if let Some(l) = patched.layers.iter_mut().find(|l| l.id == layer) {
+        if let Some(p) = l
+            .effects
+            .get_mut(effect_idx)
+            .and_then(|e| e.params.get_mut(param_idx))
+        {
+            if matches!(p.value, lumit_core::model::EffectValue::Float(_)) {
+                p.value =
+                    lumit_core::model::EffectValue::Float(lumit_core::anim::Property::fixed(value));
+            }
+        }
+    }
+    patched
+}
+
 /// The world placement matrix of `layer`'s parent chain within `comp` at comp
 /// time `t_comp` (K-103 layer parenting): `P_top × … × P_grandparent ×
 /// P_parent`, each ancestor's `place_matrix` sampled at its own local time

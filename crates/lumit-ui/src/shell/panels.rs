@@ -1025,12 +1025,15 @@ pub(crate) fn effect_controls_panel(ui: &mut egui::Ui, theme: &Theme, app: &mut 
         view_start: 0.0,
         graph_mode: true,
     };
+    let mut fx_edit = None;
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
         .id_salt("effect-controls-scroll")
         .show(ui, |ui| {
-            effects_rows(ui, &ctx, &mut pending);
+            effects_rows(ui, &ctx, &mut pending, &mut fx_edit);
         });
+    // Live preview while an effect value is dragged (cleared when not).
+    app.fx_edit = fx_edit;
     if let Some(op) = pending {
         app.commit(op);
         #[cfg(feature = "media")]

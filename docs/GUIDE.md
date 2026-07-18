@@ -398,7 +398,11 @@ Two mechanisms make this safe, and you'll see them by name in the code:
   reusing the Timeline's stack editor rather than being a second, divergent one. You can
   still edit the stack inline on the layer's own row in the Timeline; the panel is the same
   editor given more room. Saving a stack as a **preset** and loading one back (a small
-  `.lumfx` JSON file, K-065) lives on that same add-effect row.
+  `.lumfx` JSON file, K-065) lives on that same add-effect row. **Dragging an effect's value
+  updates the Viewer live** — as you drag a Glow radius or a Blur amount, the picture re-runs
+  the effect with the value under your cursor every frame, committing once when you let go (so
+  a whole drag is one undo step). It reuses the same trick a transform-value drag already uses:
+  the retained frame is re-composited with the provisional value patched in, no re-decode.
 - **Two more single-frame effects (K-099).** **Vignette** darkens the frame toward black
   away from the centre (Amount/Radius/Softness/Roundness); **Chromatic aberration** fringes
   red and blue outward/inward from the centre by a set number of pixels — a simpler,

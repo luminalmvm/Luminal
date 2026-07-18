@@ -1380,6 +1380,10 @@ impl Shell {
                                     TransformProp::ScaleY,
                                     ny,
                                 ))
+                            } else if let Some((lid, ei, pi, val)) = self.app.fx_edit {
+                                // Live effect-value drag: patch the effect
+                                // param and let the stack re-run with it.
+                                Some(patch_layer_effect_param(comp, lid, ei, pi, val))
                             } else {
                                 self.app
                                     .prop_edit

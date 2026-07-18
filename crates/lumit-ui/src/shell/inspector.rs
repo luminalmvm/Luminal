@@ -1884,7 +1884,15 @@ pub(crate) fn speed_property_row(
 /// parameter beneath. Float parameters are fully animatable (stopwatch +
 /// key diamonds on the lane, like any transform property); every change
 /// commits one whole-stack SetLayerEffects, so each edit is one undo step.
-pub(crate) fn effects_rows(ui: &mut egui::Ui, ctx: &RowCtx, pending: &mut Option<lumit_core::Op>) {
+pub(crate) fn effects_rows(
+    ui: &mut egui::Ui,
+    ctx: &RowCtx,
+    pending: &mut Option<lumit_core::Op>,
+    // Set to (layer, effect index, param index, provisional value) while a
+    // Float effect parameter is being dragged, so the caller can drive a live
+    // preview (`AppState::fx_edit`) without committing until release.
+    fx_edit: &mut Option<(uuid::Uuid, usize, usize, f64)>,
+) {
     use lumit_core::fx::{self, ParamKind};
     use lumit_core::model::EffectValue;
     let layer = ctx.layer;
@@ -2055,6 +2063,9 @@ pub(crate) fn effects_rows(ui: &mut egui::Ui, ctx: &RowCtx, pending: &mut Option
                     );
                     if resp.dragged() || resp.has_focus() {
                         c.data_mut(|d| d.insert_temp(id, v));
+                        // Drive the live preview: re-run the effect stack with
+                        // this provisional value each frame until release.
+                        *fx_edit = Some((layer.id, idx, pi, v));
                     }
                     if resp.drag_stopped() || resp.lost_focus() {
                         if (v - committed).abs() > 1e-9 {

@@ -51,6 +51,9 @@ pub(crate) fn timeline_panel(ui: &mut egui::Ui, theme: &Theme, app: &mut AppStat
     }
     use lumit_core::anim::Animation;
     let mut pending: Option<lumit_core::Op> = None;
+    // Live effect-value drag (layer, effect index, param index, value), applied
+    // to `app.fx_edit` after the loop for the live preview.
+    let mut fx_edit: Option<(uuid::Uuid, usize, usize, f64)> = None;
     // A per-clip speed-ramp edit (start %, end %, ease), applied after the loop.
     let mut clip_ramp_edit: Option<(f64, f64, lumit_core::retime::Ease)> = None;
     // A per-clip frame-interpolation edit, applied after the layer loop.
@@ -1258,7 +1261,7 @@ pub(crate) fn timeline_panel(ui: &mut egui::Ui, theme: &Theme, app: &mut AppStat
                             view_start,
                             graph_mode: app.timeline_graph_mode,
                         };
-                        effects_rows(ui, &fx_ctx, &mut pending);
+                        effects_rows(ui, &fx_ctx, &mut pending, &mut fx_edit);
                     }
                     // Flow group (K-088): present only while the option is on.
                     if matches!(
@@ -1388,6 +1391,8 @@ pub(crate) fn timeline_panel(ui: &mut egui::Ui, theme: &Theme, app: &mut AppStat
             egui::Stroke::new(1.5_f32, theme.accent),
         );
     }
+    // Live preview while an effect value is dragged (cleared when not).
+    app.fx_edit = fx_edit;
     if let Some(op) = pending {
         follow_edit(app, &op); // the graph follows the key you just touched
         app.commit(op);

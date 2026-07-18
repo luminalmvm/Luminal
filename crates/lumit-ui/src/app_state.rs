@@ -925,6 +925,11 @@ pub struct AppState {
     /// In-flight property drag (layer, property, provisional value): commits
     /// once on release so a drag is ONE undo step, not hundreds.
     pub prop_edit: Option<(Uuid, lumit_core::model::TransformProp, f64)>,
+    /// In-flight effect-parameter drag (layer, effect index, param index,
+    /// provisional value): the live preview re-runs the effect stack with the
+    /// patched value each frame, committing once on release — the effect twin
+    /// of `prop_edit`.
+    pub fx_edit: Option<(Uuid, usize, usize, f64)>,
     /// In-flight *linked* scale drag (layer, x%, y%): the live preview needs
     /// both axes, since one drag moves both (else only x scales until release).
     pub scale_preview: Option<(Uuid, f64, f64)>,
@@ -1140,6 +1145,7 @@ impl Default for AppState {
             #[cfg(feature = "media")]
             audio_tx,
             prop_edit: None,
+            fx_edit: None,
             scale_preview: None,
             trim_edit: None,
             move_edit: None,
