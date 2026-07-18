@@ -913,19 +913,76 @@ impl GraphSelection {
 /// (note 2.8.2). One row at a time in v1 — multi-property selection (note 2.6)
 /// will grow this into a set. Shared by the Timeline and Effect Controls panels
 /// so a row highlights in both (note 2.8.7).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct PropSel {
     pub layer: Uuid,
     pub row: PropRow,
 }
 
 /// The identity of a property row within a layer.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum PropRow {
     /// A transform channel (position, anchor, scale, rotation, opacity).
     Transform(lumit_core::model::TransformProp),
     /// One effect parameter: the effect's index in the stack and the param index.
     Effect { effect: usize, param: usize },
+}
+
+/// A single keyframe picked out in the timeline lane/layer view (note 2.1). The
+/// lane is a pure time axis, so a key is named by its property row and its own
+/// (layer-local) time — never a value or a list index. Identifying keys by time
+/// is what lets a marquee span several property rows at once (note 2.6) and lets
+/// the linked Anchor/Position/Scale rows, whose lane shows the union of both
+/// axes' keys, treat both axes' keys at one time as a single draggable point.
+/// Selection is UI state only; every edit still commits through the document
+/// ops, so preview equals export.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LaneKeySel {
+    pub layer: Uuid,
+    pub row: PropRow,
+    pub time: Rational,
+}
+
+/// An in-flight lane keyframe drag (note 2.1): the grabbed key's identity and
+/// the provisional (layer-local) time it is being dragged to — already frame
+/// snapped when the magnet is on. The whole lane selection rides the same delta
+/// `to − grabbed.time`; the release commits one Batch so the slide is a single
+/// undo step.
+#[derive(Clone, Copy, Debug)]
+pub struct LaneKeyDrag {
+    pub grabbed: LaneKeySel,
+    pub to: f64,
+}
+
+impl LaneKeyDrag {
+    /// The time shift (seconds) the drag currently applies to every selected
+    /// key: the grabbed key's landing time minus its resting time.
+    pub fn delta(&self) -> f64 {
+        self.to - self.grabbed.time.to_f64()
+    }
+}
+
+/// One drawn keyframe glyph on a lane this frame: its selection identity and its
+/// screen position, gathered across every property row so the timeline's
+/// marquee can hit-test keys from different rows in one pass (note 2.6). Rebuilt
+/// each frame; never persisted.
+#[derive(Clone, Copy, Debug)]
+pub struct LaneGlyph {
+    pub sel: LaneKeySel,
+    pub pos: egui::Pos2,
+}
+
+/// A keyframe on the lane clipboard (note 2.2): the key itself (carrying its
+/// bezier handles in `interp_in`/`interp_out`) plus which property row it came
+/// from and its time relative to the copy anchor (the earliest selected key).
+/// Paste replays these at the playhead, preserving each key's offset and its
+/// handles. Clipboard is UI state, never the document.
+#[derive(Clone, Copy, Debug)]
+pub struct ClipboardKey {
+    pub row: PropRow,
+    /// Time of this key minus the earliest copied key's time (seconds).
+    pub offset: f64,
+    pub key: lumit_core::anim::Keyframe,
 }
 
 pub struct AppState {
@@ -1038,9 +1095,49 @@ pub struct AppState {
     /// dragged key. Pinned to one channel; see `GraphSelection`.
     pub graph_selection: Option<GraphSelection>,
     /// The highlighted property row in the layer/Effect Controls area (note
-    /// 2.8.1; see [`PropSel`]). Set by clicking a row; None when nothing is
-    /// selected.
+    /// 2.8.1; see [`PropSel`]). The *anchor* of the property-row selection — the
+    /// most recently clicked row, which a shift-click ranges to and which the
+    /// graph follows. `None` when nothing is selected. Kept in step with
+    /// `selected_props`: whenever that set is non-empty this is its anchor.
     pub selected_prop: Option<PropSel>,
+    /// The full set of highlighted property rows (note 2.6): plain click picks
+    /// one, Ctrl-click toggles one, Shift-click ranges from the anchor over the
+    /// rows drawn between. Every row in the set lifts its background; the single
+    /// `selected_prop` remains the anchor. UI state only.
+    pub selected_props: Vec<PropSel>,
+    /// Keyframes picked out on the timeline lanes (note 2.1): by clicking a key,
+    /// by the lane marquee, or by the last lane drag. Spans property rows
+    /// (note 2.6). Entries pin a key by time; a stale one (its key edited away)
+    /// simply matches nothing. UI state only.
+    pub lane_selection: Vec<LaneKeySel>,
+    /// In-flight lane keyframe time drag (note 2.1), driving the live preview of
+    /// every selected key's slide; committed as one Batch on release.
+    pub lane_key_drag: Option<LaneKeyDrag>,
+    /// In-flight lane marquee (rubber-band) on empty timeline space: (press
+    /// anchor, current corner) in screen points, mirroring the graph editor's.
+    /// `Some` only while the button is down; on release it selects the keys it
+    /// covered.
+    pub lane_marquee: Option<(egui::Pos2, egui::Pos2)>,
+    /// Whether the live lane marquee adds to the existing selection (Shift held
+    /// when the drag began) rather than replacing it (note 2.6c).
+    pub lane_marquee_add: bool,
+    /// Every keyframe glyph drawn on the lanes this frame, gathered for the
+    /// marquee's cross-row hit-test (see [`LaneGlyph`]). Cleared and refilled
+    /// each timeline frame.
+    pub lane_glyphs: Vec<LaneGlyph>,
+    /// The lane keyframe clipboard (note 2.2): the copied keys with their bezier
+    /// handles, offset from the copy anchor. Ctrl+V replays them at the
+    /// playhead, overwriting any key whose time coincides.
+    pub keyframe_clipboard: Vec<ClipboardKey>,
+    /// Set on the frame a lane keyframe drag is released: the time shift
+    /// (seconds) to apply to the whole lane selection. `timeline_panel` reads it
+    /// after the row loop, builds one Batch, and clears it. Transient.
+    pub lane_drag_commit: Option<f64>,
+    /// Transform rows drawn this frame as a *linked* Anchor/Position/Scale pair
+    /// (layer, the x channel): so a lane drag on such a row moves both axes' keys
+    /// at that time, while a standalone (unlinked) axis row moves only its own.
+    /// Rebuilt each frame. Transient.
+    pub lane_linked: Vec<(Uuid, lumit_core::model::TransformProp)>,
     /// In-flight speed-graph drag: (key index, provisional speed in
     /// value-units/second). Separate from `graph_edit` because the speed lens
     /// edits a keyframe's tangent (K-070), not its value or time.
@@ -1246,6 +1343,15 @@ impl Default for AppState {
             graph_marquee: None,
             graph_selection: None,
             selected_prop: None,
+            selected_props: Vec::new(),
+            lane_selection: Vec::new(),
+            lane_key_drag: None,
+            lane_marquee: None,
+            lane_marquee_add: false,
+            lane_glyphs: Vec::new(),
+            keyframe_clipboard: Vec::new(),
+            lane_drag_commit: None,
+            lane_linked: Vec::new(),
             graph_speed_edit: None,
             graph_tangent_edit: None,
             graph_tangent_mode: None,
