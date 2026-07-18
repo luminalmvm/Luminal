@@ -29,6 +29,7 @@ pub(crate) enum PaletteAction {
     AddCameraLayer,
     AddAdjustmentLayer,
     AddSequenceLayer,
+    DuplicateLayer,
     ResetWorkspace,
     OpenSettings,
     SetScheme(crate::theme::ColorScheme),
@@ -109,6 +110,11 @@ impl Shell {
                 "Add sequence layer",
                 "clips row",
             ),
+            cmd(
+                PaletteAction::DuplicateLayer,
+                "Duplicate layer",
+                "copy clone selected",
+            ),
             cmd(PaletteAction::NewProject, "New project", "blank"),
             cmd(PaletteAction::OpenProject, "Open project…", "load file"),
             cmd(
@@ -179,6 +185,7 @@ impl Shell {
             PaletteAction::AddCameraLayer => self.app.add_camera_layer(),
             PaletteAction::AddAdjustmentLayer => self.app.add_adjustment_layer(),
             PaletteAction::AddSequenceLayer => self.app.add_sequence_layer(),
+            PaletteAction::DuplicateLayer => self.app.duplicate_layer(),
             PaletteAction::ResetWorkspace => self.dock = default_layout(),
             PaletteAction::OpenSettings => self.settings_open = true,
             PaletteAction::SetScheme(scheme) => {

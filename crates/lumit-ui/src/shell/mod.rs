@@ -1531,6 +1531,17 @@ impl Shell {
                         self.app.add_sequence_layer();
                         ui.close_menu();
                     }
+                    ui.separator();
+                    if ui
+                        .add_enabled(
+                            self.app.selected_layer.is_some(),
+                            egui::Button::new("Duplicate layer"),
+                        )
+                        .clicked()
+                    {
+                        self.app.duplicate_layer();
+                        ui.close_menu();
+                    }
                     if ui.button("Cut clip at playhead").clicked() {
                         self.app.cut_sequence_at_playhead();
                         ui.close_menu();

@@ -1715,6 +1715,50 @@ impl AppState {
         self.refresh_preview();
     }
 
+    /// Duplicate the selected layer: an exact copy with a fresh id and a
+    /// "… copy" name, inserted directly above the original (the AE
+    /// convention). The copy's effects get fresh instance ids so the two
+    /// layers never share an effect instance; its parent/matte references
+    /// still point at the same other layers, which remain valid, and its own
+    /// new id means nothing it references can be itself.
+    pub fn duplicate_layer(&mut self) {
+        use lumit_core::model::Layer;
+        let Some(comp_id) = self.preview_comp.or(self.selected_comp) else {
+            self.error = Some("select a composition first".into());
+            return;
+        };
+        let Some(layer_id) = self.selected_layer else {
+            self.error = Some("select a layer to duplicate".into());
+            return;
+        };
+        let doc = self.store.snapshot();
+        let Some(comp) = doc.comp(comp_id) else {
+            return;
+        };
+        let Some(pos) = comp.layers.iter().position(|l| l.id == layer_id) else {
+            return;
+        };
+        let mut copy: Layer = comp.layers[pos].clone();
+        let new_id = Uuid::now_v7();
+        copy.id = new_id;
+        copy.name = format!("{} copy", copy.name);
+        for e in &mut copy.effects {
+            e.id = Uuid::now_v7();
+        }
+        // Insert at the original's index so the copy lands just above it in
+        // the stack (index 0 is the topmost layer).
+        self.commit(Op::AddLayer {
+            comp: comp_id,
+            index: pos,
+            layer: Box::new(copy),
+        });
+        self.selected_comp = Some(comp_id);
+        self.selected_layer = Some(new_id);
+        self.preview_comp = Some(comp_id);
+        #[cfg(feature = "media")]
+        self.refresh_preview();
+    }
+
     /// Add a Sequence layer (Vegas-style clip row). If a footage item is
     /// selected in the Project panel it becomes the first clip spanning the
     /// footage; otherwise the layer starts empty. This is a first, simple
@@ -3741,6 +3785,35 @@ mod tests {
             .unwrap()
             .children
             .contains(&comps_folder));
+    }
+
+    #[test]
+    fn duplicate_layer_makes_a_fresh_copy_above_the_original_and_undoes() {
+        let mut app = AppState::default();
+        app.new_composition();
+        app.confirm_comp_dialog();
+        app.add_solid_layer();
+        let comp_id = app.selected_comp.unwrap();
+        let orig = app.store.snapshot().comp(comp_id).unwrap().layers[0].id;
+        app.selected_layer = Some(orig);
+
+        app.duplicate_layer();
+        let doc = app.store.snapshot();
+        let layers = &doc.comp(comp_id).unwrap().layers;
+        assert_eq!(layers.len(), 2, "a copy was added");
+        // The copy has a fresh id, is now selected, and its name is derived.
+        let new_id = app.selected_layer.unwrap();
+        assert_ne!(new_id, orig);
+        let original = layers.iter().find(|l| l.id == orig).unwrap();
+        let copy = layers.iter().find(|l| l.id == new_id).unwrap();
+        assert_eq!(copy.name, format!("{} copy", original.name));
+        // It sits directly above the original (a lower index — index 0 is top).
+        let ci = layers.iter().position(|l| l.id == new_id).unwrap();
+        let oi = layers.iter().position(|l| l.id == orig).unwrap();
+        assert_eq!(ci + 1, oi, "the copy is directly above the original");
+        // One undo removes the duplicate.
+        app.undo();
+        assert_eq!(app.store.snapshot().comp(comp_id).unwrap().layers.len(), 1);
     }
 
     /// K-068: the dialogue edits an existing comp's settings invertibly.
