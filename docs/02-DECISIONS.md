@@ -1045,6 +1045,28 @@ exactly `(1.0, 1.0)` for a bit-exact identity, Mix 0 likewise, both pinned by te
 warmth range, not a physical calibration; the fuller Bradford-adapted CCT white balance with a
 Tint axis remains a Tier-2 job (§3.10). Built in an isolated worktree and merged.
 
+**K-114 · DECIDED · The LUT effect ships (docs/08 §3.11), the File param's first consumer.**
+A `lut` built-in in the Colour category, v1 subset: a File parameter (`.cube`, animatable by
+hold-stepping between paths — K-111) plus the host Mix, applied 3D-trilinear in the compositor's
+scene-linear working space **as-is** (no Input-space transfer), unpremultiplied. `Resolved::Lut
+{ mix }` carries only Mix; because a file path is not `Copy`, the parsed-and-uploaded cube
+travels **beside** the resolved op as a parallel `luts` slot on `fxops::run_ops`, exactly as the
+flow field and neighbour frames do for the temporal effects. `CompLayerDraw.lut_files` carries a
+layer's ordered enabled-builtin-`lut` paths; since a `lut` effect always resolves to exactly one
+`Resolved::Lut`, that list is 1:1 and in order with the ops (the threading linchpin). Preview
+(GpuViewer) and export (Renderer) both build the list with the identical filter and load it
+through a path-keyed upload cache into the one shared `run_ops`, so they are pixel-identical
+(K-031, reviewed by hand rather than by test since the wiring has no end-to-end oracle). An
+unset, missing, 1D, or unreadable file is a labelled no-op, never a fault. `cpu::apply` is a
+passthrough — a LUT is a GPU colour map, so the CPU degradation rung renders it as identity, and
+the §1.6 oracle reference is `lut::Lut3d::sample` used directly in the lumit-gpu kernel test
+(worst 1 fp16 ULP), the one effect whose reference lives outside `cpu::apply` because its
+parameter is a file, not a number. The GPU uses the first 3D texture in the FxEngine
+(`Rgba32Float` cube, manual `textureLoad` trilinear — not the hardware sampler — so the oracle
+stays exact). Follow-ups (flagged): Input-space control, Tetrahedral interpolation, mtime cache
+invalidation, a content-hash cache key, and embedding small LUTs in the project (K-040). Built
+across three isolated worktrees (parser, GPU sampler, wiring) and merged.
+
 **K-115 · DECIDED · The Performance page gains a Background fill toggle (K-109, K-114
 skipped/reserved).** Closes the last named row of K-100's remaining list. `PerformanceSettings`
 gains `background_fill: bool` (default `true`, matching today's unconditional behaviour) with a
