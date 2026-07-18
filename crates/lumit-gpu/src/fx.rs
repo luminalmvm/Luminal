@@ -313,6 +313,28 @@ struct ExposureParams {
     _pad1: f32,
 }
 
+/// One resolved contrast (docs/08 §3.18): the affine grade
+/// `(u − 0.5) × k + 0.5` per RGB channel about a fixed mid-grey pivot, on
+/// unpremultiplied colour (an affine grade does not commute with premultiplied
+/// alpha), alpha untouched. `k == 1.0` (Contrast 100 %) is the bit-exact
+/// neutral point.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ContrastOp {
+    /// The contrast factor, `contrast_percent / 100`. 1.0 is the neutral point.
+    pub k: f32,
+    /// 0..1, blended against the unprocessed input.
+    pub mix: f32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct ContrastParams {
+    k: f32,
+    mix_amt: f32,
+    _pad0: f32,
+    _pad1: f32,
+}
+
 /// One resolved hue shift (docs/08 §3.17): a row-major linear 3×3 colour
 /// matrix, computed host-side (`lumit_core::fx::hue_matrix`) so the CPU
 /// reference and the kernel multiply by identical coefficients. The identity
@@ -550,6 +572,7 @@ pub struct FxEngine {
     vignette: wgpu::ComputePipeline,
     exposure: wgpu::ComputePipeline,
     hue_shift: wgpu::ComputePipeline,
+    contrast: wgpu::ComputePipeline,
     transform: wgpu::ComputePipeline,
     glow_bright: wgpu::ComputePipeline,
     glow_combine: wgpu::ComputePipeline,
@@ -721,6 +744,7 @@ impl FxEngine {
         let vignette_mod = module(include_str!("fx_vignette.wgsl"), "fx-vignette");
         let exposure_mod = module(include_str!("fx_exposure.wgsl"), "fx-exposure");
         let hue_mod = module(include_str!("fx_hue.wgsl"), "fx-hue");
+        let contrast_mod = module(include_str!("fx_contrast.wgsl"), "fx-contrast");
         let transform_mod = module(include_str!("fx_transform.wgsl"), "fx-transform");
         let glow_mod = module(include_str!("fx_glow.wgsl"), "fx-glow");
         let block_glitch_mod = module(include_str!("fx_block_glitch.wgsl"), "fx-block-glitch");
@@ -747,6 +771,7 @@ impl FxEngine {
         let vignette = pipeline(&vignette_mod, "fx-vignette", "vignette");
         let exposure = pipeline(&exposure_mod, "fx-exposure", "exposure");
         let hue_shift = pipeline(&hue_mod, "fx-hue", "hue_shift");
+        let contrast = pipeline(&contrast_mod, "fx-contrast", "contrast");
         let transform = pipeline(&transform_mod, "fx-transform", "transform");
         let glow_bright = pipeline(&glow_mod, "fx-glow-bright", "glow_bright");
         let glow_combine = pipeline(&glow_mod, "fx-glow", "glow_combine");
@@ -799,6 +824,7 @@ impl FxEngine {
             vignette,
             exposure,
             hue_shift,
+            contrast,
             transform,
             glow_bright,
             glow_combine,
@@ -1552,6 +1578,37 @@ impl FxEngine {
             h,
             bytemuck::bytes_of(&ExposureParams {
                 factor: op.factor,
+                mix_amt: op.mix,
+                _pad0: 0.0,
+                _pad1: 0.0,
+            }),
+        );
+        out
+    }
+
+    /// Apply one contrast (docs/08 §3.18) to a linear working texture,
+    /// returning a new texture of the same size. One pointwise pass: the
+    /// affine grade about mid-grey, the §2.2 unpremultiply wrap fused into the
+    /// kernel; `k == 1.0` short-circuits to the input inside the kernel.
+    pub fn contrast(
+        &self,
+        ctx: &GpuContext,
+        src: &wgpu::Texture,
+        w: u32,
+        h: u32,
+        op: &ContrastOp,
+    ) -> wgpu::Texture {
+        let out = work_texture(ctx, w, h, "fx-contrast-out");
+        self.dispatch(
+            ctx,
+            &self.contrast,
+            src,
+            src,
+            &out,
+            w,
+            h,
+            bytemuck::bytes_of(&ContrastParams {
+                k: op.k,
                 mix_amt: op.mix,
                 _pad0: 0.0,
                 _pad1: 0.0,
@@ -2667,6 +2724,68 @@ mod tests {
             let out2 = fx.exposure(&ctx, &tex, w, h, &op);
             let gpu2 = readback_linear_f32(&ctx, &out2, w, h).unwrap();
             assert_eq!(gpu, gpu2, "GPU exposure must be bit-stable");
+        }
+    }
+
+    /// The §1.6 oracle for contrast: a cheap pointwise affine grade about
+    /// mid-grey, so CPU and GPU must agree to ≤ 2 fp16 ULP, the GPU is
+    /// bit-stable, and Contrast 100 % (`k` 1.0) or Mix 0 is the bit-exact
+    /// identity on both paths. The corpus is seeded with partial-alpha pixels
+    /// (straight colour × alpha), since the affine grade runs on
+    /// unpremultiplied colour and the − pivot offset makes the premultiply
+    /// round trip load-bearing — a naive grade on premultiplied colour would
+    /// diverge exactly there.
+    #[test]
+    fn wgsl_contrast_matches_the_cpu_oracle() {
+        let Ok(ctx) = GpuContext::headless() else {
+            eprintln!("no GPU adapter; skipping WGSL parity test");
+            return;
+        };
+        let fx = FxEngine::new(&ctx);
+        let (w, h) = (32u32, 24u32);
+        // Start from the shared corpus (gradient + alpha edge + HDR spike),
+        // then inject partial-alpha pixels: straight colour graded, stored
+        // premultiplied, quantised to f16 so both paths begin identical.
+        let mut img = corpus(w, h);
+        let q = |v: f32| f16_to_f32(f16_bits(v));
+        let partials = [
+            // (straight rgb, alpha)
+            ([0.7_f32, 0.3, 0.5], 0.5_f32),
+            ([0.2, 0.8, 0.6], 0.25),
+            ([0.9, 0.1, 0.4], 0.75),
+            ([2.0, 1.0, 0.5], 0.5), // partial-alpha HDR
+        ];
+        for (n, (rgb, a)) in partials.iter().enumerate() {
+            let i = n * 4; // the first four pixels of row 0
+            img[i] = q(rgb[0] * a);
+            img[i + 1] = q(rgb[1] * a);
+            img[i + 2] = q(rgb[2] * a);
+            img[i + 3] = q(*a);
+        }
+        for (name, op) in [
+            ("neutral", ContrastOp { k: 1.0, mix: 1.0 }),
+            ("boosted", ContrastOp { k: 1.8, mix: 1.0 }),
+            ("flattened", ContrastOp { k: 0.4, mix: 1.0 }),
+            ("mixed", ContrastOp { k: 1.5, mix: 0.6 }),
+            ("mix-zero", ContrastOp { k: 2.0, mix: 0.0 }),
+        ] {
+            let mut cpu = img.clone();
+            lumit_core::fx::cpu::contrast(&mut cpu, op.k, op.mix);
+
+            let tex = upload_linear_f32(&ctx, &img, w, h);
+            let out = fx.contrast(&ctx, &tex, w, h, &op);
+            let gpu = readback_linear_f32(&ctx, &out, w, h).unwrap();
+
+            let worst = worst_f16_ulp(&cpu, &gpu);
+            eprintln!("contrast {name}: worst {worst} ulp");
+            assert!(worst <= 2, "{name}: worst {worst} fp16 ULP");
+            if name == "neutral" || name == "mix-zero" {
+                assert_eq!(gpu, img, "{name}: must be the bit-exact identity");
+            }
+
+            let out2 = fx.contrast(&ctx, &tex, w, h, &op);
+            let gpu2 = readback_linear_f32(&ctx, &out2, w, h).unwrap();
+            assert_eq!(gpu, gpu2, "GPU contrast must be bit-stable");
         }
     }
 

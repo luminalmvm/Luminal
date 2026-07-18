@@ -798,6 +798,43 @@ pub const BUILTINS: &[EffectSchema] = &[
             MIX_PARAM,
         ],
     },
+    // Contrast (docs/08 §3.18): expand or compress RGB about a fixed mid-grey
+    // pivot (0.5) — the montage grade's punch lever. An affine grade
+    // (out = (in − pivot) × k + pivot), and because of the − pivot offset it
+    // does NOT commute with premultiplied alpha, so premultiplied: false: the
+    // host unpremultiplies, grades, and re-premultiplies, exactly like
+    // Saturation and Colour balance. 100 % (k = 1) is the neutral point
+    // (bit-exact passthrough, pinned by test). Continuous everywhere (no
+    // round/clamp/quantize), so the §1.6 oracle holds. Category Colour, beside
+    // its grade siblings.
+    EffectSchema {
+        match_name: "contrast",
+        label: "Contrast",
+        version: 1,
+        category: FxCategory::Colour,
+        traits: EffectTraits {
+            cost: CostClass::Cheap,
+            roi: Roi::Exact,
+            temporal: &[0],
+            premultiplied: false, // §2.2: an affine grade shifts matte edges
+            seeded: false,
+            beat_input: false,
+        },
+        params: &[
+            ParamSchema {
+                id: "contrast",
+                label: "Contrast",
+                // Per cent about mid-grey: 0 = flat grey, 100 = neutral,
+                // 200 = doubled. Hard min 0 (no inversion); unbounded above.
+                kind: ParamKind::Float {
+                    default: 100.0,
+                    slider: (0.0, 200.0),
+                    hard: (Some(0.0), None),
+                },
+            },
+            MIX_PARAM,
+        ],
+    },
     // Transform (docs/08 §3.5, K-090): the layer transform group as a stack
     // entry — same parameter names, units and animatability. Its point is
     // adjustment layers: applied there, it transforms the composite of
@@ -1728,6 +1765,15 @@ pub enum Resolved {
         /// 0..1.
         mix: f32,
     },
+    /// Contrast (docs/08 §3.18): the affine grade `(in − 0.5) × k + 0.5` per
+    /// RGB channel on unpremultiplied colour, alpha untouched. `k` 1.0
+    /// (Contrast 100 %) is the neutral point.
+    Contrast {
+        /// Contrast factor, `contrast_percent / 100`; 1.0 is neutral.
+        k: f32,
+        /// 0..1.
+        mix: f32,
+    },
     Transform {
         /// Anchor point, raster pixels (converted from px@comp, §2.3).
         anchor: [f32; 2],
@@ -2561,6 +2607,13 @@ pub fn resolve_stack(
                     mix,
                 })
             }
+            "contrast" => {
+                // k = contrast_percent / 100; hard min 0 (no inversion),
+                // unbounded above — the schema's own honest shape.
+                let k = (e.float_at("contrast", lt).unwrap_or(100.0) as f32 / 100.0).max(0.0);
+                let mix = (e.float_at("mix", lt).unwrap_or(100.0) as f32 / 100.0).clamp(0.0, 1.0);
+                Some(Resolved::Contrast { k, mix })
+            }
             "glow" => {
                 let radius_pct = e.float_at("radius", lt).unwrap_or(8.0) as f32;
                 let threshold = (e.float_at("threshold", lt).unwrap_or(1.0) as f32).max(0.0);
@@ -2805,6 +2858,7 @@ pub mod cpu {
             } => vignette(rgba, w, h, *amount, *radius, *softness, *roundness, *mix),
             Resolved::Exposure { factor, mix } => exposure(rgba, *factor, *mix),
             Resolved::HueShift { m, mix } => hue_shift(rgba, *m, *mix),
+            Resolved::Contrast { k, mix } => contrast(rgba, *k, *mix),
             Resolved::Transform {
                 anchor,
                 position,
@@ -3088,6 +3142,35 @@ pub mod cpu {
             px[0] = r * (1.0 - mix) + nr * mix;
             px[1] = g * (1.0 - mix) + ng * mix;
             px[2] = b * (1.0 - mix) + nb * mix;
+        }
+    }
+
+    /// The mid-grey pivot contrast expands or compresses about (docs/08 §3.18).
+    pub const CONTRAST_PIVOT: f32 = 0.5;
+
+    /// Contrast (docs/08 §3.18): the affine grade `(u − pivot) × k + pivot` per
+    /// RGB channel about the fixed mid-grey pivot (0.5), in linear light on
+    /// unpremultiplied colour (§2.2), re-premultiplied on the way out —
+    /// exactly Saturation's premultiply handling. The `− pivot` offset is why
+    /// this cannot run through premultiplied alpha: it is an affine grade, not
+    /// a pure scale, so it does not commute with the alpha multiply. `k` 1.0
+    /// (Contrast 100 %) short-circuits the whole effect (bit-exact identity;
+    /// the WGSL twin matches). Purely continuous — no round/clamp/quantize — so
+    /// it is safe under the §1.6 fp16 ULP oracle. Highlights are never clipped
+    /// (§2.1) and values may go negative between grade and re-premultiply; that
+    /// is the honest affine result, matched op-for-op by the kernel.
+    pub fn contrast(rgba: &mut [f32], k: f32, mix: f32) {
+        if k == 1.0 {
+            return; // neutral: bit-exact identity (the WGSL twin matches)
+        }
+        for px in rgba.chunks_exact_mut(4) {
+            let a = px[3];
+            let u = unpremult(px);
+            for c in 0..3 {
+                let v = (u[c] - CONTRAST_PIVOT) * k + CONTRAST_PIVOT;
+                let graded = v * a;
+                px[c] = px[c] * (1.0 - mix) + graded * mix;
+            }
         }
     }
 
@@ -4862,6 +4945,54 @@ mod tests {
         ];
         let luma_out = 0.2126 * ro[0] + 0.7152 * ro[1] + 0.0722 * ro[2];
         assert!((luma_in - luma_out).abs() < 1e-3, "luma preserved");
+    }
+
+    #[test]
+    fn contrast_is_neutral_at_100_and_pivots_about_mid_grey() {
+        let e = instantiate("contrast").unwrap();
+        assert_eq!(e.float_at("contrast", 0.0), Some(100.0));
+        // 100 % resolves to a neutral factor of 1.0.
+        let r = resolve_stack(&[e], 0.0, 1000.0, 1.0, &MarkerContext::NONE);
+        assert_eq!(r, vec![Resolved::Contrast { k: 1.0, mix: 1.0 }]);
+
+        // Neutral (k 1.0) is the bit-exact identity; Mix 0 is too at any k.
+        let mut n = vec![0.4_f32, 0.5, 0.6, 1.0];
+        cpu::contrast(&mut n, 1.0, 1.0);
+        assert_eq!(n, vec![0.4, 0.5, 0.6, 1.0]);
+        let mut m0 = vec![0.4_f32, 0.5, 0.6, 1.0];
+        cpu::contrast(&mut m0, 2.5, 0.0);
+        assert_eq!(m0, vec![0.4, 0.5, 0.6, 1.0]);
+
+        // Mid-grey (0.5) is the fixed point of the pivot at any k.
+        let mut grey = vec![0.5_f32, 0.5, 0.5, 1.0];
+        cpu::contrast(&mut grey, 2.0, 1.0);
+        for v in grey.iter().take(3) {
+            assert!((v - 0.5).abs() < 1e-6, "mid-grey stays put");
+        }
+
+        // Opaque pixel, k 2.0: each channel moves twice as far from 0.5.
+        let mut op = vec![0.4_f32, 0.5, 0.6, 1.0];
+        cpu::contrast(&mut op, 2.0, 1.0);
+        for (v, want) in op.iter().zip([0.3_f32, 0.5, 0.7, 1.0]) {
+            assert!((v - want).abs() < 1e-6, "opaque grade: {v} vs {want}");
+        }
+
+        // Half-alpha pixel: the grade runs on the unpremultiplied colour and
+        // is re-premultiplied — the premult round trip that a naive grade on
+        // premultiplied colour would get wrong. Straight (0.4,0.6,0.5) at
+        // alpha 0.5 is stored premultiplied as (0.2,0.3,0.25); k 2.0 grades
+        // the straight colour to (0.3,0.7,0.5), re-premultiplied to
+        // (0.15,0.35,0.25); alpha is untouched.
+        let mut half = vec![0.2_f32, 0.3, 0.25, 0.5];
+        cpu::contrast(&mut half, 2.0, 1.0);
+        for (v, want) in half.iter().zip([0.15_f32, 0.35, 0.25, 0.5]) {
+            assert!((v - want).abs() < 1e-6, "half-alpha grade: {v} vs {want}");
+        }
+
+        // Empty pixels stay empty (unpremult reads black, re-premult is zero).
+        let mut empty = vec![0.0_f32, 0.0, 0.0, 0.0];
+        cpu::contrast(&mut empty, 2.0, 1.0);
+        assert_eq!(empty, vec![0.0, 0.0, 0.0, 0.0]);
     }
 
     #[test]

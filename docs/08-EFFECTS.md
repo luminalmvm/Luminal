@@ -119,7 +119,9 @@ Colour-manipulation effects operate on unpremultiplied colour, because grading
 premultiplied values shifts matte edges. Effects declaring `alpha mode: unpremultiplied`
 are wrapped by the host: unpremultiply → effect → re-premultiply, fused into the effect's
 first/last passes where possible. The Tier 1 effects requiring this: **the colour effects
-(Colour balance, Saturation), LUT, Sharpen** (edge haloes otherwise). All others consume
+(Colour balance, Saturation, Contrast), LUT, Sharpen** (edge haloes otherwise). Contrast joins
+the list because its `− pivot` offset makes it *affine*, not a pure scale, so unlike Exposure
+and Hue shift it does not commute with premultiplied alpha (§3.18). All others consume
 premultiplied input directly (Block glitch, Scanlines and Datamosh among them — §3.12).
 
 ### 2.3 Resolution-independent units
@@ -184,6 +186,7 @@ specified in §3.1's original text but surfaced as layer UI, not an effect. Summ
 | 3.15 | Chromatic aberration | stock CC pack fillers | cheap | `{0}` |
 | 3.16 | Exposure | stock CC pack exposure/levels | cheap | `{0}` |
 | 3.17 | Hue shift | stock CC pack hue/saturation | cheap | `{0}` |
+| 3.18 | Contrast | stock CC pack contrast/levels | cheap | `{0}` |
 
 ### 3.1 Flow engine — optical-flow retime interpolation (Twixtor-class)
 
@@ -725,6 +728,30 @@ the **Colour** category. Continuous (a linear matrix), so the §1.6 oracle holds
 ULP (measured 0–1 on the dev RTX). 0° resolves to the exact identity matrix — the bit-exact
 neutral point, pinned by test — and Mix 0 is likewise the identity. Hue rotation runs in the
 compositor's scene-linear working space (not gamma), consistent with every other grade here.
+
+### 3.18 Contrast
+
+**Parameters:** Contrast (per cent, default 100, slider 0..200, hard min 0 and unbounded
+above), Mix.
+
+**Algorithm sketch.** Expand or compress every RGB channel about a fixed mid-grey pivot:
+`out = (in − pivot) × k + pivot`, with `k = Contrast ÷ 100` and `pivot = 0.5`. Alpha is
+untouched. The maths runs in the compositor's scene-linear working space, consistent with the
+other grades, and the pivot subtraction happens in that same space. Because of the `− pivot`
+offset this is an **affine** grade, not a pure scale, so — unlike Exposure and Hue shift — it
+does **not** commute with premultiplied alpha: it declares `alpha mode: unpremultiplied` and
+the host wraps it unpremultiply → grade → re-premultiply, exactly like Colour balance and
+Saturation (§2.2), so matte edges do not shift. `cheap` cost, `Exact` ROI.
+
+**Status (v1, shipped, K-110):** the fourth one-knob grade, beside Exposure, Hue shift and
+Saturation in the **Colour** category. Purely continuous (no round/clamp/quantize — mid-grey
+0.5 is the fixed point, and highlights are never clipped), so the §1.6 oracle holds to ≤ 2
+fp16 ULP, exercised on a corpus that includes partial-alpha pixels since the premultiply round
+trip is load-bearing here. Contrast 100 % (`k` 1.0) short-circuits to the input on both paths
+(the bit-exact neutral point, pinned by test); Mix 0 is likewise the identity. The pivot is a
+plain mid-grey 0.5 rather than the 0.18 scene-linear mid-grey, so the control matches the
+familiar photo-editor contrast slider (symmetric about 50 %) rather than a light-meter grey
+card — an editing-desk feel over a colour-science one.
 
 ---
 
