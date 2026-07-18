@@ -1027,6 +1027,107 @@ pub(crate) fn keyframe_nav(
     }
 }
 
+/// The keyframe navigator for the linked Scale row — the scale twin of
+/// [`keyframe_nav`], which drives a single property. Prev/next jump across the
+/// *union* of both axes' key times, and the diamond adds or removes a keyframe
+/// on **both** axes at once (one `two_prop_batch`), so the linked pair keeps
+/// matching keys. Without this the animated Scale row showed a stopwatch but no
+/// ◄ ◆ ► navigator, unlike every other transform row (the note-2.5 bug).
+pub(crate) fn keyframe_nav_scale(
+    ui: &mut egui::Ui,
+    app: &mut AppState,
+    ctx: &RowCtx,
+    sx: &lumit_core::anim::Property,
+    sy: &lumit_core::anim::Property,
+    pending: &mut Option<lumit_core::Op>,
+) {
+    use lumit_core::anim::Animation;
+    use lumit_core::model::TransformProp;
+    if !(sx.is_animated() || sy.is_animated()) {
+        return;
+    }
+    let tol = 0.5 / ctx.fps.max(1.0); // within half a frame counts as "on" it
+    let small = |i: Icon| egui::Button::new(crate::icons::text(i, 11.0)).frame(false);
+    // The union of both axes' key times, ascending — a linked pair usually holds
+    // matching keys, but a just-unlinked-then-relinked pair might not.
+    let mut times: Vec<f64> = Vec::new();
+    for slot in [sx, sy] {
+        if let Animation::Keyframed(k) = &slot.animation {
+            times.extend(k.iter().map(|kf| kf.time.to_f64()));
+        }
+    }
+    times.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let mut jump_to: Option<f64> = None;
+
+    let has_prev = times.iter().any(|&t| t < ctx.lt - tol);
+    if ui
+        .add_enabled(has_prev, small(Icon::PrevKeyframe))
+        .on_hover_text("Previous keyframe")
+        .clicked()
+    {
+        jump_to = times.iter().rev().find(|&&t| t < ctx.lt - tol).copied();
+    }
+
+    let on_key = times.iter().any(|&t| (t - ctx.lt).abs() < tol);
+    if ui
+        .add(small(if on_key {
+            Icon::Keyframe
+        } else {
+            Icon::KeyframeAdd
+        }))
+        .on_hover_text(if on_key {
+            "Remove keyframe here"
+        } else {
+            "Add keyframe here"
+        })
+        .clicked()
+    {
+        // Add on both axes, or remove the key at the playhead from both, so the
+        // linked pair stays in step (the stopwatch drives them together too).
+        let axis = |slot: &lumit_core::anim::Property| -> Animation {
+            if on_key {
+                if let Animation::Keyframed(k) = &slot.animation {
+                    let kept: Vec<_> = k
+                        .iter()
+                        .filter(|kf| (kf.time.to_f64() - ctx.lt).abs() >= tol)
+                        .cloned()
+                        .collect();
+                    if kept.is_empty() {
+                        Animation::Static(slot.value_at(ctx.lt))
+                    } else {
+                        Animation::Keyframed(kept)
+                    }
+                } else {
+                    slot.animation.clone()
+                }
+            } else {
+                Animation::Keyframed(upsert_key(slot, ctx.lt, slot.value_at(ctx.lt)))
+            }
+        };
+        *pending = Some(two_prop_batch(
+            ctx.comp_id,
+            ctx.layer.id,
+            (TransformProp::ScaleX, axis(sx)),
+            (TransformProp::ScaleY, axis(sy)),
+        ));
+    }
+
+    let has_next = times.iter().any(|&t| t > ctx.lt + tol);
+    if ui
+        .add_enabled(has_next, small(Icon::NextKeyframe))
+        .on_hover_text("Next keyframe")
+        .clicked()
+    {
+        jump_to = times.iter().find(|&&t| t > ctx.lt + tol).copied();
+    }
+
+    if let Some(kt) = jump_to {
+        app.preview_frame = ((kt + ctx.off) * ctx.fps).round().max(0.0) as usize;
+        #[cfg(feature = "media")]
+        app.refresh_preview();
+    }
+}
+
 /// One generic property row.
 pub(crate) fn prop_row(
     ui: &mut egui::Ui,
@@ -1290,6 +1391,9 @@ pub(crate) fn combined_scale_row(
             (TransformProp::ScaleY, ay),
         ));
     }
+    // The ◄ ◆ ► navigator, driving both axes (note-2.5 fix) — shown once the row
+    // is animated, matching every other transform row.
+    keyframe_nav_scale(&mut c, app, ctx, sx, sy, pending);
     if c.add(
         egui::Label::new(egui::RichText::new("Scale %").small().color(if is_graphed {
             ctx.theme.accent
