@@ -109,6 +109,84 @@ fn resolve_stack_evaluates_converts_and_skips_dead_effects() {
     );
 }
 
+// docs/impl/temporal-rerender.md §5: in a held/sub-frame re-render an effect
+// flagged sample_temporally == false resolves at the true frame time, while the
+// rest of the stack samples the held time. resolve_stack_temporal is the
+// per-effect time split both the preview and export re-render drive; with the
+// two times equal it is byte-identical to resolve_stack (the ordinary render is
+// unchanged).
+#[test]
+fn resolve_stack_temporal_pins_non_sampling_effects_to_the_frame_time() {
+    use crate::anim::{Keyframe, SideInterp};
+    use crate::time::Rational;
+    // A blur whose radius ramps 0%→100% over one second, so a held time and a
+    // frame time resolve to visibly different radii.
+    let key = |time: Rational, value: f64| Keyframe {
+        time,
+        value,
+        interp_in: SideInterp::Linear,
+        interp_out: SideInterp::Linear,
+    };
+    let ramp = Property {
+        animation: Animation::Keyframed(vec![
+            key(Rational::ZERO, 0.0),
+            key(Rational::new(1, 1).unwrap(), 100.0),
+        ]),
+        extra: serde_json::Map::new(),
+    };
+    let mut e = instantiate("blur").unwrap();
+    for p in &mut e.params {
+        if p.id == "radius" {
+            p.value = EffectValue::Float(ramp.clone());
+        }
+    }
+    let radius_of = |r: &[Resolved]| match r.first() {
+        Some(Resolved::Blur { radius_px, .. }) => *radius_px,
+        _ => panic!("expected a blur"),
+    };
+    // Sample time 0.2 (radius 20% → 200px of a 1000px diagonal), frame time 0.8
+    // (80% → 800px). With the flag ON (the default) the effect samples the held
+    // time; with it OFF it holds at the frame time.
+    let sampled = resolve_stack_temporal(
+        std::slice::from_ref(&e),
+        0.2,
+        0.8,
+        1000.0,
+        1.0,
+        &MarkerContext::NONE,
+    );
+    assert!((radius_of(&sampled) - 200.0).abs() < 0.01);
+    e.sample_temporally = false;
+    let held = resolve_stack_temporal(
+        std::slice::from_ref(&e),
+        0.2,
+        0.8,
+        1000.0,
+        1.0,
+        &MarkerContext::NONE,
+    );
+    assert!((radius_of(&held) - 800.0).abs() < 0.01);
+    // Equal times ⇒ byte-identical to resolve_stack (ordinary render unchanged),
+    // whatever the flag.
+    assert_eq!(
+        resolve_stack_temporal(
+            std::slice::from_ref(&e),
+            0.5,
+            0.5,
+            1000.0,
+            1.0,
+            &MarkerContext::NONE
+        ),
+        resolve_stack(
+            std::slice::from_ref(&e),
+            0.5,
+            1000.0,
+            1.0,
+            &MarkerContext::NONE
+        ),
+    );
+}
+
 #[test]
 fn dof_instantiates_unset_and_resolves_its_floats() {
     let e = instantiate("dof").unwrap();

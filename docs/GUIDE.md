@@ -211,6 +211,16 @@ Two mechanisms make this safe, and you'll see them by name in the code:
   buried in a collapsed precomp) quietly do nothing rather than risk a wrong picture. There is
   a Scope switch for a per-layer version ("just this layer's own effects") that is the next
   small step — the maths and the switch are already in place.
+- **"Don't re-sample this effect" — a per-effect opt-out for the choppy passes.** When
+  Posterize time (and, soon, accumulation motion blur) re-renders the scene at a *different*
+  moment, it normally re-runs everything at that moment. But some effects are expensive or
+  random — a particle system, say — and you would not want them re-computed for every sample;
+  it would look wrong and cost a fortune. So every effect now carries a quiet switch, **on** by
+  default: leave it on and the effect moves in time with the rest of the scene; turn it **off**
+  and that one effect stays frozen at the real playhead while everything around it is held or
+  sampled. Behind the scenes this is just "which clock do I read?" per effect — with the switch
+  on, both clocks read the same time, so an ordinary render (no posterise, no accumulation
+  blur) is completely unaffected.
 - **Depth of field becomes a real effect — and effects can now read another layer.** Until
   now every effect took numbers, colours, a file. Depth of field needs a *second picture*: a
   "depth map" that says how far away each pixel is. The natural place to get one is **another

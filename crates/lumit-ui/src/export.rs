@@ -1366,6 +1366,10 @@ impl Renderer<'_> {
                         comp,
                         below_layers,
                         tau,
+                        // The true playhead: an effect in the below-stack flagged
+                        // sample_temporally == false holds here, not at `tau`
+                        // (docs/impl/temporal-rerender.md §5, K-031).
+                        t,
                         &pixels_ref,
                         visited,
                     )

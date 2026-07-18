@@ -1043,6 +1043,13 @@ and carries no neighbour frames (the same boundary the after-effects matte takes
 Posterize adjustment *inside a collapsed* Precomp degrades to a no-op (its held draws are sized
 for the nested comp). `cheap` cost, `FullFrame` ROI, `{0}` temporal, Category **Temporal**.
 
+**Per-effect sampling (K-132).** The held re-render honours each below-effect's
+`sample_temporally` flag (a general `EffectInstance` property, default on): an effect with it
+**off** resolves at the true frame time, not the held time `held_t`, so a costly or stochastic
+effect (a particle system) is pinned to the playhead while the rest of the scene holds. The
+split is `lumit_core::fx::resolve_stack_temporal`; with the frame and held times equal it is
+byte-identical to the plain resolve, so an ordinary render is unchanged.
+
 ---
 
 ## 4. Tier 2 — AE parity direction (post-v1)

@@ -57,9 +57,18 @@ helper so a preview frame equals an export frame (K-031), exactly as `render_lay
 `EffectInstance` gains `#[serde(default = "default_true")] sample_temporally: bool`. During a
 sub-frame/held render, an effect with it **false** is evaluated at the *frame* time `t`, not
 `τ_k` — for particle systems and other stochastic/costly effects the user does not want re-run
-per sample. Implementation: `resolve_stack` grows an optional per-effect time override (or the
-caller resolves excluded effects at `t` and the rest at `τ_k` and merges). Held effects render
-once at `t`; only sampled ones move.
+per sample. Held effects render once at `t`; only sampled ones move.
+
+**Landed (K-132).** The split lives in `lumit_core::fx::resolve_stack_temporal(effects,
+sample_lt, frame_lt, …)`: it shares `resolve_one` with `resolve_stack`, handing each effect
+`frame_lt` when its flag is false and `sample_lt` otherwise — so `sample_lt == frame_lt` is
+byte-identical to `resolve_stack` and the ordinary render is untouched. `build_comp_draws`
+becomes a thin wrapper over `build_comp_draws_at(doc, comp, t_comp, frame_t, …)`, which threads
+the true playhead `frame_t` (and `frame_lt = frame_t − start_offset`) through nested Precomps
+and into `posterize_below`/`below_draws_at`/`render_below_at`; every layer's own stack resolves
+through `resolve_stack_temporal`. The after-effects matte/depth sources keep their own K-125
+temporal boundary (they already hold their temporal inputs to stills), so the flag is honoured
+on each below-layer's *own* stack, at every depth.
 
 ## 6. Cache key + determinism (lumit-eval)
 The sampled/held times are a pure function of `t`, the rate/shutter, and `sample_temporally`
@@ -72,7 +81,7 @@ share a key — the deduplication that makes it cheap). No new non-determinism.
    prove preview == export on a still scene first (a re-render at the same `t` must be
    bit-identical to no re-render).
 2. Posterize Time, *Everything below* scope (one render at `τ`) — the simplest consumer.
-3. `EffectInstance.sample_temporally` + Posterize Time *this-layer* scope.
+3. `EffectInstance.sample_temporally` (landed, K-132) + Posterize Time *this-layer* scope.
 4. Accumulation MB (N samples + the additive average) on top of (1).
 Each step is a K-decision + docs/08 section + oracle/parity test where one applies (these have
 no per-pixel oracle; the test is a still-scene identity + a moving-scene coverage check, as

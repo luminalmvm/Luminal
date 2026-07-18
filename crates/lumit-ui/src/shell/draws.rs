@@ -163,12 +163,39 @@ pub(crate) fn motion_blur_samples(
 
 /// Build a comp's draw list recursively (preview side of Precomp layers).
 /// Bottom-up order; matte sources come from decoded pixels (precomp mattes
-/// await the GPU mask pass, mirroring export).
+/// await the GPU mask pass, mirroring export). The ordinary render entry: draws
+/// at comp time `t_comp` with every effect resolved at `t_comp` too — a thin
+/// wrapper over [`build_comp_draws_at`] with the sample and frame times equal.
 #[cfg(feature = "media")]
 pub(crate) fn build_comp_draws(
     doc: &lumit_core::model::Document,
     comp: &lumit_core::model::Composition,
     t_comp: f64,
+    pixels_by_layer: &std::collections::HashMap<
+        uuid::Uuid,
+        &crate::app_state::preview::CompLayerPixels,
+    >,
+    visited: &mut Vec<uuid::Uuid>,
+) -> Vec<CompLayerDraw> {
+    build_comp_draws_at(doc, comp, t_comp, t_comp, pixels_by_layer, visited)
+}
+
+/// Build a comp's draw list at sample comp time `t_comp`, resolving each layer's
+/// effects at `t_comp` **except** those flagged `sample_temporally == false`,
+/// which resolve at the true frame time `frame_t` instead (docs/impl/
+/// temporal-rerender.md §5). For an ordinary render `frame_t == t_comp`, so the
+/// two times coincide and nothing changes; only a held/sub-frame temporal
+/// re-render (Posterize time, accumulation motion blur) passes a `frame_t` that
+/// differs, letting a costly/stochastic effect stay pinned to the playhead while
+/// the rest of the scene is sampled. `frame_t` threads through nested Precomps
+/// (each layer's own `start_offset` subtracted) so the flag is honoured at every
+/// depth.
+#[cfg(feature = "media")]
+pub(crate) fn build_comp_draws_at(
+    doc: &lumit_core::model::Document,
+    comp: &lumit_core::model::Composition,
+    t_comp: f64,
+    frame_t: f64,
     pixels_by_layer: &std::collections::HashMap<
         uuid::Uuid,
         &crate::app_state::preview::CompLayerPixels,
@@ -314,6 +341,10 @@ pub(crate) fn build_comp_draws(
             continue;
         }
         let lt = t_comp - layer.start_offset.0.to_f64();
+        // The true frame time in this layer's own time base, for effects a
+        // held/sub-frame re-render must not re-sample (docs/impl/
+        // temporal-rerender.md §5). Equal to `lt` on an ordinary render.
+        let frame_lt = frame_t - layer.start_offset.0.to_f64();
         let tr = &layer.transform;
 
         let (source, natural) = match &layer.kind {
@@ -333,7 +364,8 @@ pub(crate) fn build_comp_draws(
                     lumit_core::model::CollapseState::Active
                 ) {
                     visited.push(*nested_id);
-                    let mut inner = build_comp_draws(doc, nested, lt, pixels_by_layer, visited);
+                    let mut inner =
+                        build_comp_draws_at(doc, nested, lt, frame_lt, pixels_by_layer, visited);
                     visited.pop();
                     let own = lumit_gpu::place_matrix(
                         (
@@ -386,7 +418,8 @@ pub(crate) fn build_comp_draws(
                     continue;
                 }
                 visited.push(*nested_id);
-                let nested_draws = build_comp_draws(doc, nested, lt, pixels_by_layer, visited);
+                let nested_draws =
+                    build_comp_draws_at(doc, nested, lt, frame_lt, pixels_by_layer, visited);
                 visited.pop();
                 let nbg = nested.background.0;
                 (
@@ -413,9 +446,18 @@ pub(crate) fn build_comp_draws(
                 let comp_diag = ((comp.width as f32).powi(2) + (comp.height as f32).powi(2)).sqrt();
                 let fx = if layer.switches.fx {
                     // The §1.4 marker context, built by the same shared
-                    // constructor export uses (K-031).
+                    // constructor export uses (K-031). Effects flagged
+                    // sample_temporally == false resolve at the frame time in a
+                    // held re-render (§5); equal to `lt` on an ordinary render.
                     let markers = lumit_core::fx::MarkerContext::for_layer(comp, layer);
-                    lumit_core::fx::resolve_stack(&layer.effects, lt, comp_diag, 1.0, &markers)
+                    lumit_core::fx::resolve_stack_temporal(
+                        &layer.effects,
+                        lt,
+                        frame_lt,
+                        comp_diag,
+                        1.0,
+                        &markers,
+                    )
                 } else {
                     Vec::new()
                 };
@@ -423,9 +465,18 @@ pub(crate) fn build_comp_draws(
                 // stack re-rendered at the held time, built by the shared
                 // `below_draws_at` export also drives (K-031). A Posterize Time
                 // effect has no Resolved op, so this — not `fx` — is what makes
-                // such an adjustment live.
-                let temporal_below =
-                    posterize_below(doc, comp, layer, idx, t_comp, pixels_by_layer, visited);
+                // such an adjustment live. `frame_t` carries the playhead through
+                // so the held below honours sample_temporally too (§5).
+                let temporal_below = posterize_below(
+                    doc,
+                    comp,
+                    layer,
+                    idx,
+                    t_comp,
+                    frame_t,
+                    pixels_by_layer,
+                    visited,
+                );
                 if fx.is_empty() && temporal_below.is_none() {
                     continue;
                 }
@@ -575,11 +626,15 @@ pub(crate) fn build_comp_draws(
                 // scale doubles as the §2.3 preview-resolution factor:
                 // raster pixels per comp pixel for px@comp parameters. The
                 // §1.4 marker context comes from the same shared
-                // constructor export uses (K-031).
+                // constructor export uses (K-031). In a held/sub-frame temporal
+                // re-render, an effect flagged sample_temporally == false stays
+                // at the frame time `frame_lt` (§5); on an ordinary render
+                // `frame_lt == lt`, so this is the plain resolve.
                 let markers = lumit_core::fx::MarkerContext::for_layer(comp, layer);
-                lumit_core::fx::resolve_stack(
+                lumit_core::fx::resolve_stack_temporal(
                     &layer.effects,
                     lt,
+                    frame_lt,
                     comp_diag * scale,
                     scale,
                     &markers,
@@ -708,20 +763,27 @@ fn lut_files(effects: &[lumit_core::model::EffectInstance], lt: f64) -> Vec<Opti
 /// frame-time decode and export carries no neighbour decode for it. A
 /// documented v1 boundary (docs/08 §3.25), matching the after-effects matte's
 /// own temporal boundary (K-125).
+///
+/// `frame_t` is the true playhead, threaded so an effect in the below-stack
+/// flagged `sample_temporally == false` holds at the frame time rather than
+/// `tau` (docs/impl/temporal-rerender.md §5); for a plain re-render at the same
+/// time the caller passes `frame_t == tau`.
 #[cfg(feature = "media")]
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn render_below_at(
     realiser: &Realiser,
     doc: &lumit_core::model::Document,
     comp: &lumit_core::model::Composition,
     below: &[lumit_core::model::Layer],
     tau: f64,
+    frame_t: f64,
     pixels_by_layer: &std::collections::HashMap<
         uuid::Uuid,
         &crate::app_state::preview::CompLayerPixels,
     >,
     visited: &mut Vec<uuid::Uuid>,
 ) -> egui_wgpu::wgpu::Texture {
-    let (draws, camera) = below_draws_at(doc, comp, below, tau, pixels_by_layer, visited);
+    let (draws, camera) = below_draws_at(doc, comp, below, tau, frame_t, pixels_by_layer, visited);
     let background = comp.background.0.map(f64::from);
     realiser.realise(camera, comp.width, comp.height, background, &draws)
 }
@@ -738,6 +800,7 @@ pub(crate) fn below_draws_at(
     comp: &lumit_core::model::Composition,
     below: &[lumit_core::model::Layer],
     tau: f64,
+    frame_t: f64,
     pixels_by_layer: &std::collections::HashMap<
         uuid::Uuid,
         &crate::app_state::preview::CompLayerPixels,
@@ -747,10 +810,12 @@ pub(crate) fn below_draws_at(
     // A below-only view of the comp: the same size, background, frame rate,
     // markers and camera, but only the layers beneath the adjustment. The
     // camera is read from the original comp at `tau` (a Camera layer inside
-    // `below` draws nothing itself).
+    // `below` draws nothing itself). `frame_t` is the true playhead, so an effect
+    // in the below-stack flagged sample_temporally == false holds at the frame
+    // time instead of the sample time `tau` (docs/impl/temporal-rerender.md §5).
     let mut below_comp = comp.clone();
     below_comp.layers = below.to_vec();
-    let mut draws = build_comp_draws(doc, &below_comp, tau, pixels_by_layer, visited);
+    let mut draws = build_comp_draws_at(doc, &below_comp, tau, frame_t, pixels_by_layer, visited);
     strip_temporal_inputs(&mut draws);
     (draws, comp.camera_pose(tau))
 }
@@ -764,12 +829,14 @@ pub(crate) fn below_draws_at(
 /// (`build_comp_draws`) and export, which detects the same effect in
 /// `render_comp_linear` and calls [`render_below_at`] directly.
 #[cfg(feature = "media")]
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn posterize_below(
     doc: &lumit_core::model::Document,
     comp: &lumit_core::model::Composition,
     layer: &lumit_core::model::Layer,
     idx: usize,
     t_comp: f64,
+    frame_t: f64,
     pixels_by_layer: &std::collections::HashMap<
         uuid::Uuid,
         &crate::app_state::preview::CompLayerPixels,
@@ -783,7 +850,7 @@ pub(crate) fn posterize_below(
     }
     let tau = lumit_core::fx::posterize_held_time(t_comp, p.rate, p.phase);
     let below = &comp.layers[idx + 1..];
-    let (draws, camera) = below_draws_at(doc, comp, below, tau, pixels_by_layer, visited);
+    let (draws, camera) = below_draws_at(doc, comp, below, tau, frame_t, pixels_by_layer, visited);
     Some(TemporalBelow { draws, camera })
 }
 
@@ -984,7 +1051,7 @@ mod render_below_at_tests {
         // Re-render the whole stack (every layer counts as "below") at the same
         // time through the shared helper.
         let mut v2 = vec![comp.id];
-        let below = render_below_at(&realiser, &doc, &comp, &comp.layers, t, &pixels, &mut v2);
+        let below = render_below_at(&realiser, &doc, &comp, &comp.layers, t, t, &pixels, &mut v2);
         let below_bytes = engine
             .readback8(&ctx, &engine.display(&ctx, &below))
             .unwrap();
@@ -1090,6 +1157,75 @@ mod render_below_at_tests {
         );
     }
 
+    // docs/impl/temporal-rerender.md §5: an effect in the held below-stack flagged
+    // sample_temporally == false stays pinned to the frame time while the scene's
+    // transforms sample the held time. The text below carries a blur whose radius
+    // ramps 0%→100% over a second and opts out of sampling; under a 10 fps
+    // posterise at t = 0.35 (held tau = 0.3) its transform holds at x = 30 but its
+    // blur resolves at the frame time 0.35 (35% of the diagonal), not 0.3.
+    #[test]
+    fn a_non_sampling_below_effect_holds_at_the_frame_time_not_the_grid() {
+        let mut text = text_layer(0.0);
+        text.transform.position_x = ramp(0.0, 100.0); // x = 100·t
+        let mut blur = lumit_core::fx::instantiate("blur").unwrap();
+        blur.sample_temporally = false;
+        for p in &mut blur.params {
+            if p.id == "radius" {
+                p.value = lumit_core::model::EffectValue::Float(ramp(0.0, 100.0));
+                // radius% = 100·t
+            }
+        }
+        text.effects = vec![blur];
+        let comp = Composition {
+            id: Uuid::now_v7(),
+            name: "c".into(),
+            width: 320,
+            height: 180,
+            frame_rate: FrameRate::new(30, 1).unwrap(),
+            duration: Duration(Rational::new(10, 1).unwrap()),
+            background: LinearColour([0.1, 0.1, 0.1, 1.0]),
+            work_area: None,
+            layers: vec![posterize_adjustment(10.0), text],
+            markers: Vec::new(),
+            motion_blur: Default::default(),
+            extra: serde_json::Map::new(),
+        };
+        let doc = Document::new();
+        let pixels: HashMap<Uuid, &crate::app_state::preview::CompLayerPixels> = HashMap::new();
+        let mut visited = vec![comp.id];
+        let draws = build_comp_draws(&doc, &comp, 0.35, &pixels, &mut visited);
+        let adj = draws
+            .iter()
+            .find(|d| matches!(d.source, DrawSource::Adjust))
+            .expect("the posterize adjustment emits a staging draw");
+        let tb = adj
+            .temporal_below
+            .as_ref()
+            .expect("an everything-below posterize carries a held below-stack");
+        assert_eq!(tb.draws.len(), 1, "the one text layer below is held");
+        // The transform samples the held time (x = 30).
+        assert!(
+            (tb.draws[0].position.0 - 30.0).abs() < 0.01,
+            "transform held at tau = 0.3; got {}",
+            tb.draws[0].position.0
+        );
+        // The blur, opting out, resolves at the frame time 0.35 (35% of diag).
+        let diag = ((comp.width as f32).powi(2) + (comp.height as f32).powi(2)).sqrt();
+        let radius = match tb.draws[0].fx.first() {
+            Some(lumit_core::fx::Resolved::Blur { radius_px, .. }) => *radius_px,
+            other => panic!("expected a blur op, got {other:?}"),
+        };
+        assert!(
+            (radius - 0.35 * diag).abs() < 0.5,
+            "blur must hold at the frame time 0.35 ({}), got {radius}",
+            0.35 * diag
+        );
+        assert!(
+            (radius - 0.30 * diag).abs() > 5.0,
+            "blur must NOT sample the held time 0.30; got {radius}"
+        );
+    }
+
     // docs/08 §3.25 + K-031: the whole preview Posterize path (detect → held
     // below → adjustment blend) must reduce, at full coverage, to a plain render
     // of the below-stack at the held time. So a posterised frame at t = 0.35
@@ -1129,7 +1265,9 @@ mod render_below_at_tests {
         // A plain render of the below-stack (just the text) at tau = 0.3.
         let below = &comp.layers[1..];
         let mut v2 = vec![comp.id];
-        let held = render_below_at(&realiser, &doc, &comp, below, 0.3, &pixels, &mut v2);
+        // frame_t = 0.35 matches what the posterise adjustment passes (its own
+        // frame time), so the two below-renders build the identical draws.
+        let held = render_below_at(&realiser, &doc, &comp, below, 0.3, 0.35, &pixels, &mut v2);
         let held_bytes = engine
             .readback8(&ctx, &engine.display(&ctx, &held))
             .unwrap();

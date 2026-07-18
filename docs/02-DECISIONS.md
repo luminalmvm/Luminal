@@ -1362,3 +1362,20 @@ after-effects matte, K-125); a Posterize adjustment inside a collapsed Precomp i
 held draws are sized for the nested comp); *This layer's effects* scope and the held-time cache
 dedup are tracked follow-ups (the schema and maths are already in place). Built in an isolated
 worktree; not pushed.
+
+**K-132 · DECIDED · A held/sub-frame temporal re-render honours the per-effect
+`sample_temporally` flag (docs/08 §3.25, docs/impl/temporal-rerender.md §5).** In a Posterize
+time (and, next, accumulation motion blur) re-render, an effect on a below-layer flagged
+`sample_temporally == false` resolves at the true frame time `t`, not the held/sample time `τ`,
+so a particle system or other costly/stochastic effect is not re-run per held sample while the
+rest of the scene (transforms, camera and the sampling effects) moves to `τ`. Implementation:
+`lumit_core::fx::resolve_stack_temporal(effects, sample_lt, frame_lt, …)` shares `resolve_one`
+with `resolve_stack`, handing each effect `frame_lt` when its flag is false and `sample_lt`
+otherwise — so `sample_lt == frame_lt` is byte-identical to `resolve_stack` and the ordinary
+(non-temporal) render is unchanged. `build_comp_draws` is now a thin wrapper over
+`build_comp_draws_at(doc, comp, t_comp, frame_t, …)`, which threads the playhead `frame_t`
+through nested Precomps and into `posterize_below`/`below_draws_at`/`render_below_at`; each
+layer's own stack resolves through `resolve_stack_temporal`. Preview and export drive the one
+threaded path, so they stay identical (K-031). The after-effects matte/depth sources keep their
+own K-125 temporal boundary. Concurrent-worktree risk: another agent may also claim K-132 —
+renumber on merge if so. Built in an isolated worktree; not pushed.
