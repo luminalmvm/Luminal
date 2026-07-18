@@ -343,6 +343,9 @@ impl FileParam {
 /// colours animate per channel (scene-linear RGBA). Bool/Choice/Seed are
 /// static in v1 — the tier-1 staples don't keyframe them. `File` carries a
 /// path chosen from a dialog, animatable only by stepping (hold keys, K-111).
+/// `Layer` references another layer as an auxiliary picture (a depth pass for
+/// depth of field, docs/impl/layer-input.md), the same shape [`MatteRef`]
+/// uses.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum EffectValue {
     Float(Property),
@@ -352,6 +355,12 @@ pub enum EffectValue {
     Choice(u32),
     Seed(u32),
     File(FileParam),
+    /// A reference to another layer in the same composition, sampled as an
+    /// auxiliary input (a depth pass for depth of field, docs/impl/
+    /// layer-input.md). `None` when unset; a `Some` id that no longer names a
+    /// layer degrades to unset (a labelled no-op), never an error. Static in
+    /// v1 — a layer reference does not keyframe.
+    Layer(Option<Uuid>),
 }
 
 /// One named parameter on an effect instance. `id` is the stable snake_case
@@ -414,6 +423,18 @@ impl EffectInstance {
     pub fn path_at(&self, id: &str, lt: f64) -> Option<&str> {
         match self.param(id)? {
             EffectValue::File(f) => f.path_at(lt),
+            _ => None,
+        }
+    }
+
+    /// A layer-reference parameter's target id, or None when the parameter is
+    /// absent, not a Layer, or unset (docs/impl/layer-input.md). The caller
+    /// renders that layer alone at comp size and threads its texture to the
+    /// effect (a depth pass for depth of field), the same way `path_at` feeds
+    /// a LUT its file.
+    pub fn layer_ref(&self, id: &str) -> Option<Uuid> {
+        match self.param(id)? {
+            EffectValue::Layer(l) => *l,
             _ => None,
         }
     }

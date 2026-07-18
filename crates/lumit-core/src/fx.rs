@@ -103,6 +103,14 @@ pub enum ParamKind {
         filter: &'static [&'static str],
         filter_name: &'static str,
     },
+    /// A reference to another layer in the composition (docs/impl/
+    /// layer-input.md), sampled as an auxiliary picture — the depth pass a
+    /// depth-of-field effect reads. The value carries an
+    /// [`EffectValue::Layer`] (an optional layer id); the caller renders that
+    /// layer alone at comp size and threads its texture beside the resolved
+    /// op, exactly as a matte layer is rendered alone. Unset (or a dangling
+    /// reference) is a labelled no-op, never a fault.
+    Layer {},
 }
 
 /// The Add-effect menu's grouping (K-090): every schema declares one.
@@ -962,6 +970,84 @@ pub const BUILTINS: &[EffectSchema] = &[
             MIX_PARAM,
         ],
     },
+    // Depth of field (docs/08 §3.22, docs/impl/layer-input.md): a lens blur
+    // driven by a depth pass. A `Layer` parameter names another layer as the
+    // depth input (its red channel read as 0..1 depth, docs/impl/layer-input.md
+    // §3), Focus/Range set the sharp band and Aperture the maximum blur disc.
+    // The heavy lifting is the existing `lumit_gpu::fx::dof` kernel; resolution
+    // carries only the scalars (Focus/Range/Aperture/Mix) — the depth layer is
+    // not `Copy`, so (like the LUT's cube and Motion blur's flow field) the
+    // referenced layer's rendered texture travels beside the resolved op,
+    // rendered alone at comp size exactly as a matte layer is. An unset (or
+    // dangling) depth reference is a labelled no-op, never a fault (the same
+    // sanctioned exception the File parameter takes to the "no no-op default"
+    // rule). Premultiplied (the disc gathers the working premultiplied colour,
+    // per `fx_dof.wgsl`), Moderate cost, `{0}` temporal. ROI is a padded
+    // gather: the static declaration covers the Aperture slider's 40 px@comp
+    // maximum across typical rasters (docs/08 §2.3 % diag ≈ 40 px at ≥ 1080p).
+    EffectSchema {
+        match_name: "dof",
+        label: "Depth of field",
+        version: 1,
+        category: FxCategory::BlurSharpen,
+        traits: EffectTraits {
+            cost: CostClass::Moderate,
+            // Aperture is px@comp (up to 40); 3 % of the comp diagonal covers
+            // that on a 1080p+ raster and over-covers smaller ones — a safe
+            // static bound for a runtime-sized gather (docs/impl/layer-input.md).
+            roi: Roi::PaddedPctDiag(3.0),
+            temporal: &[0],
+            premultiplied: true, // the disc gathers premultiplied colour (fx_dof.wgsl)
+            seeded: false,
+            beat_input: false,
+        },
+        params: &[
+            ParamSchema {
+                id: "depth",
+                label: "Depth layer",
+                // The layer whose red channel is the depth pass (0 = near,
+                // 1 = far by convention; the effect is symmetric about Focus).
+                // Unset until the owner picks one (a labelled no-op).
+                kind: ParamKind::Layer {},
+            },
+            ParamSchema {
+                id: "focus",
+                label: "Focus distance",
+                // The in-focus depth, 0..1. Mid-depth by default so a typical
+                // near-to-far pass has its middle sharp.
+                kind: ParamKind::Float {
+                    default: 0.5,
+                    slider: (0.0, 1.0),
+                    hard: (Some(0.0), Some(1.0)),
+                },
+            },
+            ParamSchema {
+                id: "range",
+                label: "Focus range",
+                // Half-width of the sharp band around Focus, 0..1: depths
+                // within it stay crisp.
+                kind: ParamKind::Float {
+                    default: 0.1,
+                    slider: (0.0, 1.0),
+                    hard: (Some(0.0), Some(1.0)),
+                },
+            },
+            ParamSchema {
+                id: "aperture",
+                label: "Aperture",
+                // The maximum circle-of-confusion radius in px@comp (§2.3),
+                // reached at the farthest-from-focus depth. Clamped at zero
+                // below (a zero aperture is a passthrough), unbounded typing
+                // above the 40 px slider.
+                kind: ParamKind::Float {
+                    default: 8.0,
+                    slider: (0.0, 40.0),
+                    hard: (Some(0.0), None),
+                },
+            },
+            MIX_PARAM,
+        ],
+    },
     // Transform (docs/08 §3.5, K-090): the layer transform group as a stack
     // entry — same parameter names, units and animatability. Its point is
     // adjustment layers: applied there, it transforms the composite of
@@ -1813,6 +1899,11 @@ pub fn instantiate(match_name: &str) -> Option<EffectInstance> {
                     }
                     ParamKind::Seed => EffectValue::Seed(fresh_seed()),
                     ParamKind::File { .. } => EffectValue::File(FileParam::empty()),
+                    // A fresh layer reference is unset (docs/impl/
+                    // layer-input.md): the effect is a labelled no-op until the
+                    // owner picks a layer, the same sanctioned exception the
+                    // File parameter takes to the "no no-op default" rule.
+                    ParamKind::Layer {} => EffectValue::Layer(None),
                 },
                 extra: serde_json::Map::new(),
             })
@@ -2163,6 +2254,26 @@ pub enum Resolved {
     /// unset/1D/unreadable file leaves that slot empty and the op is a
     /// passthrough. `mix == 0` is the bit-exact input.
     Lut {
+        /// 0..1.
+        mix: f32,
+    },
+    /// Depth of field (docs/08 §3.22, docs/impl/layer-input.md): a lens blur
+    /// whose per-pixel circle-of-confusion comes from a depth pass. Only the
+    /// scalars are `Copy`-carried here; the depth is a whole texture — the
+    /// referenced layer rendered alone at comp size — so (like the LUT's cube
+    /// and Motion blur's flow field) it travels beside the resolved op (the
+    /// caller fills a parallel `layer_inputs` slot), not inside it. An unset,
+    /// missing or cyclic depth reference leaves that slot empty and the op is
+    /// a passthrough. `aperture == 0`, an all-in-band depth, or `mix == 0` are
+    /// bit-exact passthroughs.
+    Dof {
+        /// The in-focus depth, 0..1.
+        focus: f32,
+        /// Half-width of the sharp band around `focus`, 0..1.
+        range: f32,
+        /// Maximum circle-of-confusion radius in raster pixels (converted from
+        /// px@comp by the §2.3 preview factor).
+        aperture: f32,
         /// 0..1.
         mix: f32,
     },
@@ -2920,6 +3031,26 @@ pub fn resolve_stack(
                 let mix = (e.float_at("mix", lt).unwrap_or(100.0) as f32 / 100.0).clamp(0.0, 1.0);
                 Some(Resolved::Lut { mix })
             }
+            "dof" => {
+                // Scalars only; the depth pass (the referenced layer's rendered
+                // texture) is threaded beside the op by the caller, exactly as
+                // the LUT cube is. A `dof` effect always resolves to exactly one
+                // Resolved::Dof, so the ordered enabled-builtin-`dof` list stays
+                // 1:1 and in order with the Dof ops — the threading contract.
+                let focus = (e.float_at("focus", lt).unwrap_or(0.5) as f32).clamp(0.0, 1.0);
+                let range = (e.float_at("range", lt).unwrap_or(0.1) as f32).clamp(0.0, 1.0);
+                // Aperture is px@comp (§2.3): scale by the preview factor so a
+                // Half preview blurs the same disc as Full, only softer.
+                let aperture =
+                    (e.float_at("aperture", lt).unwrap_or(8.0) as f32 * px_scale).max(0.0);
+                let mix = (e.float_at("mix", lt).unwrap_or(100.0) as f32 / 100.0).clamp(0.0, 1.0);
+                Some(Resolved::Dof {
+                    focus,
+                    range,
+                    aperture,
+                    mix,
+                })
+            }
             "glow" => {
                 let radius_pct = e.float_at("radius", lt).unwrap_or(8.0) as f32;
                 let threshold = (e.float_at("threshold", lt).unwrap_or(1.0) as f32).max(0.0);
@@ -3291,6 +3422,13 @@ pub mod cpu {
             // The §1.6 oracle reference is `lut::Lut3d::sample`, exercised
             // directly in the lumit-gpu test, not through cpu::apply.
             Resolved::Lut { .. } => {}
+            // Depth of field reads a depth texture (the referenced layer
+            // rendered alone) that never reaches this single-buffer dispatcher,
+            // so — like Echo, Motion blur and LUT — the CPU-degradation rung
+            // renders it as identity. The §1.6 oracle reference is
+            // `dof_reference` in the lumit-gpu test (the depth is a texture, not
+            // a number), not through cpu::apply.
+            Resolved::Dof { .. } => {}
         }
     }
 
@@ -4481,6 +4619,57 @@ mod tests {
             resolve_stack(&[e], 0.0, 1000.0, 1.0, &MarkerContext::NONE).is_empty(),
             "placeholders render as identity"
         );
+    }
+
+    #[test]
+    fn dof_instantiates_unset_and_resolves_its_floats() {
+        let e = instantiate("dof").unwrap();
+        assert_eq!(e.effect.match_name, "dof");
+        assert_eq!(e.effect.version, 1);
+        // A fresh depth reference is unset — the effect is a labelled no-op
+        // until a layer is picked (its run_ops depth slot is None, a
+        // passthrough), the sanctioned exception the File parameter also takes.
+        assert!(matches!(e.param("depth"), Some(EffectValue::Layer(None))));
+        assert_eq!(e.layer_ref("depth"), None);
+        assert_eq!(e.float_at("focus", 0.0), Some(0.5));
+        assert_eq!(e.float_at("range", 0.0), Some(0.1));
+        assert_eq!(e.float_at("aperture", 0.0), Some(8.0));
+        assert_eq!(e.float_at("mix", 0.0), Some(100.0));
+
+        // resolve_stack carries only the scalars; the depth is threaded beside
+        // the op. Aperture is px@comp scaled by the §2.3 preview factor (here
+        // 0.5 → 4 raster px). A `dof` always resolves to exactly one
+        // Resolved::Dof, so it stays 1:1 and in order with the depth-input list
+        // even when the depth reference is unset.
+        let r = resolve_stack(&[e], 0.0, 1000.0, 0.5, &MarkerContext::NONE);
+        assert_eq!(
+            r,
+            vec![Resolved::Dof {
+                focus: 0.5,
+                range: 0.1,
+                aperture: 4.0,
+                mix: 1.0,
+            }]
+        );
+    }
+
+    #[test]
+    fn layer_param_round_trips_through_serde() {
+        // A Layer parameter survives a JSON round-trip set and unset, and
+        // `layer_ref` reads back the id the caller renders as the depth pass.
+        let id = uuid::Uuid::now_v7();
+        let mut e = instantiate("dof").unwrap();
+        if let Some(p) = e.params.iter_mut().find(|p| p.id == "depth") {
+            p.value = EffectValue::Layer(Some(id));
+        }
+        let json = serde_json::to_string(&e).unwrap();
+        let back: EffectInstance = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.layer_ref("depth"), Some(id));
+
+        // The unset reference round-trips as such (a passthrough, never lost).
+        let unset = EffectValue::Layer(None);
+        let j = serde_json::to_string(&unset).unwrap();
+        assert_eq!(serde_json::from_str::<EffectValue>(&j).unwrap(), unset);
     }
 
     #[test]

@@ -23,6 +23,20 @@ pub struct MatteDraw {
     pub inverted: bool,
 }
 
+/// A depth-of-field depth input packaged for the preview (docs/impl/
+/// layer-input.md §2): the referenced layer's **source** pixels, ready for
+/// [`crate::fxops::render_layer_input`] to resample into the consuming layer's
+/// working raster. The referenced layer is rendered source-only (its own
+/// effect stack is not applied), exactly as a matte source is — so a depth
+/// reference can never recurse into another effect, and the preview and export
+/// threads produce the same depth pass (K-031).
+#[cfg(feature = "media")]
+pub struct DofInputDraw {
+    pub rgba: Vec<u8>,
+    pub tex_w: u32,
+    pub tex_h: u32,
+}
+
 /// Where a draw's pixels come from: decoded/synthesised bytes, or a nested
 /// comp realised recursively on the GPU (Precomp layers).
 #[cfg(feature = "media")]
@@ -90,6 +104,15 @@ pub struct CompLayerDraw {
     /// ops — the caller loads each path and passes the parallel `luts` to
     /// `run_ops`. No GPU work happens here; these are just the strings.
     pub lut_files: Vec<Option<String>>,
+    /// The depth inputs of the layer's enabled built-in `dof` effects (docs/08
+    /// §3.22, docs/impl/layer-input.md; None = unset/dangling). Because
+    /// `resolve_stack` keeps the same filter and order and a `dof` effect
+    /// always resolves to exactly one `Resolved::Dof`, this list is 1:1 and in
+    /// order with the stack's `Dof` ops — the caller renders each one alone at
+    /// comp size and passes the parallel `layer_inputs` to `run_ops`. Each
+    /// carries the referenced layer's source pixels; the GPU render happens in
+    /// `realise_segment`.
+    pub dof_inputs: Vec<Option<DofInputDraw>>,
     /// Per-layer motion-blur sub-frame placements (docs/06 §4, K-120): the
     /// layer's own transform re-evaluated across the open shutter. Empty unless
     /// the comp master and the layer switch are both on (and samples ≥ 2), in
@@ -232,6 +255,41 @@ impl GpuViewer {
     /// before it composites into an intermediate, the adjustment's stack
     /// runs on that, and the two blend by coverage; the draws after
     /// composite straight onto the blended result (seeded, no resample).
+    ///
+    /// Render a layer's depth-of-field depth inputs (docs/impl/layer-input.md
+    /// §2): each `DofInputDraw` (the referenced layer's source pixels) is
+    /// uploaded, linearised and resampled into the effect's working raster
+    /// `(w, h)` through the shared [`crate::fxops::render_layer_input`], so the
+    /// parallel `layer_inputs` handed to `run_ops` is 1:1 with the stack's
+    /// `Dof` ops and aligned with the layer texture the kernel blurs. Export
+    /// renders these identically (K-031).
+    fn render_dof_inputs(
+        &self,
+        inputs: &[Option<DofInputDraw>],
+        w: u32,
+        h: u32,
+    ) -> Vec<Option<egui_wgpu::wgpu::Texture>> {
+        inputs
+            .iter()
+            .map(|slot| {
+                let d = slot.as_ref()?;
+                let src = self
+                    .engine
+                    .upload_srgb8(&self.ctx, &d.rgba, d.tex_w, d.tex_h);
+                let linear = self.engine.linearise(&self.ctx, &src);
+                Some(crate::fxops::render_layer_input(
+                    &self.compositor,
+                    &self.ctx,
+                    w,
+                    h,
+                    &linear,
+                    d.tex_w as f32,
+                    d.tex_h as f32,
+                ))
+            })
+            .collect()
+    }
+
     fn realise(
         &self,
         camera: Option<lumit_core::model::CameraPose>,
@@ -250,10 +308,13 @@ impl GpuViewer {
                 self.realise_segment(camera, width, height, background, &layers[start..i], &acc);
             // An adjustment layer processes the composite below, which has no
             // footage neighbour frames — temporal effects on an adjustment
-            // layer are a later refinement, so no neighbours here. Its LUT
-            // effects still apply (§3.11): load them the same way the per-layer
-            // path does, so preview stays identical to export (K-031).
+            // layer are a later refinement, so no neighbours here. Its LUT and
+            // depth-of-field effects still apply (§3.11, §3.22): load/render
+            // them the same way the per-layer path does, so preview stays
+            // identical to export (K-031). The adjustment stack runs on the
+            // comp-sized composite, so its depth inputs resample to comp size.
             let luts = self.load_luts(&l.lut_files);
+            let layer_inputs = self.render_dof_inputs(&l.dof_inputs, width, height);
             let processed = crate::fxops::run_ops(
                 &self.fx,
                 &self.ctx,
@@ -264,6 +325,7 @@ impl GpuViewer {
                 &[],
                 None,
                 &luts,
+                &layer_inputs,
             );
             let coverage = self.coverage_texture(camera, width, height, l);
             acc = Some(self.fx.adjust_blend(
@@ -384,6 +446,10 @@ impl GpuViewer {
                 // The parsed-and-uploaded `.cube` LUTs, 1:1 with the stack's
                 // `Resolved::Lut` ops (§3.11); the same load export uses (K-031).
                 let luts = self.load_luts(&l.lut_files);
+                // The depth-of-field depth inputs, resampled to this layer's
+                // working raster (w, h), 1:1 with the stack's Resolved::Dof ops
+                // (§3.22); the same render export runs (K-031).
+                let layer_inputs = self.render_dof_inputs(&l.dof_inputs, w, h);
                 crate::fxops::run_ops(
                     &self.fx,
                     &self.ctx,
@@ -394,6 +460,7 @@ impl GpuViewer {
                     &neighbours,
                     flow.as_ref(),
                     &luts,
+                    &layer_inputs,
                 )
             };
             linear_textures.push(tex);

@@ -80,8 +80,36 @@ correct form — do it if the visited-set makes it clean.
 - Preview==export: the referenced-layer render + threading go through one shared
   helper (asserted by construction / reviewed by hand, as for the LUT).
 
-## Status / follow-ups
-This unblocks **DoF v1** (a depth layer + focus/aperture/mix). The fuller
-"DOF PRO" second effect, shaped bokeh highlights, and the deferred bright-rim
-"Highlight bloom" param remain post-v1. Log a K-decision for the Layer-input
-parameter kind and the DoF effect when they land.
+## Status / follow-ups (landed, K-125/K-126)
+
+**What shipped, and the choices §2's "render alone" pinned in practice.** The
+effect stack runs on the *consuming layer's own working raster* `(w, h)` (the
+decoded size, which shrinks under reduced-resolution preview), and the DoF
+kernel reads the depth at that same pixel grid — so the depth input must be
+exactly `(w, h)` and aligned with the layer texture, **not** a comp-sized
+render (a comp-sized depth would misalign under reduced preview and for
+non-full-frame layers). v1 therefore renders the referenced layer's **source**
+(effects not applied) and **resamples it to fill `(w, h)`** through the one
+shared helper `fxops::render_layer_input`, which preview and export both call
+(K-031). Consequences, all documented in docs/08 §3.22:
+- **Cycle guard = source-only.** Because the depth render never re-enters an
+  effect stack, a layer-input can never recurse — the strongest form of "render
+  the target with its own layer-input effects disabled".
+- **Framing.** The depth pass is expected to share the footage's framing (it is
+  stretched to the working raster; the depth layer's own transform is not
+  applied). A placement-aware / effects-aware depth is a follow-up.
+- **Visibility gate.** Preview only decodes visible in-span layers (plus matte
+  sources), so both preview and export gate the depth reference on *visible +
+  in-span*; a hidden reference is a passthrough in both, never a disagreement.
+  Extending `app_state::collect_comp_jobs` to decode a hidden depth reference
+  (as it already does a matte source) is the recorded follow-up that lifts this.
+- **Cache key.** `feed_layer` hashes the referenced layer's source + transform
+  (the matte block's shape — matching the source-only render), guarded by the
+  precomp visited set.
+
+This unblocks **DoF v1** (a depth layer + focus/range/aperture/mix). Remaining:
+the inspector **Layer picker** and the set-param op (the owner's follow-up — an
+unpicked Layer renders as nothing for now); the preview decode planner gate
+above; a placement/effects-aware depth; and the fuller "DOF PRO" second effect
+with shaped bokeh highlights and the deferred bright-rim "Highlight bloom" param.
+Logged as PROPOSED K-125 (Layer-input parameter kind) and K-126 (DoF effect).

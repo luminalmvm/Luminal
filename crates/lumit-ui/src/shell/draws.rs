@@ -239,6 +239,41 @@ pub(crate) fn build_comp_draws(
         })
     };
 
+    // The depth inputs of a stack's enabled built-in `dof` effects (docs/08
+    // §3.22, docs/impl/layer-input.md), 1:1 and in order with the stack's
+    // Resolved::Dof ops — the same `enabled && Builtin && match_name` filter
+    // resolve_stack applies, and a `dof` effect always resolves to exactly one
+    // op. Each slot carries the referenced layer's SOURCE pixels (via the same
+    // `pixels_for` a matte uses, so effects are not applied and a depth
+    // reference can never recurse); an unset or dangling reference is None (a
+    // passthrough). The depth layer must be **visible and in-span**: the
+    // preview decode planner (app_state::collect_comp_jobs) only decodes those
+    // (plus matte sources), so gating here keeps preview and export identical
+    // (K-031) — export applies the same gate. Extending the planner to decode
+    // a hidden depth reference (as it already does for matte sources) is a
+    // recorded follow-up.
+    let dof_inputs_for =
+        |effects: &[lumit_core::model::EffectInstance]| -> Vec<Option<DofInputDraw>> {
+            use lumit_core::model::EffectNamespace;
+            effects
+                .iter()
+                .filter(|e| {
+                    e.enabled
+                        && e.effect.namespace == EffectNamespace::Builtin
+                        && e.effect.match_name == "dof"
+                })
+                .map(|e| {
+                    let id = e.layer_ref("depth")?;
+                    let src = comp.layers.iter().find(|l| l.id == id)?;
+                    if !src.switches.visible || !in_span(src) {
+                        return None;
+                    }
+                    let (rgba, tex_w, tex_h, _natural) = pixels_for(src)?;
+                    Some(DofInputDraw { rgba, tex_w, tex_h })
+                })
+                .collect()
+        };
+
     // Solo / isolate (K-105): while any layer is soloed, only soloed layers
     // render — computed once for the whole comp.
     let any_solo = lumit_core::model::any_solo(comp);
@@ -397,6 +432,9 @@ pub(crate) fn build_comp_draws(
                     // 1:1 with the stack's Resolved::Lut ops (docs/08 §3.11);
                     // the same `lt` resolve_stack used above.
                     lut_files: lut_files(&layer.effects, lt),
+                    // Depth inputs of the enabled built-in `dof` effects, 1:1
+                    // with the stack's Resolved::Dof ops (docs/08 §3.22).
+                    dof_inputs: dof_inputs_for(&layer.effects),
                     // An adjustment layer is a staging point, not a picture —
                     // motion blur has no image of its own to smear (docs/06 §4).
                     mb: Vec::new(),
@@ -545,6 +583,10 @@ pub(crate) fn build_comp_draws(
             // with the stack's Resolved::Lut ops (docs/08 §3.11); the same `lt`
             // resolve_stack used for `fx`.
             lut_files: lut_files(&layer.effects, lt),
+            // Depth inputs of the enabled built-in `dof` effects, 1:1 with the
+            // stack's Resolved::Dof ops (docs/08 §3.22); built the same way
+            // export does, so the two blur identically (K-031).
+            dof_inputs: dof_inputs_for(&layer.effects),
             // Per-layer motion blur (docs/06 §4, K-120): the layer's own
             // transform sampled across the open shutter, empty unless it blurs.
             // Built the same way export does, so the two smear identically.

@@ -276,6 +276,51 @@ fn feed_layer(
                             }
                         }
                     }
+                    EffectValue::Layer(lref) => {
+                        // The referenced layer is rendered alone at comp size as
+                        // this effect's auxiliary input (a depth pass for depth
+                        // of field, docs/impl/layer-input.md §4): its content is
+                        // content the parameter hash cannot otherwise see, so it
+                        // joins the key. It is rendered SOURCE-ONLY (its own
+                        // effect stack is not applied), so — exactly like a matte
+                        // source — the key is the referenced layer's source plus
+                        // its evaluated transform. A source-only render never
+                        // re-enters an effect stack, so a layer reference cannot
+                        // recurse; `visited` still guards any precomp cycle
+                        // inside that source. An unset or dangling reference
+                        // feeds a distinct 0 marker (the effect is a no-op).
+                        match lref
+                            .as_ref()
+                            .and_then(|id| comp.layers.iter().find(|l| l.id == *id))
+                        {
+                            Some(src) => {
+                                h.update(&[1]);
+                                h.update(src.id.as_bytes());
+                                let slt = t - src.start_offset.0.to_f64();
+                                feed_source(h, doc, &src.kind, slt, quality, stamper, visited)?;
+                                let dtr = &src.transform;
+                                for v in [
+                                    dtr.position_x.value_at(slt),
+                                    dtr.position_y.value_at(slt),
+                                    dtr.position_z.value_at(slt),
+                                    dtr.anchor_x.value_at(slt),
+                                    dtr.anchor_y.value_at(slt),
+                                    dtr.scale_x.value_at(slt),
+                                    dtr.scale_y.value_at(slt),
+                                    dtr.rotation.value_at(slt),
+                                    dtr.rotation_x.value_at(slt),
+                                    dtr.rotation_y.value_at(slt),
+                                    dtr.opacity.value_at(slt),
+                                ] {
+                                    feed_f64(h, v);
+                                }
+                                h.update(&[u8::from(src.switches.three_d)]);
+                            }
+                            None => {
+                                h.update(&[0]);
+                            }
+                        }
+                    }
                 }
             }
             // A seeded effect (docs/08 §1.3 Randomness) draws from

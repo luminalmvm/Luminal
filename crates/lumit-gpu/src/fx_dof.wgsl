@@ -6,13 +6,19 @@
 // maths, the same integer disc taps in the same row-major order, box
 // weighted and normalised, edges clamped.
 //
-// The per-pixel depth is a single-channel field (R32Float, exact f32, same
-// size as the input) the caller supplies — for now a synthetic/stand-in map,
-// since a real depth layer input is a separate, larger change (see the impl
-// notes and report). binding 0 is the source (the taps sample it), binding 1
-// the unprocessed original read back for the host Mix, binding 2 the depth
-// field — the shared three-sampled-input shape it borrows from Motion blur,
-// with the depth texture the one extra binding over the two-input convention.
+// The per-pixel depth is read from the RED channel of `depth` (docs/impl/
+// layer-input.md §3): in production it is the referenced depth layer rendered
+// alone in the working format (rgba16float), so depth = its red; in the §1.6
+// oracle it is an exact R32Float map (same red read). Convention: 0 = near,
+// 1 = far, though the effect is symmetric about Focus so either reading of the
+// pass works. `depth` is the same size as the source, so `.x` at `xy` is that
+// pixel's depth. binding 0 is the source (the taps sample it), binding 1 the
+// unprocessed original read back for the host Mix, binding 2 the depth field —
+// the shared three-sampled-input shape it borrows from Motion blur, with the
+// depth texture the one extra binding over the two-input convention. Only its
+// red channel is read, so any float texture (R32Float or the working rgba16f)
+// binds unchanged (the bind layout is a non-filterable float sample, textureLoad
+// not a sampler).
 
 struct Params {
     focus: f32,     // in-focus depth in [0,1]

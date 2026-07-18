@@ -192,6 +192,26 @@ Two mechanisms make this safe, and you'll see them by name in the code:
   on together, only whichever one is listed first in the effect stack gets its arrows this
   frame — the other quietly sits out, the same "missing data, do nothing" safety rule every
   temporal effect already follows.
+- **Depth of field becomes a real effect — and effects can now read another layer.** Until
+  now every effect took numbers, colours, a file. Depth of field needs a *second picture*: a
+  "depth map" that says how far away each pixel is. The natural place to get one is **another
+  layer** in your composition — a depth pass that matches your footage. So effects gained a
+  new kind of control: a **layer reference**, "use *that* layer as my input." It works just
+  like a **matte** (which already lets one layer point at another and borrow its shape): the
+  app renders the pointed-at layer on its own and hands its picture to the effect. Depth of
+  field reads the **red channel** of that picture as depth (dark = near, bright = far, though
+  since you choose the focus distance it works either way), and blurs the footage more the
+  farther a pixel's depth sits from focus. Two things are worth knowing. First, the depth
+  layer is rendered *plainly* — its own effects are not applied — which, as a happy side
+  effect, means a depth reference can never chase its own tail into an endless loop. Second,
+  the picture you see while scrubbing and the picture you export go through the **one and the
+  same** "render that layer on its own" helper, so the preview can never quietly disagree with
+  the file (the house rule every effect follows). For now the depth pass should share your
+  footage's framing (it is stretched to fit) and should be a *visible* layer; a depth built
+  from effects, or hidden away, is a later refinement. The blur disc itself is the foundation
+  kernel below, unchanged and still proven against its plain-Rust twin. One more piece the
+  owner will add: the little dropdown in the effect controls that actually *picks* the depth
+  layer — until that lands the effect is wired and correct but has no layer to point at yet.
 - **Depth-of-field, the foundation** — the first piece of a "lens blur" that keeps one
   distance sharp and softens everything nearer and farther, the way a real camera lens does.
   A photographic lens can only focus at one distance at a time; things off that plane spread

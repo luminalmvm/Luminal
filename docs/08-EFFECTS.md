@@ -51,6 +51,14 @@ effect's maths in a release invalidates stale cached frames rather than mixing g
   path with a static index. An **unset** file resolves to identity: the effect is a no-op
   until a file is chosen, the one sanctioned exception to the "no no-op default" rule above,
   since a file the user must supply cannot have a tasteful default.
+- **Layer-reference** parameters (K-125, [impl/layer-input.md](impl/layer-input.md)) name
+  **another layer** in the same composition as an auxiliary picture an effect samples — a
+  depth pass for Depth of field (§3.22). The stored value is an optional layer id (the shape
+  a matte reference uses, §5.1 of [03-DATA-MODEL.md](03-DATA-MODEL.md)), static in v1. The
+  host renders that layer alone and threads its texture to the effect, exactly as a matte
+  layer is rendered alone. An **unset** or **dangling** reference resolves to identity — the
+  same sanctioned exception to the "no no-op default" rule, since a layer the user must
+  supply cannot have a tasteful default.
 
 ### 1.3 Traits
 
@@ -202,6 +210,7 @@ specified in §3.1's original text but surfaced as layer UI, not an effect. Summ
 | 3.19 | Gamma | stock CC pack gamma/levels | cheap | `{0}` |
 | 3.20 | Temperature | stock CC pack white-balance | cheap | `{0}` |
 | 3.21 | Matte key | Keylight (basic) / stock chroma keyer | cheap | `{0}` |
+| 3.22 | Depth of field | Frischluft / Camera Lens Blur | moderate | `{0}` |
 
 ### 3.1 Flow engine — optical-flow retime interpolation (Twixtor-class)
 
@@ -878,6 +887,54 @@ the first landing); a matte-choker companion (grow/shrink/soften, the Tier 2 §4
 fuller keying suite (luma key, screen key) the Tier 2 Keying row still tracks. The colour param
 renders through the inspector's existing `ParamKind::Colour` arm — no inspector change was
 needed.
+
+### 3.22 Depth of field — depth-driven lens blur (Frischluft / Camera Lens Blur-class)
+
+A variable-radius lens blur driven by a **depth pass**: pixels near the focus plane stay
+sharp, pixels far from it soften, the way a real lens throws the background out of focus.
+The depth comes from **another layer** (a **Layer-reference** parameter, §1.2,
+[impl/layer-input.md](impl/layer-input.md)) — the standard "footage + matching depth pass"
+workflow, and the first effect to take a whole layer as an input rather than a number or a
+file. The GPU kernel and its §1.6 CPU oracle predate the wiring (`lumit_gpu::fx::dof` /
+`fx_dof.wgsl`); this is the effect that feeds them a real depth.
+
+**Parameters:** Depth layer (a layer reference; unset until picked — a labelled no-op),
+Focus distance (0–1, default 0.5, the in-focus depth), Focus range (0–1, default 0.1, the
+half-width of the sharp band around focus), Aperture (px@comp, default 8, slider 0–40, the
+maximum circle-of-confusion radius), Mix.
+
+**Algorithm sketch.** Per output pixel, read the depth from the referenced layer's **red
+channel** (0..1; by convention 0 = near, 1 = far, though the effect is symmetric about
+Focus). Its distance from Focus, beyond the sharp band `range`, ramps by a smoothstep to a
+circle-of-confusion radius up to `Aperture` at the far extreme; a box-weighted integer disc
+of that radius is averaged from the source (edges clamped), then blended by Mix. Operates on
+**premultiplied** colour (the disc gathers the working premultiplied image, so coverage and
+colour blur together). `moderate` cost, ROI a padded gather (the static declaration covers
+the 40 px aperture at ≥ 1080p), `{0}` temporal. Category **Blur & sharpen**. `Aperture 0`, a
+depth everywhere inside the sharp band, or `Mix 0` are all bit-exact passthroughs, pinned by
+the kernel oracle.
+
+**Threading the depth (K-031).** `Resolved::Dof` carries only the scalars; the depth is a
+whole texture, so — like the LUT's cube and Motion blur's flow field — the referenced layer's
+render travels **beside** the resolved op (a parallel `layer_inputs` slot the k-th `Dof` op
+binds). Preview and export render the depth through **one shared helper**
+(`fxops::render_layer_input`), so the viewport and the file match. The frame cache key hashes
+the referenced layer's source and transform (the same content a matte's key hashes), so
+editing the depth pass retires stale frames.
+
+**Status (v1, shipped, K-126):** the depth-driven disc blur above, with a depth layer +
+Focus/Range/Aperture/Mix. Deliberate v1 limitations (documented, follow-ups tracked): the
+depth layer is rendered **source-only** (its own effect stack is not applied) and **resampled
+to the consuming layer's raster** to align with the pixels the blur runs on — a
+placement-aware or effects-aware depth is a follow-up; a depth layer built purely from
+effects (e.g. a gradient) is not yet supported. The depth layer must be **visible and
+in-span** in preview (the decode planner does not yet decode a hidden depth reference the way
+it already does a matte source — a recorded follow-up); a hidden reference degrades to a
+passthrough in both preview and export, so the two never disagree. The bokeh is a plain flat
+disc; shaped, bright-rimmed highlights are the planned "DOF PRO" second effect. The depth
+layer picker (the inspector arm for a `ParamKind::Layer`) and the op to set it are the
+owner's follow-up; until they land the effect resolves and threads correctly but reads as a
+no-op because no depth layer can be chosen.
 
 ---
 

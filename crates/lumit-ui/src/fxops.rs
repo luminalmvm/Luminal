@@ -24,6 +24,65 @@ pub struct LoadedLut {
     pub size: u32,
 }
 
+/// Render one referenced layer alone into the depth input a depth-of-field
+/// effect samples (docs/impl/layer-input.md §2). The **one** helper the preview
+/// (`GpuViewer`) and export (`Renderer`) paths both call, so the depth pass is
+/// byte-identical in the viewport and the file (K-031) — exactly as
+/// `Compositor::motion_blur_average` and the matte "render alone" composite are
+/// shared.
+///
+/// The effect stack runs on the consuming layer's own working raster `(w, h)`
+/// (the layer's decoded size, which shrinks under reduced-resolution preview),
+/// and the DoF kernel reads the depth at that same pixel grid — so the depth
+/// input must be exactly `(w, h)` and aligned with the layer texture. v1 model
+/// (documented in docs/08 §3.22): the referenced layer's **source** is
+/// resampled to fill `(w, h)` — the depth pass is expected to share the
+/// footage's framing (the standard "footage + matching depth pass" workflow),
+/// so it is stretched to the working raster and its own transform is not
+/// applied. A placement-aware depth is a recorded follow-up. `linear` is the
+/// referenced layer's source in the working linear format, sized
+/// `(src_w, src_h)`; each caller uploads/linearises it its own way, as the
+/// matte path does, and this helper owns only the resample so it never drifts.
+pub fn render_layer_input(
+    compositor: &lumit_gpu::Compositor,
+    ctx: &GpuContext,
+    w: u32,
+    h: u32,
+    linear: &Tex,
+    src_w: f32,
+    src_h: f32,
+) -> Tex {
+    compositor.composite_with_camera(
+        ctx,
+        w,
+        h,
+        [0.0, 0.0, 0.0, 0.0],
+        &[lumit_gpu::CompositeLayer {
+            texture: linear,
+            size: (src_w.max(1.0), src_h.max(1.0)),
+            position: (0.0, 0.0),
+            anchor: (0.0, 0.0),
+            // Stretch the source to fill the whole working raster.
+            scale: (
+                w as f32 / src_w.max(1.0) * 100.0,
+                h as f32 / src_h.max(1.0) * 100.0,
+            ),
+            rotation_deg: 0.0,
+            // Full opacity: a depth pass is read as a scalar, never dimmed.
+            opacity: 100.0,
+            matte: None,
+            blend: lumit_gpu::Blend::Normal,
+            z: 0.0,
+            rotation_x_deg: 0.0,
+            rotation_y_deg: 0.0,
+            three_d: false,
+            layer_mask: None,
+            pre: None,
+        }],
+        None,
+    )
+}
+
 /// Run `ops` over `tex` in order, returning the final texture (the input
 /// unchanged when `ops` is empty). `w`/`h` are the texture's raster size.
 /// `neighbours` are the layer's decoded neighbour frames keyed by offset
@@ -35,6 +94,10 @@ pub struct LoadedLut {
 /// (degrade, never fault). `luts` is the parallel LUT list (docs/08 §3.11): the
 /// k-th `Resolved::Lut` op binds `luts[k]` — a `None` slot (unset, missing, 1D
 /// or unreadable file) is a passthrough, exactly like a missing flow field.
+/// `layer_inputs` is the parallel depth-input list (docs/08 §3.22, docs/impl/
+/// layer-input.md): the k-th `Resolved::Dof` op binds `layer_inputs[k]` — the
+/// referenced layer rendered alone at comp size, or `None` (unset, missing or
+/// cyclic) for a passthrough, exactly like a missing LUT.
 #[allow(clippy::too_many_arguments)]
 pub fn run_ops(
     fx: &FxEngine,
@@ -46,12 +109,16 @@ pub fn run_ops(
     neighbours: &[(i32, Tex)],
     flow_field: Option<&Tex>,
     luts: &[Option<LoadedLut>],
+    layer_inputs: &[Option<Tex>],
 ) -> Tex {
     let mut tex = tex;
     // The k-th Resolved::Lut op consumes the k-th `luts` slot (the whole
     // threading contract — see resolve_stack's `lut` arm and CompLayerDraw's
-    // lut_files); a slot is present only when its `.cube` file loaded.
+    // lut_files); a slot is present only when its `.cube` file loaded. The
+    // k-th Resolved::Dof op consumes the k-th `layer_inputs` slot the same way
+    // (its depth-layer render).
     let mut lut_i = 0usize;
+    let mut dof_i = 0usize;
     for op in ops {
         match op {
             Resolved::Blur {
@@ -559,6 +626,25 @@ pub fn run_ops(
                 lut_i += 1;
                 if let Some(l) = loaded {
                     tex = fx.lut(ctx, &tex, w, h, &l.texture, l.size, *mix);
+                }
+            }
+            Resolved::Dof {
+                focus,
+                range,
+                aperture,
+                mix,
+            } => {
+                // The k-th Dof op binds the k-th `layer_inputs` slot (docs/08
+                // §3.22, docs/impl/layer-input.md): the referenced layer
+                // rendered alone at comp size, its red channel read as depth.
+                // A None slot — unset, missing or cyclic — is a passthrough
+                // (the labelled no-op rule; never a fault). The depth is a
+                // whole texture, so it travels beside the op, exactly as the
+                // LUT cube does, since it is not Copy in `Resolved`.
+                let depth = layer_inputs.get(dof_i).and_then(|o| o.as_ref());
+                dof_i += 1;
+                if let Some(depth) = depth {
+                    tex = fx.dof(ctx, &tex, w, h, depth, *focus, *range, *aperture, *mix);
                 }
             }
         }
