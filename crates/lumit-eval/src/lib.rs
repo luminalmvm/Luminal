@@ -888,6 +888,7 @@ mod tests {
                 value: EffectValue::Float(radius),
                 extra: serde_json::Map::new(),
             }],
+            sample_temporally: true,
             extra: serde_json::Map::new(),
         };
         let mut with_fx = plain.clone();
