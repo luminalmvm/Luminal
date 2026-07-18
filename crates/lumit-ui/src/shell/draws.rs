@@ -106,6 +106,61 @@ pub(crate) fn parent_world_placement(
     world
 }
 
+/// The per-layer motion-blur sub-frame placements for `layer` at comp time
+/// `t_comp` (docs/06 §4, K-120): the layer's own transform re-evaluated at each
+/// shutter sample time. Empty — so the layer draws normally — unless the comp
+/// master (`comp.motion_blur.enabled`) and the layer's own switch are both on
+/// and `samples` ≥ 2.
+///
+/// Each sample's comp time is `t_comp + offset · dt` (dt = one frame in comp
+/// seconds; offsets from [`MotionBlur::sample_offsets`], centred on the frame),
+/// and its layer time subtracts the layer's `start_offset`. Shared by the
+/// preview (build_comp_draws) and the export path (render_comp_linear) so the
+/// two smear identically (K-031). Parent motion within the shutter is a
+/// follow-up: only the layer's OWN transform is sampled here — a parented
+/// layer keeps its frame-time parent placement (`pre`) for every sub-copy.
+#[cfg(feature = "media")]
+pub(crate) fn motion_blur_samples(
+    comp: &lumit_core::model::Composition,
+    layer: &lumit_core::model::Layer,
+    t_comp: f64,
+) -> Vec<lumit_gpu::MbSample> {
+    if !layer.switches.motion_blur {
+        return Vec::new();
+    }
+    let offsets = comp.motion_blur.sample_offsets();
+    if offsets.is_empty() {
+        return Vec::new();
+    }
+    let dt = 1.0 / comp.frame_rate.fps().max(1.0);
+    let start_offset = layer.start_offset.0.to_f64();
+    let tr = &layer.transform;
+    offsets
+        .iter()
+        .map(|off| {
+            let lt = t_comp + off * dt - start_offset;
+            lumit_gpu::MbSample {
+                position: (
+                    tr.position_x.value_at(lt) as f32,
+                    tr.position_y.value_at(lt) as f32,
+                ),
+                anchor: (
+                    tr.anchor_x.value_at(lt) as f32,
+                    tr.anchor_y.value_at(lt) as f32,
+                ),
+                scale: (
+                    tr.scale_x.value_at(lt) as f32,
+                    tr.scale_y.value_at(lt) as f32,
+                ),
+                rotation_deg: tr.rotation.value_at(lt) as f32,
+                z: tr.position_z.value_at(lt) as f32,
+                rotation_x_deg: tr.rotation_x.value_at(lt) as f32,
+                rotation_y_deg: tr.rotation_y.value_at(lt) as f32,
+            }
+        })
+        .collect()
+}
+
 /// Build a comp's draw list recursively (preview side of Precomp layers).
 /// Bottom-up order; matte sources come from decoded pixels (precomp mattes
 /// await the GPU mask pass, mirroring export).
@@ -246,6 +301,13 @@ pub(crate) fn build_comp_draws(
                             Some(p) => lumit_gpu::concat_place(parent, p),
                             None => parent,
                         });
+                        // Per-layer motion blur on an inner layer of a collapsed
+                        // Precomp is a follow-up (docs/06 §4, K-120): the export
+                        // splice (collect_collapsed) carries no sub-frame
+                        // samples, so clearing them here keeps preview and export
+                        // identical (K-031). A non-collapsed Precomp layer still
+                        // blurs via its own switch on the main path.
+                        d.mb = Vec::new();
                     }
                     draws.extend(inner);
                     continue;
@@ -335,6 +397,9 @@ pub(crate) fn build_comp_draws(
                     // 1:1 with the stack's Resolved::Lut ops (docs/08 §3.11);
                     // the same `lt` resolve_stack used above.
                     lut_files: lut_files(&layer.effects, lt),
+                    // An adjustment layer is a staging point, not a picture —
+                    // motion blur has no image of its own to smear (docs/06 §4).
+                    mb: Vec::new(),
                 });
                 continue;
             }
@@ -480,6 +545,10 @@ pub(crate) fn build_comp_draws(
             // with the stack's Resolved::Lut ops (docs/08 §3.11); the same `lt`
             // resolve_stack used for `fx`.
             lut_files: lut_files(&layer.effects, lt),
+            // Per-layer motion blur (docs/06 §4, K-120): the layer's own
+            // transform sampled across the open shutter, empty unless it blurs.
+            // Built the same way export does, so the two smear identically.
+            mb: motion_blur_samples(comp, layer, t_comp),
         });
     }
     draws

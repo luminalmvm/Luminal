@@ -99,6 +99,24 @@ pub struct CompositeLayer<'a> {
     pub pre: Option<[[f32; 4]; 4]>,
 }
 
+/// One sub-frame placement for per-layer motion blur (docs/06 §4, K-120): the
+/// layer's own transform re-evaluated at one shutter sample time. The layer's
+/// SAME texture is drawn at each of these placements and the draws averaged
+/// ([`Compositor::motion_blur_average`]), so the layer smears along its own
+/// motion. Carries only the per-sample transform; the layer's `three_d`,
+/// parent placement (`pre`) and camera are the same for every sample and are
+/// passed to the averaging helper separately.
+#[derive(Debug, Clone, Copy)]
+pub struct MbSample {
+    pub position: (f32, f32),
+    pub anchor: (f32, f32),
+    pub scale: (f32, f32),
+    pub rotation_deg: f32,
+    pub z: f32,
+    pub rotation_x_deg: f32,
+    pub rotation_y_deg: f32,
+}
+
 /// A layer transform as a comp-pixel placement matrix — the single source of
 /// truth for how (position, anchor, scale %, rotations, z) become a 4×4:
 /// `T(pos, z) · Ry · Rx · Rz · S(scale/100) · T(−anchor)`. Public so the
@@ -205,6 +223,11 @@ pub struct Compositor {
     pipeline_add: wgpu::RenderPipeline,
     pipeline_multiply: wgpu::RenderPipeline,
     pipeline_snapshot: wgpu::RenderPipeline,
+    /// Pure-additive blend (BOTH colour and alpha add), used only to
+    /// accumulate the per-layer motion-blur sub-frame copies into a true
+    /// premultiplied average — distinct from `pipeline_add` (the Add blend
+    /// mode), which over-composites alpha (docs/06 §4, K-120).
+    pipeline_accumulate: wgpu::RenderPipeline,
     layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
     /// Bound at binding 3 when a layer has no matte.
@@ -344,9 +367,25 @@ impl Compositor {
                     cache: None,
                 })
         };
+        // Pure add on both channels: the motion-blur accumulator wants the
+        // arithmetic mean of the premultiplied sub-frames, so alpha must add
+        // (weight 1/N each), not over-composite the way Add does.
+        let blend_accumulate = wgpu::BlendState {
+            color: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::One,
+                dst_factor: wgpu::BlendFactor::One,
+                operation: wgpu::BlendOperation::Add,
+            },
+            alpha: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::One,
+                dst_factor: wgpu::BlendFactor::One,
+                operation: wgpu::BlendOperation::Add,
+            },
+        };
         let pipeline = make_pipeline(blend, "composite-normal");
         let pipeline_add = make_pipeline(blend_add, "composite-add");
         let pipeline_multiply = make_pipeline(blend_multiply, "composite-multiply");
+        let pipeline_accumulate = make_pipeline(blend_accumulate, "composite-mb-accumulate");
         // Snapshot blends: no fixed-function blending — the fragment
         // composites itself from the dst snapshot and writes the final value.
         let pipeline_snapshot =
@@ -430,6 +469,7 @@ impl Compositor {
             pipeline_add,
             pipeline_multiply,
             pipeline_snapshot,
+            pipeline_accumulate,
             layout,
             sampler,
             white,
@@ -712,6 +752,168 @@ impl Compositor {
                 })],
                 ..Default::default()
             });
+        }
+        ctx.queue.submit([encoder.finish()]);
+        target
+    }
+
+    /// The premultiplied average of one layer drawn at N sub-frame placements —
+    /// the per-layer motion-blur smear (docs/06 §4, K-120).
+    ///
+    /// The SAME `texture` is composited at each [`MbSample`] placement into a
+    /// fresh transparent comp-sized target with a pure-additive blend (BOTH
+    /// colour and alpha add) at weight `1/N`, so the target holds
+    /// `(1/N)·Σ premul(sample_k)` — the arithmetic mean of the premultiplied
+    /// sub-frame images. A static layer (every placement equal) averages back
+    /// to itself, alpha and all; a moving one smears, its coverage translucent
+    /// in proportion to how much of the shutter each pixel was covered.
+    ///
+    /// `three_d`, `pre` and `camera` place every sub-copy exactly as the
+    /// layer's own draw would be placed. Parent motion within the shutter is a
+    /// follow-up: `pre` is the frame-time parent placement, applied to every
+    /// sample. The caller composites the returned comp-sized texture 1:1
+    /// (identity placement, `size = (width, height)`) carrying the layer's real
+    /// blend, opacity, matte and mask, so those apply once to the averaged
+    /// image, never per sub-copy.
+    ///
+    /// This is the single helper both the preview and the export path call, so
+    /// per-layer motion blur is identical between them (K-031). An empty
+    /// `samples` returns a transparent frame (the caller only invokes this with
+    /// a non-empty set, so that is a defensive no-op, never a panic).
+    #[allow(clippy::too_many_arguments)]
+    pub fn motion_blur_average(
+        &self,
+        ctx: &GpuContext,
+        width: u32,
+        height: u32,
+        texture: &wgpu::Texture,
+        size: (f32, f32),
+        samples: &[MbSample],
+        three_d: bool,
+        pre: Option<[[f32; 4]; 4]>,
+        camera: Option<Mat4>,
+    ) -> wgpu::Texture {
+        let target = ctx.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("mb-average"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: WORKING_FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = target.create_view(&Default::default());
+        // Equal weights sum to 1: N copies at opacity 1/N (UI percent 100/N).
+        let weight = if samples.is_empty() {
+            0.0
+        } else {
+            100.0 / samples.len() as f32
+        };
+        let src_view = texture.create_view(&Default::default());
+        let white_view = self.white.create_view(&Default::default());
+        let black_view = self.black.create_view(&Default::default());
+        let binds: Vec<wgpu::BindGroup> = samples
+            .iter()
+            .map(|s| {
+                let layer = CompositeLayer {
+                    texture,
+                    size,
+                    position: s.position,
+                    anchor: s.anchor,
+                    scale: s.scale,
+                    rotation_deg: s.rotation_deg,
+                    opacity: weight,
+                    matte: None,
+                    blend: Blend::Add,
+                    z: s.z,
+                    rotation_x_deg: s.rotation_x_deg,
+                    rotation_y_deg: s.rotation_y_deg,
+                    three_d,
+                    layer_mask: None,
+                    pre,
+                };
+                let uniform = LayerUniform {
+                    matrix: layer
+                        .matrix(width as f32, height as f32, camera.as_ref())
+                        .to_cols_array_2d(),
+                    // No matte on a sub-copy: the layer's matte applies to the
+                    // averaged result at the caller's 1:1 composite.
+                    params: [(weight / 100.0).clamp(0.0, 1.0), 0.0, 0.0, 0.0],
+                    target: [width as f32, height as f32, -1.0, 0.0],
+                };
+                let buffer = wgpu::util::DeviceExt::create_buffer_init(
+                    &ctx.device,
+                    &wgpu::util::BufferInitDescriptor {
+                        label: Some("mb-sample-uniform"),
+                        contents: bytemuck::bytes_of(&uniform),
+                        usage: wgpu::BufferUsages::UNIFORM,
+                    },
+                );
+                ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("mb-sample"),
+                    layout: &self.layout,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: wgpu::BindingResource::TextureView(&src_view),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::Sampler(&self.sampler),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 2,
+                            resource: buffer.as_entire_binding(),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 3,
+                            resource: wgpu::BindingResource::TextureView(&white_view),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 5,
+                            resource: wgpu::BindingResource::TextureView(&white_view),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 4,
+                            resource: wgpu::BindingResource::TextureView(&black_view),
+                        },
+                    ],
+                })
+            })
+            .collect();
+
+        let mut encoder = ctx
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("mb-average"),
+            });
+        {
+            let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("mb-average"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        // Transparent black: the additive accumulation builds
+                        // the average up from nothing.
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                ..Default::default()
+            });
+            rpass.set_pipeline(&self.pipeline_accumulate);
+            for bind in &binds {
+                rpass.set_bind_group(0, bind, &[]);
+                rpass.draw(0..6, 0..1);
+            }
         }
         ctx.queue.submit([encoder.finish()]);
         target
@@ -1279,6 +1481,85 @@ mod tests {
         let a = crate::fx::readback_linear_f32(&ctx, &both, 16, 16).unwrap();
         let b = crate::fx::readback_linear_f32(&ctx, &seeded, 16, 16).unwrap();
         assert_eq!(a, b, "seeded continuation must be bit-identical");
+    }
+
+    /// Per-layer motion blur (docs/06 §4, K-120): averaging a moving layer's
+    /// sub-frame placements widens its coverage, while a static layer (every
+    /// placement equal) averages back to a full-alpha copy of itself — the
+    /// premultiplied-average property the pure-additive accumulator gives that
+    /// the Add blend mode (over-alpha) would not.
+    #[test]
+    fn motion_blur_average_widens_coverage_and_preserves_static_alpha() {
+        let Ok(ctx) = GpuContext::headless() else {
+            eprintln!("skipping: no GPU adapter");
+            return;
+        };
+        let colour = ColourEngine::new(&ctx);
+        let compositor = Compositor::new(&ctx);
+        // A small opaque white quad, its anchor at the top-left so `position`
+        // is the quad's left edge in comp pixels.
+        let white = solid_linear(&ctx, &colour, [255, 255, 255, 255], 4, 4);
+        let (w, h) = (40u32, 16u32);
+        let sample_at = |x: f32| MbSample {
+            position: (x, 6.0),
+            anchor: (0.0, 0.0),
+            scale: (100.0, 100.0),
+            rotation_deg: 0.0,
+            z: 0.0,
+            rotation_x_deg: 0.0,
+            rotation_y_deg: 0.0,
+        };
+        let readback = |samples: &[MbSample]| {
+            let tex = compositor.motion_blur_average(
+                &ctx,
+                w,
+                h,
+                &white,
+                (4.0, 4.0),
+                samples,
+                false,
+                None,
+                None,
+            );
+            crate::fx::readback_linear_f32(&ctx, &tex, w, h).unwrap()
+        };
+        let alpha = |px: &[f32], x: usize, y: usize| px[(y * w as usize + x) * 4 + 3];
+        let covered_cols = |px: &[f32]| {
+            (0..w as usize)
+                .filter(|&x| (0..h as usize).any(|y| alpha(px, x, y) > 0.01))
+                .count()
+        };
+
+        // Static: four identical placements — coverage is just the 4px quad,
+        // and its interior alpha averages back to 1.0 (4 copies × 1/4), NOT
+        // the ~0.68 an over-composited alpha would give.
+        let still = [sample_at(18.0); 4];
+        let still_px = readback(&still);
+        let still_cols = covered_cols(&still_px);
+        assert!(
+            (3..=5).contains(&still_cols),
+            "static coverage {still_cols} ≈ quad width"
+        );
+        assert!(
+            alpha(&still_px, 20, 8) > 0.9,
+            "static interior alpha {} must stay opaque (premultiplied average)",
+            alpha(&still_px, 20, 8)
+        );
+
+        // Moving: the same quad slid rightward across the shutter — coverage
+        // spreads well past the static 4px width.
+        let moving = [
+            sample_at(6.0),
+            sample_at(12.0),
+            sample_at(18.0),
+            sample_at(24.0),
+        ];
+        let moving_px = readback(&moving);
+        let moving_cols = covered_cols(&moving_px);
+        assert!(
+            moving_cols > still_cols + 5,
+            "moving coverage {moving_cols} must widen past static {still_cols}"
+        );
     }
 
     /// A quarter-size quad placed at the centre covers exactly the centre

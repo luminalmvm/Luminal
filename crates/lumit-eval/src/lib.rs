@@ -116,6 +116,15 @@ fn feed_comp(
             h.update(b"flat");
         }
     }
+    // Comp-wide motion blur (docs/06 §4, K-120): the shutter shape is content
+    // for every layer that blurs. Hashed only when the master is on, so a comp
+    // with motion blur off keeps every pre-motion-blur key.
+    if comp.motion_blur.enabled {
+        h.update(b"mblur/");
+        feed_f64(h, comp.motion_blur.shutter_angle);
+        feed_f64(h, comp.motion_blur.shutter_phase);
+        h.update(&comp.motion_blur.samples.to_le_bytes());
+    }
     // Draw order is content: iterate the stack as rendered. Layers outside
     // their span or hidden contribute nothing — presence is gated, never
     // hashed, so trimming a bar without crossing `t` changes no key.
@@ -171,6 +180,42 @@ fn feed_layer(
     // content. Hashed only when set, so every pre-collapse key stays valid.
     if layer.switches.collapse && matches!(layer.kind, LayerKind::Precomp { .. }) {
         h.update(b"collapsed");
+    }
+
+    // Per-layer motion blur (docs/06 §4, K-120): the layer's switch is content
+    // only while the comp master is on (else the layer renders normally). When
+    // it blurs, the pixels are the layer's transform sampled across the open
+    // shutter and averaged — so the evaluated sub-frame transforms join the
+    // key. Two comp times sharing this frame's instantaneous transform but
+    // differing in motion (a same-position/different-velocity frame) smear
+    // differently and MUST key apart; hashing only the frame-time transform
+    // would collide them (the K-093 lesson, applied to the shutter samples).
+    // Hashed only when the layer actually blurs, so every non-blurring key
+    // stays valid, and a static blurring layer (constant transform) hashes the
+    // same constant samples across its span — no over-invalidation.
+    if comp.motion_blur.enabled && layer.switches.motion_blur {
+        let offsets = comp.motion_blur.sample_offsets();
+        if !offsets.is_empty() {
+            h.update(b"mblur-layer/");
+            let dt = 1.0 / comp.frame_rate.fps().max(1.0);
+            for off in offsets {
+                let slt = lt + off * dt;
+                for v in [
+                    tr.position_x.value_at(slt),
+                    tr.position_y.value_at(slt),
+                    tr.position_z.value_at(slt),
+                    tr.anchor_x.value_at(slt),
+                    tr.anchor_y.value_at(slt),
+                    tr.scale_x.value_at(slt),
+                    tr.scale_y.value_at(slt),
+                    tr.rotation.value_at(slt),
+                    tr.rotation_x.value_at(slt),
+                    tr.rotation_y.value_at(slt),
+                ] {
+                    feed_f64(h, v);
+                }
+            }
+        }
     }
 
     // The effect stack (docs/08): each live effect's identity, version and
@@ -1224,6 +1269,78 @@ mod tests {
         assert_ne!(k(&layer(true), 1.0), k(&layer(false), 1.0));
         // The +1 neighbour moves with time, so the key evolves.
         assert_ne!(k(&layer(true), 1.0), k(&layer(true), 1.5));
+    }
+
+    /// Per-layer transform motion blur (docs/06 §4, K-120) feeds the key only
+    /// while the comp master and the layer switch are both on: with the master
+    /// off the switch is inert (every pre-motion-blur key holds); with both on,
+    /// each shutter setting moves the key, and — because a blurring layer's
+    /// pixels are its transform sampled across the shutter — a
+    /// same-position/different-velocity frame keys apart where the frame-time
+    /// transform alone would collide (the K-093 lesson at the shutter samples).
+    #[test]
+    fn per_layer_motion_blur_feeds_the_key() {
+        use lumit_core::anim::{Animation, Keyframe, SideInterp};
+        use lumit_core::model::MotionBlur;
+        let doc = Document::new();
+        // A triangle position ramp: 0 → 400 over [0,2], back to 0 over [2,4].
+        // At t=1 and t=3 the instantaneous position is 200 either way, but the
+        // motion reverses — the sub-frame samples differ.
+        let kf = |t: i64, v: f64| Keyframe {
+            time: Rational::new(t, 1).unwrap(),
+            value: v,
+            interp_in: SideInterp::Linear,
+            interp_out: SideInterp::Linear,
+        };
+        let triangle = || {
+            let mut l = text_layer("m", 0.0, 10.0, 0.0);
+            l.transform.position_x = Property {
+                extra: serde_json::Map::new(),
+                animation: Animation::Keyframed(vec![kf(0, 0.0), kf(2, 400.0), kf(4, 0.0)]),
+            };
+            l
+        };
+        let off = comp_with(vec![triangle()]);
+        // Master off: the layer switch is inert, and the frame-time transform is
+        // equal at t=1 and t=3, so those frames share a key.
+        let mut switch_only = off.clone();
+        switch_only.layers[0].switches.motion_blur = true;
+        assert_eq!(key(&doc, &off, 1.0), key(&doc, &switch_only, 1.0));
+        assert_eq!(key(&doc, &off, 1.0), key(&doc, &off, 3.0));
+
+        // Both on: the layer blurs.
+        let on = || {
+            let mut c = off.clone();
+            c.motion_blur = MotionBlur {
+                enabled: true,
+                ..MotionBlur::default()
+            };
+            c.layers[0].switches.motion_blur = true;
+            c
+        };
+        let blurred = on();
+        let at1 = key(&doc, &blurred, 1.0);
+        // Enabling blur is content: the key moves off the no-blur key.
+        assert_ne!(key(&doc, &off, 1.0), at1);
+        // The switch itself is content while the master is on: master-on with
+        // the layer switch off keys differently from the blurring layer.
+        let mut master_only = blurred.clone();
+        master_only.layers[0].switches.motion_blur = false;
+        assert_ne!(at1, key(&doc, &master_only, 1.0));
+        // Same instantaneous position, reversed motion → the shutter samples
+        // differ, so the two frames key apart (no velocity collision).
+        assert_ne!(at1, key(&doc, &blurred, 3.0));
+
+        // Each shutter setting is content.
+        for tweak in [
+            |m: &mut MotionBlur| m.shutter_angle = 90.0,
+            |m: &mut MotionBlur| m.shutter_phase = 0.0,
+            |m: &mut MotionBlur| m.samples = 8,
+        ] {
+            let mut c = blurred.clone();
+            tweak(&mut c.motion_blur);
+            assert_ne!(at1, key(&doc, &c, 1.0));
+        }
     }
 
     /// K-095: a flow conform rate synthesises from different source frames at
