@@ -832,7 +832,7 @@ impl Renderer<'_> {
                         continue;
                     };
                     let tr = &l.transform;
-                    let pre = lumit_gpu::place_matrix(
+                    let own = lumit_gpu::place_matrix(
                         (
                             tr.position_x.value_at(lt) as f32,
                             tr.position_y.value_at(lt) as f32,
@@ -850,6 +850,12 @@ impl Renderer<'_> {
                         tr.rotation_x.value_at(lt) as f32,
                         tr.rotation_y.value_at(lt) as f32,
                     );
+                    // A parented collapsed precomp: its parent's world placement
+                    // wraps its own, matching the preview (K-103, K-031).
+                    let pre = match crate::shell::parent_world_placement(comp, l, t) {
+                        Some(pw) => lumit_gpu::concat_place(pw, own),
+                        None => own,
+                    };
                     let mut specs = Vec::new();
                     visited.push(*nested_id);
                     let r = self.collect_collapsed(nested, lt, visited, pre, &mut specs);
@@ -1050,7 +1056,7 @@ impl Renderer<'_> {
                 }),
                 blend: blend_of(l.blend),
                 layer_mask: p.mask.as_ref(),
-                pre: None,
+                pre: crate::shell::parent_world_placement(comp, l, t),
             });
         }
 

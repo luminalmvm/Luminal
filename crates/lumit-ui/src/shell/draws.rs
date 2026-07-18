@@ -22,6 +22,59 @@ pub(crate) fn patch_layer_prop(
     patched
 }
 
+/// The world placement matrix of `layer`'s parent chain within `comp` at comp
+/// time `t_comp` (K-103 layer parenting): `P_top × … × P_grandparent ×
+/// P_parent`, each ancestor's `place_matrix` sampled at its own local time
+/// (`t_comp − start_offset`). `None` when the layer has no parent. Used as a
+/// draw's `pre`, which the GPU applies as `pre × own_placement` — so the child
+/// ends up placed inside its parent's coordinate space (After Effects
+/// parenting). Cycle- and missing-parent-safe via `model::layer_parent_chain`.
+/// Shared by the preview (here) and the export path so the two stay identical
+/// (K-031). v1 composes the full `place_matrix` (2D plus the 2.5D axes it
+/// already carries); no behaviour changes for an unparented layer (`None`).
+#[cfg(feature = "media")]
+pub(crate) fn parent_world_placement(
+    comp: &lumit_core::model::Composition,
+    layer: &lumit_core::model::Layer,
+    t_comp: f64,
+) -> Option<[[f32; 4]; 4]> {
+    layer.parent?;
+    let chain = lumit_core::model::layer_parent_chain(comp, layer.id);
+    let mut world: Option<[[f32; 4]; 4]> = None;
+    // Fold from the farthest ancestor inward so the topmost transform is the
+    // outermost: concat_place(outer, inner) = outer × inner.
+    for ancestor_id in chain.iter().rev() {
+        let Some(a) = comp.layers.iter().find(|l| l.id == *ancestor_id) else {
+            continue;
+        };
+        let alt = t_comp - a.start_offset.0.to_f64();
+        let tr = &a.transform;
+        let p = lumit_gpu::place_matrix(
+            (
+                tr.position_x.value_at(alt) as f32,
+                tr.position_y.value_at(alt) as f32,
+            ),
+            (
+                tr.anchor_x.value_at(alt) as f32,
+                tr.anchor_y.value_at(alt) as f32,
+            ),
+            (
+                tr.scale_x.value_at(alt) as f32,
+                tr.scale_y.value_at(alt) as f32,
+            ),
+            tr.rotation.value_at(alt) as f32,
+            tr.position_z.value_at(alt) as f32,
+            tr.rotation_x.value_at(alt) as f32,
+            tr.rotation_y.value_at(alt) as f32,
+        );
+        world = Some(match world {
+            Some(w) => lumit_gpu::concat_place(w, p),
+            None => p,
+        });
+    }
+    world
+}
+
 /// Build a comp's draw list recursively (preview side of Precomp layers).
 /// Bottom-up order; matte sources come from decoded pixels (precomp mattes
 /// await the GPU mask pass, mirroring export).
@@ -127,7 +180,7 @@ pub(crate) fn build_comp_draws(
                     visited.push(*nested_id);
                     let mut inner = build_comp_draws(doc, nested, lt, pixels_by_layer, visited);
                     visited.pop();
-                    let parent = lumit_gpu::place_matrix(
+                    let own = lumit_gpu::place_matrix(
                         (
                             tr.position_x.value_at(lt) as f32,
                             tr.position_y.value_at(lt) as f32,
@@ -145,6 +198,13 @@ pub(crate) fn build_comp_draws(
                         tr.rotation_x.value_at(lt) as f32,
                         tr.rotation_y.value_at(lt) as f32,
                     );
+                    // If the collapsed precomp is itself parented, its parent's
+                    // world placement wraps its own before it wraps the inner
+                    // draws (K-103).
+                    let parent = match parent_world_placement(comp, layer, t_comp) {
+                        Some(pw) => lumit_gpu::concat_place(pw, own),
+                        None => own,
+                    };
                     for d in &mut inner {
                         d.pre = Some(match d.pre {
                             // A collapsed chain: this parent wraps the child's
@@ -231,7 +291,7 @@ pub(crate) fn build_comp_draws(
                             comp.height,
                         )
                     }),
-                    pre: None,
+                    pre: parent_world_placement(comp, layer, t_comp),
                     fx,
                     // Adjustment layers process the composite below, not
                     // footage frames — no neighbours or flow field here.
@@ -374,11 +434,92 @@ pub(crate) fn build_comp_draws(
                 }
                 _ => None,
             },
-            pre: None,
+            pre: parent_world_placement(comp, layer, t_comp),
             fx,
             neighbours,
             flow_field,
         });
     }
     draws
+}
+
+#[cfg(all(test, feature = "media"))]
+#[allow(clippy::unwrap_used)]
+mod parent_placement_tests {
+    use super::*;
+    use lumit_core::anim::Property;
+    use lumit_core::model::*;
+    use lumit_core::{CompTime, Duration, FrameRate, Rational};
+
+    fn layer(px: f64, py: f64, parent: Option<uuid::Uuid>) -> Layer {
+        Layer {
+            id: uuid::Uuid::now_v7(),
+            name: "l".into(),
+            kind: LayerKind::Solid {
+                def: uuid::Uuid::now_v7(),
+            },
+            in_point: CompTime(Rational::new(0, 1).unwrap()),
+            out_point: CompTime(Rational::new(10, 1).unwrap()),
+            start_offset: CompTime(Rational::new(0, 1).unwrap()),
+            transform: TransformGroup {
+                position_x: Property::fixed(px),
+                position_y: Property::fixed(py),
+                ..TransformGroup::default()
+            },
+            matte: None,
+            parent,
+            blend: BlendMode::Normal,
+            masks: Vec::new(),
+            effects: Vec::new(),
+            switches: Switches::default(),
+            extra: serde_json::Map::new(),
+        }
+    }
+
+    fn place_of(l: &Layer) -> [[f32; 4]; 4] {
+        let tr = &l.transform;
+        lumit_gpu::place_matrix(
+            (
+                tr.position_x.value_at(0.0) as f32,
+                tr.position_y.value_at(0.0) as f32,
+            ),
+            (0.0, 0.0),
+            (100.0, 100.0),
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+        )
+    }
+
+    fn comp(layers: Vec<Layer>) -> Composition {
+        Composition {
+            id: uuid::Uuid::now_v7(),
+            name: "c".into(),
+            width: 100,
+            height: 100,
+            frame_rate: FrameRate::new(30, 1).unwrap(),
+            duration: Duration(Rational::new(10, 1).unwrap()),
+            background: LinearColour([0.0, 0.0, 0.0, 1.0]),
+            work_area: None,
+            layers,
+            markers: Vec::new(),
+            extra: serde_json::Map::new(),
+        }
+    }
+
+    #[test]
+    fn unparented_is_none_and_a_chain_composes_top_outermost() {
+        let gp = layer(10.0, 20.0, None);
+        let parent = layer(100.0, 0.0, Some(gp.id));
+        let child = layer(5.0, 5.0, Some(parent.id));
+        let c = comp(vec![gp.clone(), parent.clone(), child.clone()]);
+        // No parent → no placement.
+        assert!(parent_world_placement(&c, &gp, 0.0).is_none());
+        // The child's world placement is grandparent × parent (top outermost),
+        // exactly the manual concat — proving the walk and fold order.
+        let world = parent_world_placement(&c, &child, 0.0).unwrap();
+        let expected = lumit_gpu::concat_place(place_of(&gp), place_of(&parent));
+        assert_eq!(world, expected);
+    }
 }
