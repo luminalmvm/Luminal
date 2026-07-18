@@ -1305,3 +1305,37 @@ Near/Far fall back to Aperture (both sides `8 · Aperture/8 = Aperture`), render
 Every shipped mode is continuous, so the §1.6 ULP oracle covers invert on/off, asymmetric near/far,
 and each Display mode with no exclusion (worst 1 fp16 ULP on the RTX). Built in an isolated
 worktree.
+**K-129 · DECIDED · User-preset library and browser (docs/07 §7).** Effect presets (K-065)
+gain a browsable home: a **Presets** group at the top of the Effects & Presets panel lists the
+`.lumfx` files in a single preset library — `directories::ProjectDirs::from("dev","Lumit","Lumit")
+.data_dir().join("presets")`, i.e. the platform roaming app-data folder, shared across projects
+(alongside the existing `media_index_dir`/`journal_path` helpers in `lumit-project`). The folder is
+created lazily and scanned live each paint (cheap for a small library), so a just-saved preset
+appears at once; a missing or unreadable folder yields a hint, never a panic. Each entry's label is
+the preset's own `name`, falling back to the file stem when the file can't be parsed, and the list
+sorts case-insensitively by that label for stability between paints. A **click** applies the
+preset, appending its saved stack with fresh instance ids to the selected layer as one undoable
+`SetLayerEffects` — the same append the inspector's "Load preset…" already commits (K-065); with no
+layer selected the click surfaces a status hint. "Save stack as preset…" defaults its rfd dialogue
+to this folder so saving and browsing share one home, while still allowing the user to navigate
+elsewhere. The scan/label/sort and load-with-fresh-ids logic are pure helpers (`preset::list_presets`,
+`preset::load_instantiated`) with unit tests. Drag-a-preset-onto-a-layer, favourites, and preset
+thumbnails (§7) remain later steps. Built in an isolated worktree; not pushed.
+**K-130 · DECIDED · Scopes trace the live frame during playback from the CPU cache (docs/07
+§8, extends K-096).** K-096 shipped scopes that updated only while paused/scrubbing and held the
+last frame during playback, deferring live tracing to a GPU-side scope pass. This lifts that for
+the common case without a new readback or any change to the render loop: the Scopes panel reads the
+composited frame **under the playhead** (`comp_frame_cache.peek(frame_key_for(preview_frame))`, the
+same frame the eyedropper reads) **every paint**, and while `app.is_playing()` requests
+`request_repaint_after(16ms)` so it re-samples at the playback cadence. Because playback already
+banks frames ahead (prefetch) and warms the work area when idle, the frame under the playhead is
+normally cached, so the scope tracks live end to end. When it is not yet banked — a frame the budget
+readback skipped, or one still rendering — the pane **holds the last frame it showed** (its key kept
+in egui temp memory, re-validated against the cache so an evicted key never dangles) instead of
+blanking, matching §8's "degrade the update rate under load". `request_repaint_after` (not a bare
+`request_repaint`) is used deliberately so the panel never shortens the frame delay to zero and
+never busies an idle-paused UI (the `is_playing` guard) nor spins faster than playback. The frame
+choice is a pure `shown_frame_key` helper with a unit test. Guaranteed every-frame tracing under all
+conditions (a cold, unwarmed comp) still waits on the GPU-side scope pass K-096 named; this is a
+strict improvement over "holds during playback", not that pass. No change to the playback loop,
+banking, or GPU code. Built in an isolated worktree; not pushed.

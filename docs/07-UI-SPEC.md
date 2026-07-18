@@ -460,6 +460,16 @@ Shows the **effect stack** of the selected layer (tab per recently viewed layer,
     **Effect Controls panel** (dropping anywhere in it appends to the shown layer). Double-click
     apply, drag onto the Viewer, and every other layer kind (which still gains effects through
     its own row's "Add effect" menu) remain later steps.
+- **User presets (K-129)**: a **Presets** group at the top of the tree lists the `.lumfx`
+  presets in the preset library — the roaming app-data folder `…/Lumit/data/presets`,
+  scanned live so a just-saved preset appears at once. Each entry shows the preset's own
+  name (or the file stem when the file can't be read), filters under the same search field,
+  and **applies on a click**, appending its whole saved stack (fresh instance ids) to the
+  selected layer as one undoable `SetLayerEffects` — the same append the Effect Controls
+  → Presets "Load preset…" commits. "Save stack as preset…" defaults its file dialogue to
+  this folder (created lazily), so saving and browsing share one home. A missing or empty
+  folder shows a hint, never a failure. Drag-a-preset-onto-a-layer and preset thumbnails are
+  later steps.
 - **Favourites**: star any effect or preset; a Favourites group pins to the top of the tree.
 - Hovering an entry SHOULD show a one-line description; presets show a thumbnail where the
   preset carries one.
@@ -478,14 +488,20 @@ Shows the **effect stack** of the selected layer (tab per recently viewed layer,
 - Scopes MUST update live during playback; under load they degrade to a lower update rate
   before they degrade precision (they participate in adaptive degradation and light the
   Viewer's degradation indicator, §2.2).
-- **v1 (K-096)**: scopes are computed on the CPU from the composited frame Lumit already
-  banks in RAM — that banked frame *is* the Viewer's displayed frame. Because banking runs
-  only while paused or scrubbing (playback skips the readback to hold the frame budget,
-  §13), a v1 scope updates on every paused/scrubbed frame and holds the last shown frame
-  during playback, rather than tracing live; live-during-playback scopes wait on a GPU-side
-  scope pass. Banked frames are always specified-resolution, so the "computed at Half" note
-  does not fire in v1. Colours come from the theme's fixed scope set (a near-black graticule
-  and bright trace in both light and dark chrome, like the neutral Viewer surround, §2.1).
+- **v1 (K-096, extended by K-130)**: scopes are computed on the CPU from the composited
+  frame Lumit banks in RAM — that banked frame *is* the Viewer's displayed frame. The panel
+  reads the frame **under the playhead** from the cache **every paint** and, while playing,
+  requests a repaint at the playback cadence, so the trace **tracks the live frame during
+  playback** for every frame the cache holds (a warmed work area — idle fill, playback
+  prefetch, or the paused readback — keeps the scope live end to end). When a playback frame
+  isn't banked yet (one the frame-budget readback skipped, or one still rendering) the scope
+  **holds the last frame it showed** rather than blanking, and catches up the moment the
+  current frame is banked — the graceful degradation §8 asks for under load. Guaranteed
+  every-frame tracing under all conditions (including a cold, unwarmed comp) still waits on a
+  GPU-side scope pass. Banked frames are always specified-resolution, so the "computed at
+  Half" note does not fire in v1. Colours come from the theme's fixed scope set (a near-black
+  graticule and bright trace in both light and dark chrome, like the neutral Viewer surround,
+  §2.1).
 
 ---
 

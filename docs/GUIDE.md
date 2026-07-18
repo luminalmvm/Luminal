@@ -471,7 +471,15 @@ Two mechanisms make this safe, and you'll see them by name in the code:
   reusing the Timeline's stack editor rather than being a second, divergent one. You can
   still edit the stack inline on the layer's own row in the Timeline; the panel is the same
   editor given more room. Saving a stack as a **preset** and loading one back (a small
-  `.lumfx` JSON file, K-065) lives on that same add-effect row. **Dragging an effect's value
+  `.lumfx` JSON file, K-065) lives on that same add-effect row. **A preset library (K-129)**
+  gives those saved looks a browsable home: the **Effects & Presets** panel now opens with a
+  **Presets** group listing every `.lumfx` file in one shared folder (tucked away in Windows'
+  roaming app-data area, next to Lumit's other saved data). Click a preset and its whole
+  saved stack is added to the layer you have selected — one undo step, exactly as loading a
+  preset by hand does. "Save stack as preset…" now points its save box at that same folder to
+  begin with, so anything you save shows up in the list straight away; you can still save it
+  elsewhere if you want. An empty folder just shows a gentle hint rather than an error.
+  **Dragging an effect's value
   updates the Viewer live** — as you drag a Glow radius or a Blur amount, the picture re-runs
   the effect with the value under your cursor every frame, committing once when you let go (so
   a whole drag is one undo step). It reuses the same trick a transform-value drag already uses:
@@ -1199,11 +1207,15 @@ Two mechanisms make this safe, and you'll see them by name in the code:
   (hue as the direction, how vivid as the distance from the middle — a grey picture is a dot
   in the centre). Each Scopes panel shows one of these, picked from the little row of buttons
   at its top, so you can open a few side by side. It reads the frame you are looking at in
-  the Viewer — the last one Lumit kept in memory. There is one honest limit for now (K-096):
-  Lumit only keeps that frame in memory while you are paused or scrubbing, because during
-  playback it skips saving frames to stay fast, so during playback the scope shows the last
-  frame you stopped on and catches up the moment you pause. Reading the picture live while it
-  plays needs the graphics card to do the counting, which is a later addition. The scope's
+  the Viewer — the one under the playhead — and re-reads it every time it redraws, so the
+  scope now **follows the picture while it plays** (K-130): each time you press play, Lumit
+  keeps a little run of frames ready in memory (it warms them ahead of the playhead and while
+  you sit paused), and the scope traces whichever one is on screen. If a frame hasn't been
+  kept in memory yet — Lumit skips saving some frames during playback to stay fast — the scope
+  simply holds the last frame it had rather than going blank, and snaps back to live the
+  instant the current frame is ready. The one honest limit that remains (from K-096): tracing
+  *every* frame no matter what, even on a brand-new composition nothing has warmed yet, needs
+  the graphics card to do the counting, which is still a later addition. The scope's
   own colours (the near-black background, the green trace, the red/green/blue channel
   colours) are fixed and the same in light or dark mode, for the same reason the Viewer's
   surround is a fixed neutral grey — you cannot judge an image against a background that
