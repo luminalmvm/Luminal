@@ -877,7 +877,11 @@ pub(crate) fn row_frame(
     (row_rect, c)
 }
 
-/// Draw clay diamonds for `keys` on the track portion of `row_rect`.
+/// Draw a keyframe glyph for each of `keys` on the track portion of `row_rect`,
+/// coding interpolation by shape the same way the graph editor does (note 2.3):
+/// a square holds, a circle is bezier/eased, a diamond is linear. The linear
+/// diamond is the common default and is drawn a touch larger than before so keys
+/// read clearly at a glance.
 pub(crate) fn draw_key_diamonds(
     ui: &egui::Ui,
     ctx: &RowCtx,
@@ -892,20 +896,39 @@ pub(crate) fn draw_key_diamonds(
     // The same displayed (zoomed, scrolled) axis as the layer bars, so a
     // property's diamonds stay under its layer's keys at any zoom.
     let x_of = |s: f64| ctx.track_left + ((s - ctx.view_start) * ctx.px_per_sec) as f32;
+    let fill = ctx.theme.accent;
+    let outline = egui::Stroke::new(1.0_f32, ctx.theme.surface_0);
     for k in keys {
         let x = x_of(ctx.off + k.time.to_f64());
         if x >= ctx.track_left - 1.0 && x <= ctx.track_left + ctx.track_w + 1.0 {
-            let d = 3.0;
-            ui.painter().add(egui::Shape::convex_polygon(
-                vec![
-                    egui::pos2(x, cy - d),
-                    egui::pos2(x + d, cy),
-                    egui::pos2(x, cy + d),
-                    egui::pos2(x - d, cy),
-                ],
-                ctx.theme.accent,
-                egui::Stroke::new(1.0_f32, ctx.theme.surface_0),
-            ));
+            let pos = egui::pos2(x, cy);
+            match key_shape(k) {
+                KeyShape::Square => {
+                    ui.painter().rect(
+                        egui::Rect::from_center_size(pos, egui::vec2(6.5, 6.5)),
+                        1.0,
+                        fill,
+                        outline,
+                        egui::StrokeKind::Inside,
+                    );
+                }
+                KeyShape::Circle => {
+                    ui.painter().circle(pos, 3.6, fill, outline);
+                }
+                KeyShape::Diamond => {
+                    let d = 4.0;
+                    ui.painter().add(egui::Shape::convex_polygon(
+                        vec![
+                            egui::pos2(x, cy - d),
+                            egui::pos2(x + d, cy),
+                            egui::pos2(x, cy + d),
+                            egui::pos2(x - d, cy),
+                        ],
+                        fill,
+                        outline,
+                    ));
+                }
+            }
         }
     }
 }
