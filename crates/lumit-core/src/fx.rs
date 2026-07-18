@@ -1029,12 +1029,12 @@ pub const BUILTINS: &[EffectSchema] = &[
             MIX_PARAM,
         ],
     },
-    // Glitch (docs/08 §3.12): Block displacement, Scanlines and Datamosh
-    // (K-104) all ship. Datamosh re-warps the -1 source neighbour along the
-    // flow measured from this frame to it, footage-only and off by default
-    // (see `datamosh_enabled`'s own comment). Seeded, like Shake — category
-    // Distortion to match Shake and RGB split, its closest siblings
-    // (positional wobble, channel split), not
+    // Glitch (docs/08 §3.12): Block displacement and Scanlines. Datamosh
+    // (K-104) shipped as a third section of this same effect; K-107 split it
+    // out into its own standalone `datamosh` schema below, since it alone
+    // needs a neighbour frame and a flow field — see that schema's comment.
+    // Seeded, like Shake — category Distortion to match Shake and RGB
+    // split, its closest siblings (positional wobble, channel split), not
     // the additive-light Stylise pair (Glow, Flash).
     //
     // Status (shipped): the spec text names most of these without ranges;
@@ -1195,16 +1195,53 @@ pub const BUILTINS: &[EffectSchema] = &[
                 label: "Interlace offset",
                 kind: ParamKind::Bool { default: false },
             },
+            MIX_PARAM,
+        ],
+    },
+    // Datamosh (docs/08 §3.12, K-104, split out on its own by K-107):
+    // re-warps the -1 source neighbour along the flow measured from this
+    // frame to it — "reused an old frame's motion" — blended by Intensity.
+    // Reuses Motion blur's flow machinery and its own already-shipped GPU
+    // pass/CPU oracle unchanged (`FxEngine::datamosh`, `cpu::datamosh`):
+    // only the schema, the `Resolved` variant and the stack wiring are new.
+    // Previously a toggle inside the combined Glitch effect with a dynamic
+    // per-instance temporal reach (the one place `stack_temporal_window`/
+    // `stack_flow_neighbour` read a param value instead of the schema's own
+    // static `temporal`); as its own effect that toggle is gone and the
+    // reach is simply the schema's `{0, -1}`, exactly the static shape
+    // Motion blur's own `{0, 1}` already has. Footage-only: with no -1
+    // neighbour or flow field (a non-footage layer, or a dropped decode) it
+    // degrades to a no-op, never a fault. Category Distortion, matching
+    // Shake and RGB split (its closest siblings: a seeded positional
+    // wobble, a channel split) — but Datamosh itself reads no hash or seed,
+    // so `seeded: false`, unlike them.
+    EffectSchema {
+        match_name: "datamosh",
+        label: "Datamosh",
+        version: 1,
+        category: FxCategory::Distortion,
+        traits: EffectTraits {
+            cost: CostClass::Cheap,
+            // One bilinear tap, but the flow can point anywhere in the
+            // frame — the same unbounded-read reasoning Motion blur's own
+            // full-frame ROI already carries for its flow-directed taps.
+            roi: Roi::FullFrame,
+            temporal: &[0, -1],
+            premultiplied: true,
+            seeded: false,
+            beat_input: false,
+        },
+        params: &[
             ParamSchema {
-                id: "datamosh_enabled",
-                label: "Datamosh look",
-                // Off by default (§3.12 status note, K-104): unlike Block
-                // displacement/Scanlines (on since Glitch first shipped),
-                // this section is footage-only and reads the -1 neighbour
-                // and a flow field, so it opts in rather than changing the
-                // output of every existing Glitch instance the moment it
-                // lands.
-                kind: ParamKind::Bool { default: false },
+                id: "intensity",
+                label: "Intensity",
+                // 0..1: blends between the ordinary frame and the moshed
+                // one. 0 is the bit-exact passthrough (pinned by test).
+                kind: ParamKind::Float {
+                    default: 0.5,
+                    slider: (0.0, 1.0),
+                    hard: (Some(0.0), Some(1.0)),
+                },
             },
             MIX_PARAM,
         ],
@@ -1345,18 +1382,6 @@ pub fn schema(match_name: &str) -> Option<&'static EffectSchema> {
     BUILTINS.iter().find(|s| s.match_name == match_name)
 }
 
-/// True when a live "glitch" instance has its Datamosh section on (§3.12,
-/// K-104) — the one place a stack's temporal reach depends on a param value
-/// rather than the schema's static [`EffectTraits::temporal`] alone (Echo
-/// and Motion blur's windows are unconditional the moment the effect is
-/// live; Datamosh's -1 neighbour and flow field are only worth fetching when
-/// its own toggle is on, since it shares an instance with two params that
-/// never need either).
-fn wants_datamosh(e: &EffectInstance) -> bool {
-    e.effect.match_name == "glitch"
-        && matches!(e.param("datamosh_enabled"), Some(EffectValue::Bool(true)))
-}
-
 /// The union of source-relative frame offsets a layer's live effect stack
 /// needs (docs/08 §1.3 `temporal`), always sorted and always containing 0
 /// (the current frame). `&[0]` when the stack is bypassed, empty, or every
@@ -1373,9 +1398,6 @@ pub fn stack_temporal_window(effects: &[EffectInstance], fx_on: bool) -> Vec<i32
             }
             if let Some(s) = schema(&e.effect.match_name) {
                 offsets.extend_from_slice(s.traits.temporal);
-            }
-            if wants_datamosh(e) {
-                offsets.push(-1);
             }
         }
     }
@@ -1395,7 +1417,6 @@ pub fn stack_is_temporal(effects: &[EffectInstance], fx_on: bool) -> bool {
             .any(|e| {
                 schema(&e.effect.match_name)
                     .is_some_and(|s| s.traits.temporal.iter().any(|&o| o != 0))
-                    || wants_datamosh(e)
             })
 }
 
@@ -1404,15 +1425,17 @@ pub fn stack_is_temporal(effects: &[EffectInstance], fx_on: bool) -> bool {
 /// that neighbour), computed in the decode worker and handed to the kernel
 /// as a texture — the gate mirroring [`stack_is_temporal`] that the render/
 /// decode paths check before doing any flow work. Flow motion blur (docs/08
-/// §3.2) wants `1` (the +1 neighbour); Datamosh (§3.12, K-104) wants `-1`.
-/// Both effects are also temporal (their windows reach that same offset), so
-/// the neighbour machinery already fetches the source frame the flow is
-/// measured against.
+/// §3.2) wants `1` (the +1 neighbour); Datamosh (§3.12, K-107) wants `-1` —
+/// both purely static reads of the schema's own match name now (K-107
+/// dropped the dynamic per-instance check a combined Glitch effect used to
+/// need). Both effects are also temporal (their windows reach that same
+/// offset), so the neighbour machinery already fetches the source frame the
+/// flow is measured against.
 ///
 /// A layer can carry only one flow field per frame in v1
 /// ([`crate`]-external callers store it in a single `Option` slot) — if a
-/// stack somehow has both a live Motion blur and a Datamosh-on Glitch, the
-/// first one encountered in stack order wins and the other's flow-dependent
+/// stack somehow has both a live Motion blur and a live Datamosh, the first
+/// one encountered in stack order wins and the other's flow-dependent
 /// behaviour degrades to its own missing-field passthrough (never a fault;
 /// pinned by test, K-104).
 pub fn stack_flow_neighbour(effects: &[EffectInstance], fx_on: bool) -> Option<i32> {
@@ -1426,7 +1449,7 @@ pub fn stack_flow_neighbour(effects: &[EffectInstance], fx_on: bool) -> Option<i
         if e.effect.match_name == "motion_blur" {
             return Some(1);
         }
-        if wants_datamosh(e) {
+        if e.effect.match_name == "datamosh" {
             return Some(-1);
         }
     }
@@ -1705,14 +1728,22 @@ pub enum Resolved {
         interlace: bool,
         /// 0..1.
         mix: f32,
-        /// The Datamosh section (§3.12 status note): re-warp the -1 source
-        /// neighbour along the flow measured from this frame to it, blended
-        /// by `intensity`. The neighbour frame and its flow field are not
-        /// carried here — like Echo's neighbour frames and Motion blur's
-        /// flow field, they travel beside the resolved op, supplied only
-        /// when the layer is footage and the decode fetched them; a missing
-        /// pair degrades this section to a no-op, never a fault.
-        datamosh_enabled: bool,
+    },
+    /// Datamosh (docs/08 §3.12, K-104, its own effect since K-107): re-warp
+    /// the -1 source neighbour along the flow measured from this frame to
+    /// it. The neighbour frame and its flow field are not carried here —
+    /// like Echo's neighbour frames and Motion blur's flow field, they
+    /// travel beside the resolved op, supplied only when the layer is
+    /// footage and the decode fetched them; a missing pair degrades this to
+    /// a no-op, never a fault.
+    Datamosh {
+        /// 0..1: blended against the current frame.
+        intensity: f32,
+        /// 0..1, the host Mix. Composes with `intensity` by multiplication
+        /// before reaching the kernel (mixing the same two inputs twice
+        /// collapses to one mix by the product), so the existing GPU/CPU
+        /// maths need not carry a second blend knob.
+        mix: f32,
     },
     /// Echo / trails (docs/08 §3.13). `weights[i]` is the intensity of the
     /// echo at frame offset `-(i+1)` (0 = no echo there); the render supplies
@@ -2519,10 +2550,6 @@ pub fn resolve_stack(
                     _ => false,
                 };
                 let mix = (e.float_at("mix", lt).unwrap_or(100.0) as f32 / 100.0).clamp(0.0, 1.0);
-                let datamosh_enabled = match e.param("datamosh_enabled") {
-                    Some(EffectValue::Bool(b)) => *b,
-                    _ => false,
-                };
                 Some(Resolved::Glitch {
                     intensity,
                     seed,
@@ -2539,8 +2566,12 @@ pub fn resolve_stack(
                     roll_px,
                     interlace,
                     mix,
-                    datamosh_enabled,
                 })
+            }
+            "datamosh" => {
+                let intensity = (e.float_at("intensity", lt).unwrap_or(0.5) as f32).clamp(0.0, 1.0);
+                let mix = (e.float_at("mix", lt).unwrap_or(100.0) as f32 / 100.0).clamp(0.0, 1.0);
+                Some(Resolved::Datamosh { intensity, mix })
             }
             "echo" => {
                 // Echoes k = 1..count sit at offset -k with intensity
@@ -2744,12 +2775,6 @@ pub mod cpu {
                 roll_px,
                 interlace,
                 mix,
-                // Datamosh needs the layer's -1 neighbour and its flow
-                // field, which this single-buffer dispatcher does not
-                // carry — Block displacement and Scanlines still run; the
-                // Datamosh section itself degrades to a no-op here, exactly
-                // like Echo and Motion blur below (K-104).
-                datamosh_enabled: _,
             } => glitch(
                 rgba,
                 w,
@@ -2780,6 +2805,12 @@ pub mod cpu {
             // [`motion_blur`] (with the flow field) on the GPU; here it is a
             // pass-through, exactly like Echo.
             Resolved::MotionBlur { .. } => {}
+            // Datamosh needs the layer's -1 neighbour and its flow field,
+            // which this single-buffer dispatcher does not carry either. The
+            // real path is `FxEngine::datamosh` (with neighbour + flow) on
+            // the GPU; here it is a pass-through, exactly like Echo and
+            // Motion blur.
+            Resolved::Datamosh { .. } => {}
         }
     }
 
@@ -3831,33 +3862,26 @@ mod tests {
         assert_eq!(stack_flow_neighbour(std::slice::from_ref(&off), true), None);
     }
 
-    fn with_datamosh_on(mut glitch: EffectInstance) -> EffectInstance {
-        for p in &mut glitch.params {
-            if p.id == "datamosh_enabled" {
-                p.value = EffectValue::Bool(true);
-            }
-        }
-        glitch
-    }
-
     #[test]
-    fn glitch_only_reaches_the_prior_frame_once_datamosh_is_on() {
-        // A plain Glitch (datamosh off) is single-frame, like it always was.
-        let plain = instantiate("glitch").unwrap();
-        let one = std::slice::from_ref(&plain);
-        assert_eq!(stack_temporal_window(one, true), vec![0]);
-        assert!(!stack_is_temporal(one, true));
-        assert_eq!(stack_flow_neighbour(one, true), None);
-
-        // Datamosh on reaches back to -1 and wants a flow field for it.
-        let moshing = with_datamosh_on(instantiate("glitch").unwrap());
-        let one = std::slice::from_ref(&moshing);
+    fn datamosh_window_reaches_the_prior_frame_and_wants_flow() {
+        // Datamosh's window is {-1, 0}: the current frame and one behind,
+        // read statically off the schema (K-107 — no per-instance toggle,
+        // unlike the old combined Glitch's dynamic special case).
+        let dm = instantiate("datamosh").unwrap();
+        let one = std::slice::from_ref(&dm);
         assert_eq!(stack_temporal_window(one, true), vec![-1, 0]);
         assert!(stack_is_temporal(one, true));
         assert_eq!(stack_flow_neighbour(one, true), Some(-1));
 
-        // Disabled, or the layer fx switch off, it wants nothing either way.
-        let mut off = moshing.clone();
+        // A plain Glitch (block/scanline only) stays single-frame.
+        let plain = instantiate("glitch").unwrap();
+        let plain_one = std::slice::from_ref(&plain);
+        assert_eq!(stack_temporal_window(plain_one, true), vec![0]);
+        assert!(!stack_is_temporal(plain_one, true));
+        assert_eq!(stack_flow_neighbour(plain_one, true), None);
+
+        // Disabled, or the layer fx switch off, Datamosh wants nothing.
+        let mut off = dm.clone();
         off.enabled = false;
         assert_eq!(
             stack_temporal_window(std::slice::from_ref(&off), true),
@@ -3870,15 +3894,82 @@ mod tests {
     #[test]
     fn motion_blur_and_datamosh_together_the_first_in_stack_order_wins() {
         // K-104: a layer can carry only one flow field per frame in v1: if
-        // both a live Motion blur and a Datamosh-on Glitch are in the same
+        // both a live Motion blur and a live Datamosh are in the same
         // stack, whichever comes first wins the single slot.
         let mb = instantiate("motion_blur").unwrap();
-        let moshing = with_datamosh_on(instantiate("glitch").unwrap());
+        let dm = instantiate("datamosh").unwrap();
         assert_eq!(
-            stack_flow_neighbour(&[mb.clone(), moshing.clone()], true),
+            stack_flow_neighbour(&[mb.clone(), dm.clone()], true),
             Some(1)
         );
-        assert_eq!(stack_flow_neighbour(&[moshing, mb], true), Some(-1));
+        assert_eq!(stack_flow_neighbour(&[dm, mb], true), Some(-1));
+    }
+
+    #[test]
+    fn datamosh_instantiates_and_resolves() {
+        let e = instantiate("datamosh").unwrap();
+        assert_eq!(e.float_at("intensity", 0.0), Some(0.5));
+        assert_eq!(e.float_at("mix", 0.0), Some(100.0));
+
+        let r = resolve_stack(
+            std::slice::from_ref(&e),
+            0.0,
+            1000.0,
+            1.0,
+            &MarkerContext::NONE,
+        );
+        assert_eq!(
+            r,
+            vec![Resolved::Datamosh {
+                intensity: 0.5,
+                mix: 1.0,
+            }]
+        );
+
+        // Intensity 0 and Mix 0 both resolve cleanly (the bit-exact
+        // passthrough is enforced where the op actually runs, in lumit-gpu
+        // and lumit-ui — this pins the resolve step carries both zeros
+        // through untouched).
+        let mut zero_intensity = e.clone();
+        for p in &mut zero_intensity.params {
+            if p.id == "intensity" {
+                p.value = EffectValue::Float(Property::fixed(0.0));
+            }
+        }
+        let r = resolve_stack(
+            std::slice::from_ref(&zero_intensity),
+            0.0,
+            1000.0,
+            1.0,
+            &MarkerContext::NONE,
+        );
+        assert_eq!(
+            r,
+            vec![Resolved::Datamosh {
+                intensity: 0.0,
+                mix: 1.0,
+            }]
+        );
+    }
+
+    #[test]
+    fn cpu_apply_datamosh_is_a_passthrough() {
+        // The single-buffer CPU dispatcher cannot carry a neighbour frame or
+        // a flow field, so Resolved::Datamosh degrades to a no-op here,
+        // exactly like Echo and Motion blur.
+        let (w, h) = (5u32, 5u32);
+        let img = transform_card(w, h);
+        let mut out = img.clone();
+        cpu::apply(
+            &mut out,
+            w,
+            h,
+            &Resolved::Datamosh {
+                intensity: 1.0,
+                mix: 1.0,
+            },
+        );
+        assert_eq!(out, img);
     }
 
     #[test]
@@ -5896,14 +5987,12 @@ mod tests {
             roll_px,
             interlace,
             mix,
-            datamosh_enabled,
             ..
         } = a[0]
         else {
             panic!("expected a Glitch");
         };
         assert_eq!(intensity, 0.35);
-        assert!(!datamosh_enabled, "off by default (K-104)");
         assert_eq!(tick, 3); // floor(0.4 * GLITCH_TICK_HZ 8) = 3
         assert!(block_enabled);
         assert_eq!(block_size_px, 12.0); // 24 px@comp * px_scale 0.5
