@@ -45,6 +45,37 @@ pub fn sidecar_root(project_path: &Path) -> Option<PathBuf> {
     Some(project_path.with_file_name(format!("{name}-cache")))
 }
 
+/// Where a project's disk cache should live, honouring the user's Settings →
+/// Performance → Cache "cache root folder" override (docs/07-UI-SPEC.md §15).
+///
+/// In plain terms: by default the cache sits next to the project file, same
+/// as always (`override_root` is `None`, delegates straight to
+/// [`sidecar_root`]). When the user picks a folder instead — to park the
+/// cache on a faster drive — this returns a folder under *that* root, named
+/// after the project's file stem plus a short hash of its full canonical
+/// path, e.g. `<override_root>/comp1-9f3a21bc-cache`. The hash exists purely
+/// to keep two different projects that happen to share a file name (e.g.
+/// `comp1.lum` in two different folders) from colliding on one cache folder;
+/// the stem stays in the name so the folder is still recognisable by eye.
+pub fn cache_root_for(project_path: &Path, override_root: Option<&Path>) -> Option<PathBuf> {
+    let Some(root) = override_root else {
+        return sidecar_root(project_path);
+    };
+    let stem = project_path.file_stem()?.to_str()?;
+    // Canonicalize so the hash is stable regardless of how the path was
+    // spelled (relative vs absolute, `.`/`..` segments, case on Windows);
+    // fall back to the given path unchanged if that fails (e.g. the file
+    // doesn't exist yet) rather than panicking or losing the entry.
+    let canonical = project_path
+        .canonicalize()
+        .unwrap_or_else(|_| project_path.to_path_buf());
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    canonical.hash(&mut hasher);
+    let hash = hasher.finish();
+    Some(root.join(format!("{stem}-{:08x}-cache", hash as u32)))
+}
+
 /// The disk tier. All operations are best-effort and silent about IO trouble
 /// (a failed write just means the frame is re-rendered later); nothing here
 /// panics. One instance is meant to be owned by a single IO thread.
@@ -368,5 +399,49 @@ mod tests {
             Path::new("D:/edits/montage.lum-cache")
         );
         assert!(sidecar_root(Path::new("/")).is_none());
+    }
+
+    #[test]
+    fn cache_root_for_with_no_override_matches_sidecar_root() {
+        let p = Path::new("D:/edits/montage.lum");
+        assert_eq!(cache_root_for(p, None), sidecar_root(p));
+        assert_eq!(
+            cache_root_for(p, None).unwrap(),
+            Path::new("D:/edits/montage.lum-cache")
+        );
+    }
+
+    #[test]
+    fn cache_root_for_is_deterministic() {
+        let p = Path::new("D:/edits/montage.lum");
+        let over = Path::new("E:/lumit-cache");
+        let a = cache_root_for(p, Some(over));
+        let b = cache_root_for(p, Some(over));
+        assert!(a.is_some());
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn cache_root_for_does_not_collide_on_same_file_name() {
+        let over = Path::new("E:/lumit-cache");
+        let a = cache_root_for(Path::new("D:/edits/montage.lum"), Some(over)).unwrap();
+        let b = cache_root_for(Path::new("D:/archive/montage.lum"), Some(over)).unwrap();
+        assert_ne!(a, b, "same file name in different folders must not collide");
+        // Both still sit under the chosen override root, and stay
+        // recognisable by the project's file stem.
+        assert!(a.starts_with(over));
+        assert!(b.starts_with(over));
+        assert!(a
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .starts_with("montage-"));
+        assert!(b
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .starts_with("montage-"));
     }
 }

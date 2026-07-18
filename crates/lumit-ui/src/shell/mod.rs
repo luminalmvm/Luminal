@@ -1167,9 +1167,10 @@ impl Shell {
                 // Selection made before probe finished: retry until Ready.
                 self.app.refresh_preview();
             }
-            // The disk tier follows the project's save path, and any frames
-            // it promoted land in RAM here (docs/06 §5.4).
-            self.app.disk_sync_root();
+            // The disk tier follows the project's save path (and the user's
+            // cache-root override, Settings → Performance → Cache), and any
+            // frames it promoted land in RAM here (docs/06 §5.4).
+            self.app.disk_sync_root(self.settings.cache_root.as_deref());
             if self.app.drain_disk_loads() {
                 ctx.request_repaint();
             }
