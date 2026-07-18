@@ -3,7 +3,9 @@
 //! Layout per docs/07-UI-SPEC.md (Edit workspace): Project left, Viewer centre,
 //! Effect Controls / Effects & Presets right, Timeline across the bottom.
 
-pub(crate) use crate::app_state::{AppState, ShapeKind, ToolMode};
+pub(crate) use crate::app_state::{
+    AppState, EyedropperMode, EyedropperTarget, ShapeKind, ToolMode,
+};
 pub(crate) use crate::icons::Icon;
 pub(crate) use crate::splash::{BootLine, Splash};
 pub(crate) use crate::theme::Theme;
@@ -13,6 +15,7 @@ pub(crate) use serde::{Deserialize, Serialize};
 mod command_palette;
 mod dock;
 mod draws;
+mod eyedropper;
 mod gpu;
 mod graph;
 mod hierarchy;
@@ -2030,6 +2033,13 @@ impl Shell {
                 .show(ctx, |ui| dock.ui(&mut behavior, ui));
             (behavior.pop_out, behavior.panel_rects)
         };
+
+        // An eyedropper button (drawn deep inside the effect rows, shared with
+        // the Timeline) stashes its arm request in context data; drain it here,
+        // once the panels have drawn, and arm the tool for the next frame.
+        if let Some(target) = eyedropper::take_arm_request(ctx) {
+            app.arm_eyedropper(target);
+        }
 
         // Active-panel boundary (owner request): a press inside a pane makes
         // it the focused one, and it wears a 1px accent edge so the eye always

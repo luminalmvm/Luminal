@@ -2168,6 +2168,34 @@ pub(crate) fn effects_rows(
                         }
                         c.data_mut(|d| d.remove::<f64>(id));
                     }
+                    // Depth of field's Focus: an eyedropper that samples depth
+                    // (the luma of the picked pixel as a proxy — the depth
+                    // layer's own pixels are not separately readable from the
+                    // UI) and sets Focus to it (docs/08 §3.22, K-123 companion).
+                    if schema.match_name == "dof" && ps.id == "focus" {
+                        let (eye, eye_resp) =
+                            c.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::click());
+                        let eye_col = if eye_resp.hovered() {
+                            ctx.theme.text_primary
+                        } else {
+                            ctx.theme.text_secondary
+                        };
+                        eyedropper::paint_icon(c.painter(), eye, eye_col);
+                        if eye_resp
+                            .on_hover_text("Pick focus depth from the Viewer")
+                            .clicked()
+                        {
+                            eyedropper::request_arm(
+                                c.ctx(),
+                                EyedropperTarget {
+                                    layer: layer.id,
+                                    effect: idx,
+                                    param: pi,
+                                    mode: EyedropperMode::Depth,
+                                },
+                            );
+                        }
+                    }
                     // Keys on the lane, like any property row.
                     if let lumit_core::anim::Animation::Keyframed(keys) = &prop.animation {
                         draw_key_diamonds(ui, ctx, row_rect, keys);
@@ -2238,25 +2266,61 @@ pub(crate) fn effects_rows(
                     }
                 }
                 (EffectValue::Colour(chs), ParamKind::Colour { range, .. }) => {
-                    // Scene-linear RGB drag values plus a live swatch (the
-                    // swatch colour is data, not theme: it is the parameter).
-                    // Channels are animatable in the model; the row edits
-                    // static values for now, like Bool/Choice.
+                    // A swatch that opens egui's colour picker, an eyedropper
+                    // to sample from the Viewer, then scene-linear RGB drag
+                    // boxes. The parameter's channels are animatable in the
+                    // model; the row edits static values for now, like
+                    // Bool/Choice.
                     let (_row, mut c) = row_frame(ui, ctx, false);
                     c.label(
                         egui::RichText::new(ps.label)
                             .small()
                             .color(ctx.theme.text_muted),
                     );
-                    let preview = egui::Rgba::from_rgb(
+                    // Swatch → the built-in colour picker (wheel + sliders).
+                    // The parameter is scene-linear, exactly what egui's Rgb
+                    // button edits, so the values pass straight through (clamped
+                    // to 0..1 for the picker's gamut). A change commits the same
+                    // undoable SetLayerEffects the RGB drags use.
+                    let mut rgb = [
                         chs[0].value_at(ctx.lt).clamp(0.0, 1.0) as f32,
                         chs[1].value_at(ctx.lt).clamp(0.0, 1.0) as f32,
                         chs[2].value_at(ctx.lt).clamp(0.0, 1.0) as f32,
-                    );
-                    let (swatch, _) =
-                        c.allocate_exact_size(egui::vec2(14.0, 10.0), egui::Sense::hover());
-                    c.painter()
-                        .rect_filled(swatch, 2.0, egui::Color32::from(preview));
+                    ];
+                    if egui::color_picker::color_edit_button_rgb(&mut c, &mut rgb).changed() {
+                        let mut effects = layer.effects.clone();
+                        if let EffectValue::Colour(arr) = &mut effects[idx].params[pi].value {
+                            arr[0] = lumit_core::anim::Property::fixed(rgb[0] as f64);
+                            arr[1] = lumit_core::anim::Property::fixed(rgb[1] as f64);
+                            arr[2] = lumit_core::anim::Property::fixed(rgb[2] as f64);
+                        }
+                        *pending = Some(commit(effects));
+                    }
+                    // Eyedropper: arm a colour pick from the Viewer for this
+                    // parameter (the Matte key's key-colour param comes free —
+                    // it is a Colour param and lands here too).
+                    let (eye, eye_resp) =
+                        c.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::click());
+                    let eye_col = if eye_resp.hovered() {
+                        ctx.theme.text_primary
+                    } else {
+                        ctx.theme.text_secondary
+                    };
+                    eyedropper::paint_icon(c.painter(), eye, eye_col);
+                    if eye_resp
+                        .on_hover_text("Sample a colour from the Viewer")
+                        .clicked()
+                    {
+                        eyedropper::request_arm(
+                            c.ctx(),
+                            EyedropperTarget {
+                                layer: layer.id,
+                                effect: idx,
+                                param: pi,
+                                mode: EyedropperMode::Colour,
+                            },
+                        );
+                    }
                     for (ci, chan) in ["R", "G", "B"].iter().enumerate() {
                         let committed = chs[ci].value_at(ctx.lt);
                         let id = egui::Id::new(("fxcolour", e.id, pi, ci));

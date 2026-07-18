@@ -519,9 +519,27 @@ Two mechanisms make this safe, and you'll see them by name in the code:
   hard switch would make the CPU and graphics-card versions disagree by a hair, which the
   agreement test forbids — same rule as everywhere else), and like the other colour tools it
   works on the picture's *straight* colours, undoing the alpha pre-multiply first, so it judges
-  edge pixels by their true colour and doesn't leave a fringe. A handy follow-up, not built
-  yet, is an **eyedropper** so you can click the screen in the viewer to set the key colour
-  instead of dialling it in.
+  edge pixels by their true colour and doesn't leave a fringe. Setting the Key colour is now a
+  point-and-click job: use the **eyedropper** beside its swatch to sample the screen straight
+  from the Viewer (see the colour picker and eyedropper note below).
+- **Colour picker and eyedropper.** Every effect **Colour** parameter — a Flash tint, a Colour
+  balance wheel, the Matte key's Key colour, and so on — now shows a **clickable swatch**. Click
+  it and Lumit's colour wheel and sliders open, so you can pick a colour by eye instead of typing
+  three numbers. Beside the swatch sits a small **eyedropper**: click it and the tool arms, then
+  move the pointer over the Viewer and a **magnifier** follows the cursor. The magnifier shows a
+  zoomed 9×9 grid of the pixels under the pointer, dotted lines between them and the centre pixel
+  ringed; click to lift that colour into the parameter, or press **Escape** (or click off the
+  Viewer) to cancel. **Shift+scroll** while it is up grows the sampled patch — 1×1, 2×2, 3×3, … —
+  so you can average over a grainy area instead of grabbing one noisy pixel; the current size
+  shows under the grid, and the committed colour is the average over that patch. Depth of field's
+  **Focus** carries the same eyedropper, except it lifts *depth* rather than colour: click the
+  part of the picture you want sharp and Focus jumps to it. The pixels are read straight from the
+  frame shown in the Viewer — the very frame the Scopes read — and a picked colour is converted
+  back into Lumit's internal light space so it matches what you sampled. Two honest notes: the
+  wheel edits ordinary 0–1 colours, so a rare "brighter than white" tint is clamped by the picker
+  (the number boxes still reach it); and the Focus pick uses the brightness of the clicked pixel
+  as a stand-in for depth, since the depth layer's own picture is not separately available to the
+  panel.
 - **LUT (K-114).** Drop this on a layer and press its **Select Cube LUT…** button to pick a
   `.cube` file — a colour recipe a colourist baked elsewhere (the loader below reads it) — and
   the whole picture is regraded through it; the **Mix** slider dials the look back toward the
