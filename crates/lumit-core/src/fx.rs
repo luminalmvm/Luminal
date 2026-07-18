@@ -5260,6 +5260,7 @@ mod tests {
             start_offset: secs(offset_s.0, offset_s.1),
             transform: TransformGroup::default(),
             matte: None,
+            parent: None,
             blend: Default::default(),
             masks: Vec::new(),
             effects: Vec::new(),

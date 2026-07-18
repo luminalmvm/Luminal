@@ -517,6 +517,14 @@ pub struct Layer {
     /// (docs/03-DATA-MODEL.md §5.1 invariants), never an error.
     #[serde(default)]
     pub matte: Option<MatteRef>,
+    /// Parent layer (K-103): this layer's transform is applied *within* the
+    /// parent's coordinate space, so moving or rotating the parent carries the
+    /// child with it (After Effects parenting / null-object rigs). `None` = no
+    /// parent, unchanged behaviour. A missing, deleted, or cyclic parent
+    /// degrades to "no parent" at render time, never an error (same invariant
+    /// as `matte`). Cycles are also rejected at edit time (`SetLayerParent`).
+    #[serde(default)]
+    pub parent: Option<Uuid>,
     #[serde(default)]
     pub blend: BlendMode,
     /// Masks gate the layer's alpha before effects/transform
@@ -532,6 +540,38 @@ pub struct Layer {
     /// (docs/10-FILE-FORMAT.md §1.1 — mandatory forward compatibility).
     #[serde(flatten, default, skip_serializing_if = "serde_json::Map::is_empty")]
     pub extra: serde_json::Map<String, serde_json::Value>,
+}
+
+/// The chain of parent layer ids above `layer` in `comp`, nearest first
+/// (K-103). Stops at a layer with no parent or a parent not in the comp, and
+/// breaks any cycle, so it always terminates and never repeats an id. Excludes
+/// `layer` itself.
+pub fn layer_parent_chain(comp: &Composition, layer: Uuid) -> Vec<Uuid> {
+    let mut chain: Vec<Uuid> = Vec::new();
+    let mut current = layer;
+    // One hop per layer at most; a repeat would be a cycle, caught below.
+    for _ in 0..comp.layers.len() {
+        let Some(l) = comp.layers.iter().find(|l| l.id == current) else {
+            break;
+        };
+        let Some(parent) = l.parent else {
+            break;
+        };
+        if parent == layer || chain.contains(&parent) {
+            break; // cycle
+        }
+        chain.push(parent);
+        current = parent;
+    }
+    chain
+}
+
+/// Would pointing `layer`'s parent at `new_parent` form a cycle — either a
+/// self-parent, or `layer` already being an ancestor of `new_parent`? Used to
+/// reject a bad [`crate::Op::SetLayerParent`] before it lands. (Whether
+/// `new_parent` exists in the comp is a separate check the op also makes.)
+pub fn parenting_would_cycle(comp: &Composition, layer: Uuid, new_parent: Uuid) -> bool {
+    new_parent == layer || layer_parent_chain(comp, new_parent).contains(&layer)
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -705,6 +745,7 @@ mod tests {
                 ..TransformGroup::default()
             },
             matte: None,
+            parent: None,
             blend: BlendMode::Normal,
             masks: Vec::new(),
             effects: Vec::new(),
@@ -926,5 +967,74 @@ mod tests {
         let mut flat = comp_with_cameras();
         flat.layers.clear();
         assert!(flat.camera_pose(1.0).is_none());
+    }
+
+    #[test]
+    fn parent_chain_walks_up_and_cycles_are_detected() {
+        let mut comp = comp_with_cameras();
+        let (a, b, c) = (comp.layers[0].id, comp.layers[1].id, comp.layers[2].id);
+        // No parents yet: empty chains, but a self-parent is still a cycle.
+        assert!(layer_parent_chain(&comp, c).is_empty());
+        assert!(parenting_would_cycle(&comp, a, a));
+        // Build a <- b <- c (b parented to a, c parented to b).
+        comp.layers[1].parent = Some(a);
+        comp.layers[2].parent = Some(b);
+        assert_eq!(layer_parent_chain(&comp, b), vec![a]);
+        assert_eq!(layer_parent_chain(&comp, c), vec![b, a]);
+        // a may not adopt b or c (they descend from a) — that would loop.
+        assert!(parenting_would_cycle(&comp, a, b));
+        assert!(parenting_would_cycle(&comp, a, c));
+        // But c re-parenting straight to a is fine (still a DAG upward).
+        assert!(!parenting_would_cycle(&comp, c, a));
+    }
+
+    #[test]
+    fn set_layer_parent_op_round_trips_and_rejects_bad_parents() {
+        use crate::ops::{apply, Op, OpError};
+        let comp = comp_with_cameras();
+        let (a, b) = (comp.layers[0].id, comp.layers[1].id);
+        let comp_id = comp.id;
+        let mut doc = Document::new();
+        doc.items.push(ProjectItem::Composition(comp));
+
+        // Parenting b to a, then undoing with the returned inverse.
+        let set = Op::SetLayerParent {
+            comp: comp_id,
+            layer: b,
+            parent: Some(a),
+        };
+        let inv = apply(&mut doc, &set).expect("valid parent applies");
+        assert_eq!(doc.comp(comp_id).unwrap().layers[1].parent, Some(a));
+        assert_eq!(
+            inv,
+            Op::SetLayerParent {
+                comp: comp_id,
+                layer: b,
+                parent: None
+            }
+        );
+        apply(&mut doc, &inv).expect("inverse applies");
+        assert_eq!(doc.comp(comp_id).unwrap().layers[1].parent, None);
+
+        // With b parented to a again, a→b is a cycle; self and unknown also fail.
+        apply(&mut doc, &set).unwrap();
+        let cycle = Op::SetLayerParent {
+            comp: comp_id,
+            layer: a,
+            parent: Some(b),
+        };
+        assert_eq!(apply(&mut doc, &cycle), Err(OpError::InvalidParent));
+        let self_parent = Op::SetLayerParent {
+            comp: comp_id,
+            layer: a,
+            parent: Some(a),
+        };
+        assert_eq!(apply(&mut doc, &self_parent), Err(OpError::InvalidParent));
+        let unknown = Op::SetLayerParent {
+            comp: comp_id,
+            layer: a,
+            parent: Some(Uuid::now_v7()),
+        };
+        assert_eq!(apply(&mut doc, &unknown), Err(OpError::InvalidParent));
     }
 }

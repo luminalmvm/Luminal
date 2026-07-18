@@ -867,3 +867,21 @@ layer and switches to its composition. It is the simple tree form of the AE comp
 flowchart; the full node-graph flowchart (the same deferred `egui_node_graph`-style view the
 radial menu wants) grows from it. Both count as modals/panels that suppress the active-panel
 focus edge while a modal is open, reusing the K-098 modal-gating.
+
+**K-103 · DECIDED · Layer parenting (AE-style transform inheritance) — foundation first.**
+`Layer` gains `parent: Option<Uuid>` (serde default `None`, so every existing project and
+layer is byte-for-byte unchanged; a missing/deleted/cyclic parent degrades to "no parent" at
+render time, the same invariant as `matte`). `Op::SetLayerParent { comp, layer, parent }`
+sets or clears it, rejecting a self-parent, a parent not in the comp, or one that would form
+a cycle (`OpError::InvalidParent`), with cycle-safety in two pure, tested helpers
+(`model::layer_parent_chain`, `model::parenting_would_cycle`). This entry lands the **model +
+op + validation** only; the transform is not yet inherited at render time. The render wiring
+is planned to reuse the existing, proven primitives — `lumit_gpu::place_matrix` +
+`concat_place` + the `CompLayerDraw.pre` field that precomp-collapse already uses — via a
+shared parent-chain world-placement helper called by BOTH `draws.rs` (`build_comp_draws`,
+preview) and `export.rs` (`render_comp_linear`, export) so preview/export parity holds
+(K-031), gated on `parent.is_some()` so unparented layers keep their exact current path.
+v1 scope composes the 2D affine (position/anchor/scale/rotation); inheriting the 2.5D axes
+(`position_z`, `rotation_x/y`) is a follow-up. UI: a Parent picker in the layer's inspector
+rows. Staged deliberately so the safe, fully-tested foundation ships before the render-path
+change, which is best verified visually with the owner present.

@@ -386,6 +386,14 @@ Two mechanisms make this safe, and you'll see them by name in the code:
 - `crates/lumit-core/src/ops.rs` — **Every possible edit, as data.** An edit is an `Op`
   (AddLayer, SetLayerSpan…). Applying an op returns its exact inverse — that pair is what
   makes undo *provably* correct instead of hopefully correct.
+- **Layer parenting** (K-103, groundwork) — a layer can name another layer as its **parent**,
+  so moving the parent carries the child with it (the After Effects null-object rig). This
+  first step adds the data (`Layer.parent`) and the edit (`SetLayerParent`, which refuses a
+  parent that would make a loop, checked by a small tested helper), all invisible for now:
+  every layer starts with no parent, so nothing renders differently yet. The next steps make
+  the picture actually follow the parent, and add a "Parent" chooser to the layer's controls —
+  kept separate so the safe, well-tested groundwork lands before the part that changes what
+  you see on screen.
 - `crates/lumit-core/src/anim.rs` — **the keyframe engine.** Between two keyframes the
   value follows a bezier curve shaped by AE-style *speed* (units per second) and
   *influence* (how far each handle reaches). The subtle part: the curve is parametric, so

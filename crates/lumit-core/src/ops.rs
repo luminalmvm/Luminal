@@ -22,6 +22,8 @@ pub enum OpError {
     BadIndex,
     #[error("invalid span: out point must be after in point")]
     InvalidSpan,
+    #[error("invalid parent: would form a cycle, self-parent, or unknown layer")]
+    InvalidParent,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -138,6 +140,14 @@ pub enum Op {
         comp: Uuid,
         layer: Uuid,
         matte: Option<MatteRef>,
+    },
+    /// Point a layer at another layer as its transform parent (or clear it,
+    /// with `None`). A self-parent or a parent that would form a cycle, or a
+    /// parent not in the comp, is rejected (`OpError::InvalidParent`).
+    SetLayerParent {
+        comp: Uuid,
+        layer: Uuid,
+        parent: Option<Uuid>,
     },
     /// Replace one transform property's whole animation (static or keyframed).
     /// Coarse-grained on purpose: trivially invertible; per-keyframe ops
@@ -497,6 +507,37 @@ pub fn apply(doc: &mut Document, op: &Op) -> Result<Op, OpError> {
                 comp: *comp,
                 layer: *layer,
                 matte: previous,
+            })
+        }
+        Op::SetLayerParent {
+            comp,
+            layer,
+            parent,
+        } => {
+            let c = doc.comp_mut(*comp).ok_or(OpError::UnknownComp)?;
+            // Validate against the current comp before mutating: the target
+            // layer must exist, and a Some(parent) must be a different, real
+            // layer that does not already descend from `layer` (no cycle).
+            if !c.layers.iter().any(|l| l.id == *layer) {
+                return Err(OpError::UnknownLayer);
+            }
+            if let Some(p) = parent {
+                if !c.layers.iter().any(|l| l.id == *p)
+                    || crate::model::parenting_would_cycle(c, *layer, *p)
+                {
+                    return Err(OpError::InvalidParent);
+                }
+            }
+            let l = c
+                .layers
+                .iter_mut()
+                .find(|l| l.id == *layer)
+                .ok_or(OpError::UnknownLayer)?;
+            let previous = std::mem::replace(&mut l.parent, *parent);
+            Ok(Op::SetLayerParent {
+                comp: *comp,
+                layer: *layer,
+                parent: previous,
             })
         }
         Op::SetTransformProperty {
