@@ -912,9 +912,29 @@ impl Renderer<'_> {
         if !layer.switches.fx || layer.effects.is_empty() {
             return tex;
         }
+        // This layer's effects (docs/08 §3.25): hold this layer's own stack on
+        // the posterised grid when it carries a *This layer* Posterize, else `lt`
+        // unchanged — the identical held time the preview's build_comp_draws
+        // derives (K-031). Fed as the sample time to resolve_stack_temporal, so a
+        // sample_temporally == false effect still resolves at the true layer time
+        // `lt` (§5); with no this-layer Posterize this is byte-identical to
+        // resolve_stack.
         // Export renders at full resolution: px@comp parameters are already
         // raster pixels (§2.3 factor 1).
-        let resolved = lumit_core::fx::resolve_stack(&layer.effects, lt, comp_diag, 1.0, markers);
+        let effect_lt = lumit_core::fx::this_layer_effect_time(
+            &layer.effects,
+            layer.switches.fx,
+            lt,
+            layer.start_offset.0.to_f64(),
+        );
+        let resolved = lumit_core::fx::resolve_stack_temporal(
+            &layer.effects,
+            effect_lt,
+            lt,
+            comp_diag,
+            1.0,
+            markers,
+        );
         let (w, h) = (tex.width(), tex.height());
         // The motion field must match the texture it smears (both are the
         // full-resolution source); a mismatch degrades to a passthrough.
@@ -1313,9 +1333,20 @@ impl Renderer<'_> {
                 let lt = t - l.start_offset.0.to_f64();
                 let fx = if l.switches.fx {
                     // The §1.4 marker context, built by the same shared
-                    // constructor preview uses (K-031).
+                    // constructor preview uses (K-031). A *This layer* Posterize
+                    // on an adjustment holds the adjustment's own stack on the
+                    // grid (docs/08 §3.25); effect_lt == lt with none, so this is
+                    // byte-identical to resolve_stack then.
                     let markers = lumit_core::fx::MarkerContext::for_layer(comp, l);
-                    lumit_core::fx::resolve_stack(&l.effects, lt, comp_diag, 1.0, &markers)
+                    let effect_lt = lumit_core::fx::this_layer_effect_time(
+                        &l.effects,
+                        l.switches.fx,
+                        lt,
+                        l.start_offset.0.to_f64(),
+                    );
+                    lumit_core::fx::resolve_stack_temporal(
+                        &l.effects, effect_lt, lt, comp_diag, 1.0, &markers,
+                    )
                 } else {
                     Vec::new()
                 };

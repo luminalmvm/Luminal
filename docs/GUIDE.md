@@ -209,8 +209,12 @@ Two mechanisms make this safe, and you'll see them by name in the code:
   Motion blur effect's job), so Posterize quantises the *movement and effects*, not the video
   playback; and a couple of exotic combinations (an echo *inside* the held part, or Posterize
   buried in a collapsed precomp) quietly do nothing rather than risk a wrong picture. There is
-  a Scope switch for a per-layer version ("just this layer's own effects") that is the next
-  small step — the maths and the switch are already in place.
+  also a Scope switch for a per-layer version, "just this layer's own effects": drop Posterize
+  onto a normal layer and set that scope, and only *that layer's effects* go choppy on the grid
+  — the layer keeps moving smoothly, but its blur, glow, glitch and so on step in time. It needs
+  no re-render of the rest of the scene at all: the layer simply reads a "held" clock for its
+  own effect stack while its position and picture read the live one. That is why it is the
+  cheap, simple cousin of the whole-scene version.
 - **"Don't re-sample this effect" — a per-effect opt-out for the choppy passes.** When
   Posterize time (and, soon, accumulation motion blur) re-renders the scene at a *different*
   moment, it normally re-runs everything at that moment. But some effects are expensive or

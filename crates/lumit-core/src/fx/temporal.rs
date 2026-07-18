@@ -38,6 +38,33 @@ pub fn posterize_held_time(t: f64, rate: f64, phase: f64) -> f64 {
     ((t - phase) * rate).floor() / rate + phase
 }
 
+/// The layer time a *This layer's effects* Posterize Time holds this layer's
+/// own effect stack at (docs/08 §3.25): the coarse-grid held time in the layer's
+/// own time base. Returns `lt` unchanged when the stack has no live Posterize or
+/// its scope is *Everything below* (that scope re-renders the layers beneath
+/// instead — the adjustment path, not this per-layer time substitution). `lt` is
+/// the layer time the stack would otherwise resolve at and `start_offset` is the
+/// layer's own offset, so the hold is computed on the comp time `lt +
+/// start_offset` (matching the *Everything below* path, which holds on comp
+/// time) and mapped back into the layer's base. Only the effect stack is held —
+/// the caller keeps the layer's transform and source live, so the effects step
+/// on the grid while the layer itself moves smoothly. Pure and deterministic, so
+/// the preview and export derive the identical held time (K-031); shared by both
+/// so a *This layer's effects* frame is identical in the viewport and the file.
+pub fn this_layer_effect_time(
+    effects: &[EffectInstance],
+    fx_on: bool,
+    lt: f64,
+    start_offset: f64,
+) -> f64 {
+    match stack_posterize(effects, fx_on, lt) {
+        Some(p) if p.scope == PosterizeScope::ThisLayer => {
+            posterize_held_time(lt + start_offset, p.rate, p.phase) - start_offset
+        }
+        _ => lt,
+    }
+}
+
 /// The first enabled built-in Posterize Time effect in a live stack, resolved
 /// at layer time `lt`. None when the stack is bypassed or carries none — so a
 /// layer with no Posterize pays nothing and renders normally. A stack with more

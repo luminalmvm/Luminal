@@ -50,8 +50,13 @@ helper so a preview frame equals an export frame (K-031), exactly as `render_lay
 - Held time `τ = floor((t − phase)·rate)/rate + phase`.
 - **Everything below**: `render_below_at(…, τ)` — the adjustment path.
 - **This layer's effects**: no re-render of others; the layer the effect sits on evaluates its
-  own source + effect stack at `τ` instead of `t` (a per-layer time substitution feeding its
-  own stack). Simpler; no orchestration re-entry.
+  own effect stack at `τ` instead of `t` (a per-layer time substitution feeding its own stack),
+  its transform and source staying live. Simpler; no orchestration re-entry. **Landed (K-133):**
+  `this_layer_effect_time(effects, fx_on, lt, start_offset)` returns the held layer time (the
+  grid computed on comp time `lt + start_offset`, mapped back) for a *This layer* Posterize and
+  `lt` unchanged otherwise; both `build_comp_draws_at` (preview) and export's `apply_fx` feed it
+  to `resolve_stack_temporal` as the sample time (so `sample_temporally == false` still holds at
+  the live `lt`), so the two are identical (K-031).
 
 ## 5. Per-effect "don't sample" flag (owner request)
 `EffectInstance` gains `#[serde(default = "default_true")] sample_temporally: bool`. During a
@@ -81,7 +86,8 @@ share a key — the deduplication that makes it cheap). No new non-determinism.
    prove preview == export on a still scene first (a re-render at the same `t` must be
    bit-identical to no re-render).
 2. Posterize Time, *Everything below* scope (one render at `τ`) — the simplest consumer.
-3. `EffectInstance.sample_temporally` (landed, K-132) + Posterize Time *this-layer* scope.
+3. `EffectInstance.sample_temporally` (landed, K-132) + Posterize Time *this-layer* scope
+   (landed, K-133).
 4. Accumulation MB (N samples + the additive average) on top of (1).
 Each step is a K-decision + docs/08 section + oracle/parity test where one applies (these have
 no per-pixel oracle; the test is a still-scene identity + a moving-scene coverage check, as

@@ -58,6 +58,51 @@ fn stack_posterize_detects_and_resolves() {
     assert!(stack_posterize(std::slice::from_ref(&blur), true, 0.0).is_none());
 }
 
+// this_layer_effect_time (docs/08 §3.25): a *This layer's effects* Posterize
+// holds this layer's own stack on the coarse grid, while *Everything below*, a
+// plain stack, or a bypassed one leave the layer time untouched (that scope
+// re-renders the layers beneath instead).
+#[test]
+fn this_layer_effect_time_holds_only_the_this_layer_scope() {
+    let mut e = instantiate("posterize_time").unwrap();
+    for p in &mut e.params {
+        match p.id.as_str() {
+            "rate" => p.value = EffectValue::Float(Property::fixed(10.0)),
+            "scope" => p.value = EffectValue::Choice(1), // This layer's effects
+            _ => {}
+        }
+    }
+    // 10 fps grid, no offset: t = 0.35 holds at 0.3.
+    assert!((this_layer_effect_time(std::slice::from_ref(&e), true, 0.35, 0.0) - 0.3).abs() < 1e-9);
+    // The hold is computed on comp time `lt + start_offset` and mapped back, so a
+    // layer offset by 1.0s still lands its held effects on the same comp grid:
+    // held comp time floor(3.5)/10 = 0.3, minus the offset → -0.7.
+    assert!(
+        (this_layer_effect_time(std::slice::from_ref(&e), true, -0.65, 1.0) - (-0.7)).abs() < 1e-9
+    );
+    // Everything below leaves the layer time untouched (its re-render is the
+    // adjustment path, not a per-layer substitution).
+    for p in &mut e.params {
+        if p.id == "scope" {
+            p.value = EffectValue::Choice(0);
+        }
+    }
+    assert_eq!(
+        this_layer_effect_time(std::slice::from_ref(&e), true, 0.35, 0.0),
+        0.35
+    );
+    // Bypassed or plain stacks are untouched too.
+    assert_eq!(
+        this_layer_effect_time(std::slice::from_ref(&e), false, 0.35, 0.0),
+        0.35
+    );
+    let blur = instantiate("blur").unwrap();
+    assert_eq!(
+        this_layer_effect_time(std::slice::from_ref(&blur), true, 0.35, 0.0),
+        0.35
+    );
+}
+
 // A Posterize Time effect has no per-pixel op: it must resolve to nothing (it is
 // executed at the orchestration layer, not in run_ops), exactly like a
 // placeholder — so it never reaches a kernel.

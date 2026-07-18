@@ -345,6 +345,18 @@ pub(crate) fn build_comp_draws_at(
         // held/sub-frame re-render must not re-sample (docs/impl/
         // temporal-rerender.md §5). Equal to `lt` on an ordinary render.
         let frame_lt = frame_t - layer.start_offset.0.to_f64();
+        // This layer's effects (docs/08 §3.25): a Posterize time scoped to *this
+        // layer* holds this layer's OWN effect stack on the coarse grid — its
+        // effects sample the held time while the transform and source below stay
+        // live. Fed to resolve_stack_temporal as the *sample* time, so a
+        // sample_temporally == false effect still holds at the true playhead
+        // (§5); equal to `lt` when the stack has no this-layer Posterize.
+        let effect_lt = lumit_core::fx::this_layer_effect_time(
+            &layer.effects,
+            layer.switches.fx,
+            lt,
+            layer.start_offset.0.to_f64(),
+        );
         let tr = &layer.transform;
 
         let (source, natural) = match &layer.kind {
@@ -452,7 +464,7 @@ pub(crate) fn build_comp_draws_at(
                     let markers = lumit_core::fx::MarkerContext::for_layer(comp, layer);
                     lumit_core::fx::resolve_stack_temporal(
                         &layer.effects,
-                        lt,
+                        effect_lt,
                         frame_lt,
                         comp_diag,
                         1.0,
@@ -633,7 +645,7 @@ pub(crate) fn build_comp_draws_at(
                 let markers = lumit_core::fx::MarkerContext::for_layer(comp, layer);
                 lumit_core::fx::resolve_stack_temporal(
                     &layer.effects,
-                    lt,
+                    effect_lt,
                     frame_lt,
                     comp_diag * scale,
                     scale,
@@ -1223,6 +1235,84 @@ mod render_below_at_tests {
         assert!(
             (radius - 0.30 * diag).abs() > 5.0,
             "blur must NOT sample the held time 0.30; got {radius}"
+        );
+    }
+
+    // docs/08 §3.25: a Posterize time scoped to *This layer's effects* holds only
+    // the layer's OWN effect stack on the coarse grid — no re-render of others,
+    // no adjustment (no orchestration re-entry). The text carries a blur (radius
+    // ramps 0%→100% over a second) and a 10 fps this-layer Posterize; at t = 0.35
+    // its transform stays live (x = 35) while the blur resolves at the held time
+    // 0.3 (30% of the diagonal), not 0.35. GPU-free structural check.
+    #[test]
+    fn this_layer_posterize_holds_the_layers_own_effects_but_not_its_transform() {
+        let mut text = text_layer(0.0);
+        text.transform.position_x = ramp(0.0, 100.0); // x = 100·t (stays live)
+        let mut blur = lumit_core::fx::instantiate("blur").unwrap();
+        for p in &mut blur.params {
+            if p.id == "radius" {
+                p.value = lumit_core::model::EffectValue::Float(ramp(0.0, 100.0));
+                // % = 100·t
+            }
+        }
+        let mut post = lumit_core::fx::instantiate("posterize_time").unwrap();
+        for p in &mut post.params {
+            match p.id.as_str() {
+                "rate" => p.value = lumit_core::model::EffectValue::Float(Property::fixed(10.0)),
+                // 1 = This layer's effects.
+                "scope" => p.value = lumit_core::model::EffectValue::Choice(1),
+                _ => {}
+            }
+        }
+        text.effects = vec![blur, post];
+        let comp = Composition {
+            id: Uuid::now_v7(),
+            name: "c".into(),
+            width: 320,
+            height: 180,
+            frame_rate: FrameRate::new(30, 1).unwrap(),
+            duration: Duration(Rational::new(10, 1).unwrap()),
+            background: LinearColour([0.1, 0.1, 0.1, 1.0]),
+            work_area: None,
+            layers: vec![text],
+            markers: Vec::new(),
+            motion_blur: Default::default(),
+            extra: serde_json::Map::new(),
+        };
+        let doc = Document::new();
+        let pixels: HashMap<Uuid, &crate::app_state::preview::CompLayerPixels> = HashMap::new();
+        let mut visited = vec![comp.id];
+        let draws = build_comp_draws(&doc, &comp, 0.35, &pixels, &mut visited);
+        let d = draws
+            .iter()
+            .find(|d| !matches!(d.source, DrawSource::Adjust))
+            .expect("the text layer draws");
+        // The transform stays at the playhead — only the effects are held.
+        assert!(
+            (d.position.0 - 35.0).abs() < 0.01,
+            "transform live at t = 0.35 (x = 35); got {}",
+            d.position.0
+        );
+        // The blur resolves at the held time 0.3 (30% of diag), not 0.35.
+        let diag = ((comp.width as f32).powi(2) + (comp.height as f32).powi(2)).sqrt();
+        let radius = match d.fx.first() {
+            Some(lumit_core::fx::Resolved::Blur { radius_px, .. }) => *radius_px,
+            other => panic!("expected a blur op, got {other:?}"),
+        };
+        assert!(
+            (radius - 0.30 * diag).abs() < 0.5,
+            "blur held at the grid time 0.3 ({}); got {radius}",
+            0.30 * diag
+        );
+        assert!(
+            (radius - 0.35 * diag).abs() > 5.0,
+            "blur must NOT resolve at the live time 0.35; got {radius}"
+        );
+        // The Posterize itself has no per-pixel op — only the blur survives.
+        assert_eq!(
+            d.fx.len(),
+            1,
+            "posterize resolves to nothing; only the blur"
         );
     }
 

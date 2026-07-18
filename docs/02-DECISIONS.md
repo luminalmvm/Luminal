@@ -1379,3 +1379,18 @@ layer's own stack resolves through `resolve_stack_temporal`. Preview and export 
 threaded path, so they stay identical (K-031). The after-effects matte/depth sources keep their
 own K-125 temporal boundary. Concurrent-worktree risk: another agent may also claim K-132 —
 renumber on merge if so. Built in an isolated worktree; not pushed.
+
+**K-133 · DECIDED · Posterize time *This layer's effects* scope ships: a per-layer effect-time
+hold (docs/08 §3.25, docs/impl/temporal-rerender.md §4).** The second Posterize scope holds only
+the layer's **own effect stack** on the coarse grid — its transform and source stay live, so
+the layer moves smoothly while its effect animation steps. No re-render of other layers, no
+orchestration re-entry (the simple cousin of *Everything below*). The held effect time is
+`lumit_core::fx::this_layer_effect_time(effects, fx_on, lt, start_offset)` — the grid computed
+on comp time `lt + start_offset` (matching *Everything below*'s comp-time hold), mapped back
+into the layer's own base, and `lt` unchanged when the stack has no live *This layer* Posterize.
+Both `build_comp_draws_at` (preview) and export's `apply_fx` compute it and feed it to
+`resolve_stack_temporal` as the sample time (with `lt` as the frame time, so a
+`sample_temporally == false` effect still resolves at the live playhead, K-132), so preview
+equals export (K-031). With no this-layer Posterize this is byte-identical to the previous
+`resolve_stack`, so ordinary layers are unchanged. Concurrent-worktree risk: another agent may
+also claim K-133 — renumber on merge if so. Built in an isolated worktree; not pushed.

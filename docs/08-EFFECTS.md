@@ -1023,10 +1023,15 @@ rather than filters, it lives at the frame-orchestration layer — detected wher
 **Scope.** *Everything below* is **adjustment behaviour**: the composite of everything beneath
 the effect's adjustment layer re-renders at `held_t` and is laid back over the live composite
 by the adjustment's coverage (its mask × opacity), so the owner's global "posterise the whole
-scene" pass is simply the effect on a full-frame adjustment layer. *This layer's effects*
-holds only the layer's own source + stack at `held_t` (a per-layer time substitution feeding
-its own stack) — the AE per-layer form. (v1 ships *Everything below*; *This layer's effects* is
-the immediate follow-up — the schema, scope choice and held-time maths are already in place.)
+scene" pass is simply the effect on a full-frame adjustment layer. *This layer's effects* holds
+only the layer's own **effect stack** at `held_t` (a per-layer time substitution — no
+re-render of others, no orchestration re-entry): the effects step on the coarse grid while the
+layer's **transform and source stay live**, so the layer moves smoothly but its effect
+animation is choppy — the AE per-layer form. The held effect time is
+`lumit_core::fx::this_layer_effect_time` (the grid computed on comp time, mapped into the
+layer's own base), fed to `resolve_stack_temporal` as the sample time so a
+`sample_temporally == false` effect still resolves at the live playhead. Both scopes ship in
+v1.
 
 **Determinism & cache.** `held_t` is a pure function of `t`, `rate` and `phase`, so many
 frames share it and re-render identically; the frame key folds the effect's parameters, and
