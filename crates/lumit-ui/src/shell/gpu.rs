@@ -90,6 +90,13 @@ pub struct CompLayerDraw {
     /// ops — the caller loads each path and passes the parallel `luts` to
     /// `run_ops`. No GPU work happens here; these are just the strings.
     pub lut_files: Vec<Option<String>>,
+    /// Per-layer motion-blur sub-frame placements (docs/06 §4, K-120): the
+    /// layer's own transform re-evaluated across the open shutter. Empty unless
+    /// the comp master and the layer switch are both on (and samples ≥ 2), in
+    /// which case the compositor draws the layer's SAME texture at each of
+    /// these and averages them into one smeared layer; the single-placement
+    /// fields above stay the frame-time (k=0-ish) representative placement.
+    pub mb: Vec<lumit_gpu::MbSample>,
 }
 
 /// GPU display path (slice 5 completion): decoded sRGB bytes → linear fp16
@@ -392,6 +399,30 @@ impl GpuViewer {
             linear_textures.push(tex);
         }
         let cam_mat = camera.map(|pose| crate::export::camera_mat(width, height, pose));
+        // Per-layer motion blur (docs/06 §4, K-120): a blurring layer's
+        // fx-processed texture is drawn at each sub-frame placement and
+        // averaged into one comp-sized smear by the shared helper both preview
+        // and export call (K-031). The layer's real blend/opacity/matte/mask
+        // then apply once to the averaged image, at the 1:1 composite below.
+        let mb_textures: Vec<Option<egui_wgpu::wgpu::Texture>> = linear_textures
+            .iter()
+            .zip(layers)
+            .map(|(tex, l)| {
+                (!l.mb.is_empty()).then(|| {
+                    self.compositor.motion_blur_average(
+                        &self.ctx,
+                        width,
+                        height,
+                        tex,
+                        l.natural_size,
+                        &l.mb,
+                        l.three_d,
+                        l.pre,
+                        cam_mat,
+                    )
+                })
+            })
+            .collect();
         // Layer-space mask textures (Precomp masks — GPU mask pass).
         let mask_textures: Vec<Option<egui_wgpu::wgpu::Texture>> = layers
             .iter()
@@ -443,29 +474,53 @@ impl GpuViewer {
             .zip(layers)
             .zip(&matte_textures)
             .zip(&mask_textures)
-            .map(
-                |(((texture, l), matte_tex), mask_tex)| lumit_gpu::CompositeLayer {
-                    texture,
-                    size: l.natural_size,
-                    position: l.position,
-                    anchor: l.anchor,
-                    scale: l.scale,
-                    rotation_deg: l.rotation_deg,
-                    opacity: l.opacity,
-                    z: l.z,
-                    rotation_x_deg: l.rotation_x_deg,
-                    rotation_y_deg: l.rotation_y_deg,
-                    three_d: l.three_d,
-                    matte: matte_tex.as_ref().map(|mt| lumit_gpu::MatteInput {
-                        texture: mt,
-                        luma: l.matte.as_ref().is_some_and(|m| m.luma),
-                        inverted: l.matte.as_ref().is_some_and(|m| m.inverted),
-                    }),
-                    blend: l.blend,
-                    layer_mask: mask_tex.as_ref(),
-                    pre: l.pre,
-                },
-            )
+            .zip(&mb_textures)
+            .map(|((((texture, l), matte_tex), mask_tex), mb_tex)| {
+                let matte = matte_tex.as_ref().map(|mt| lumit_gpu::MatteInput {
+                    texture: mt,
+                    luma: l.matte.as_ref().is_some_and(|m| m.luma),
+                    inverted: l.matte.as_ref().is_some_and(|m| m.inverted),
+                });
+                match mb_tex {
+                    // Motion-blurred: composite the averaged comp-sized smear
+                    // 1:1 (identity placement), the layer's real blend, opacity,
+                    // matte and mask applied once to the averaged image.
+                    Some(avg) => lumit_gpu::CompositeLayer {
+                        texture: avg,
+                        size: (width as f32, height as f32),
+                        position: (0.0, 0.0),
+                        anchor: (0.0, 0.0),
+                        scale: (100.0, 100.0),
+                        rotation_deg: 0.0,
+                        opacity: l.opacity,
+                        z: 0.0,
+                        rotation_x_deg: 0.0,
+                        rotation_y_deg: 0.0,
+                        three_d: false,
+                        matte,
+                        blend: l.blend,
+                        layer_mask: mask_tex.as_ref(),
+                        pre: None,
+                    },
+                    None => lumit_gpu::CompositeLayer {
+                        texture,
+                        size: l.natural_size,
+                        position: l.position,
+                        anchor: l.anchor,
+                        scale: l.scale,
+                        rotation_deg: l.rotation_deg,
+                        opacity: l.opacity,
+                        z: l.z,
+                        rotation_x_deg: l.rotation_x_deg,
+                        rotation_y_deg: l.rotation_y_deg,
+                        three_d: l.three_d,
+                        matte,
+                        blend: l.blend,
+                        layer_mask: mask_tex.as_ref(),
+                        pre: l.pre,
+                    },
+                }
+            })
             .collect();
         self.compositor.composite_seeded(
             &self.ctx,

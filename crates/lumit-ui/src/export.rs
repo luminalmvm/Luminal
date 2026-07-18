@@ -951,6 +951,40 @@ impl Renderer<'_> {
             }
         }
 
+        // Per-layer motion blur (docs/06 §4, K-120): a blurring layer's
+        // prepared texture is averaged across its sub-frame placements by the
+        // exact helper the preview calls, from the exact same sample times
+        // (crate::shell::motion_blur_samples), so the two smear identically
+        // (K-031). Stored owned so each averaged texture outlives the borrows
+        // in `draws`. Collapsed Precomp inner layers are excluded to match the
+        // preview splice (they never reach `prepared`).
+        let mut mb_avg: HashMap<Uuid, Tex> = HashMap::new();
+        for l in &comp.layers {
+            if !l.switches.motion_blur {
+                continue;
+            }
+            let Some(p) = prepared.get(&l.id) else {
+                continue;
+            };
+            let samples = crate::shell::motion_blur_samples(comp, l, t);
+            if samples.is_empty() {
+                continue;
+            }
+            let pre = crate::shell::parent_world_placement(comp, l, t);
+            let avg = self.compositor.motion_blur_average(
+                self.gpu,
+                comp.width,
+                comp.height,
+                &p.tex,
+                p.natural,
+                &samples,
+                l.switches.three_d,
+                pre,
+                camera,
+            );
+            mb_avg.insert(l.id, avg);
+        }
+
         // Matte textures: the matte layer rendered alone into comp space.
         let mut matte_tex: HashMap<Uuid, Tex> = HashMap::new();
         for l in comp.layers.iter().filter(|l| l.switches.visible) {
@@ -1103,6 +1137,36 @@ impl Renderer<'_> {
             };
             let lt = t - l.start_offset.0.to_f64();
             let tr = &l.transform;
+            let matte = l.matte.as_ref().and_then(|mr| {
+                matte_tex.get(&l.id).map(|mt| lumit_gpu::MatteInput {
+                    texture: mt,
+                    luma: matches!(mr.channel, MatteChannel::Luma),
+                    inverted: mr.inverted,
+                })
+            });
+            // Motion-blurred: composite the averaged comp-sized smear 1:1
+            // (identity placement), the layer's real blend, opacity, matte and
+            // mask applied once to the averaged image (docs/06 §4, K-120).
+            if let Some(avg) = mb_avg.get(&l.id) {
+                draws.push(lumit_gpu::CompositeLayer {
+                    texture: avg,
+                    size: (comp.width as f32, comp.height as f32),
+                    position: (0.0, 0.0),
+                    anchor: (0.0, 0.0),
+                    scale: (100.0, 100.0),
+                    rotation_deg: 0.0,
+                    opacity: tr.opacity.value_at(lt) as f32,
+                    z: 0.0,
+                    rotation_x_deg: 0.0,
+                    rotation_y_deg: 0.0,
+                    three_d: false,
+                    matte,
+                    blend: blend_of(l.blend),
+                    layer_mask: p.mask.as_ref(),
+                    pre: None,
+                });
+                continue;
+            }
             draws.push(lumit_gpu::CompositeLayer {
                 texture: &p.tex,
                 size: p.natural,
@@ -1124,13 +1188,7 @@ impl Renderer<'_> {
                 rotation_x_deg: tr.rotation_x.value_at(lt) as f32,
                 rotation_y_deg: tr.rotation_y.value_at(lt) as f32,
                 three_d: l.switches.three_d,
-                matte: l.matte.as_ref().and_then(|mr| {
-                    matte_tex.get(&l.id).map(|mt| lumit_gpu::MatteInput {
-                        texture: mt,
-                        luma: matches!(mr.channel, MatteChannel::Luma),
-                        inverted: mr.inverted,
-                    })
-                }),
+                matte,
                 blend: blend_of(l.blend),
                 layer_mask: p.mask.as_ref(),
                 pre: crate::shell::parent_world_placement(comp, l, t),

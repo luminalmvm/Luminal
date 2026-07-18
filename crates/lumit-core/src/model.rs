@@ -127,6 +127,33 @@ impl Default for MotionBlur {
     }
 }
 
+impl MotionBlur {
+    /// The sub-frame sample offsets, in *frames*, across the open shutter
+    /// (docs/06 §4, K-120). For `samples` = N the k-th midpoint offset is
+    /// `phase_frac + (k + 0.5)/N · open_frac`, where `open_frac =
+    /// shutter_angle/360` and `phase_frac = shutter_phase/360` — the shutter
+    /// centres of N equal slices. A caller turns each offset into a comp-time
+    /// sample by adding `t_comp + offset · dt` (dt = one frame in comp
+    /// seconds). The AE defaults (angle 180, phase −90) give a window centred
+    /// on the frame, spanning [−0.25, +0.25] frame.
+    ///
+    /// Empty unless the comp master is on and `samples` ≥ 2 (a single sample
+    /// is no blur), so a caller can treat a non-empty result as "this comp
+    /// blurs" without re-checking. Deterministic and side-effect free, so
+    /// preview and export derive identical sample times from it (K-031).
+    pub fn sample_offsets(&self) -> Vec<f64> {
+        if !self.enabled || self.samples < 2 {
+            return Vec::new();
+        }
+        let n = self.samples;
+        let open_frac = self.shutter_angle / 360.0;
+        let phase_frac = self.shutter_phase / 360.0;
+        (0..n)
+            .map(|k| phase_frac + (f64::from(k) + 0.5) / f64::from(n) * open_frac)
+            .collect()
+    }
+}
+
 /// Layer transform (docs/03-DATA-MODEL.md §6; 2.5D fields join with the
 /// camera work — all maths is 4x4 from day one at the evaluator level).
 /// Dimensions are separated scalars in Phase 1 (AE's separated-dimensions
@@ -890,6 +917,46 @@ mod tests {
         assert_eq!(comp.motion_blur, MotionBlur::default());
         // And a layer without the `motion_blur` switch defaults it off.
         assert!(!Switches::default().motion_blur);
+    }
+
+    #[test]
+    fn motion_blur_sample_offsets_are_centred_and_span_the_shutter() {
+        // Off, or fewer than two samples, is no blur (empty offsets).
+        assert!(MotionBlur::default().sample_offsets().is_empty());
+        let mut one = MotionBlur {
+            enabled: true,
+            samples: 1,
+            ..MotionBlur::default()
+        };
+        assert!(one.sample_offsets().is_empty());
+        one.samples = 0;
+        assert!(one.sample_offsets().is_empty());
+
+        // AE defaults (angle 180, phase −90) with N=4: four slice centres of
+        // the half-frame window, symmetric about the frame time (0).
+        let mb = MotionBlur {
+            enabled: true,
+            shutter_angle: 180.0,
+            shutter_phase: -90.0,
+            samples: 4,
+        };
+        let offs = mb.sample_offsets();
+        assert_eq!(offs.len(), 4);
+        // open_frac = 0.5, phase_frac = −0.25 → −0.25 + (k+0.5)/4·0.5.
+        let expect = [-0.1875, -0.0625, 0.0625, 0.1875];
+        for (got, want) in offs.iter().zip(expect) {
+            assert!((got - want).abs() < 1e-12, "{got} vs {want}");
+        }
+        // Centred: the mean offset is the frame time, and the set is symmetric.
+        let mean: f64 = offs.iter().sum::<f64>() / offs.len() as f64;
+        assert!(mean.abs() < 1e-12, "mean {mean}");
+        for (lo, hi) in offs.iter().zip(offs.iter().rev()) {
+            assert!((lo + hi).abs() < 1e-12);
+        }
+        // The window spans exactly the open shutter (angle/360 of a frame).
+        let span = offs.last().unwrap() - offs.first().unwrap();
+        let slice = 0.5 / 4.0; // one sample sits half a slice in from each edge
+        assert!((span - (0.5 - slice)).abs() < 1e-12, "span {span}");
     }
 
     #[test]

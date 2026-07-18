@@ -656,6 +656,22 @@ Two mechanisms make this safe, and you'll see them by name in the code:
   light — a test proves the result differs from the naive approach by exactly the amount
   physics predicts. This is the beginning of the evaluator: the thing that will one day
   render whole comps with effects.
+  **Per-layer motion blur** lives here too (`motion_blur_average`). Turn the composition's
+  motion-blur master on and flip a layer's motion-blur switch, and that layer is drawn not
+  once but many times — its *same* picture, nudged to where the layer sat at a spread of
+  instants across the "shutter" (a slice of the frame, 180° = half a frame by default) —
+  and those copies are averaged. A still layer averages back to itself exactly; a
+  fast-moving one turns into a translucent smear along its path, thinning out where it only
+  passed briefly, which is what real motion blur looks like. The averaging adds the copies
+  up (each at 1/N strength) including their transparency, so a covered patch stays solid
+  and a half-covered one goes half-transparent — a plain "Add" blend would wrongly keep
+  transparency high, so there's a dedicated add-everything blend just for this. The layer's
+  real blend mode, opacity, matte and mask are applied *once*, to the finished smear, not to
+  each copy. Crucially the Viewer and the file export call this one shared routine with the
+  same sub-frame instants, so a blurred preview and a blurred export match (K-031). Two
+  follow-ups are noted in the code: a layer that blurs because its *parent* moves isn't
+  covered yet (only the layer's own motion is sampled), and an inner layer of a
+  *collapsed* precomp doesn't blur (so the Viewer and export can't disagree about it).
 - `crates/lumit-gpu/src/oklab.rs` — **perceptual colour.** Two colour worlds, two jobs:
   linear RGB is where *light* combines correctly (layering, glow, exposure), and Oklab is
   where *perception* behaves — a gradient interpolated in Oklab stays vivid where an RGB
