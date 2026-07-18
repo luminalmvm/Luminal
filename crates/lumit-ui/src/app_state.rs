@@ -651,6 +651,9 @@ pub struct CompDialog {
     /// Item to add as the first layer once the comp exists (drag-drop with
     /// no comp yet).
     pub pending_item: Option<Uuid>,
+    /// Comp-wide motion-blur shutter (K-120), editable when an existing comp is
+    /// open; a fresh comp starts with the default (off).
+    pub motion_blur: lumit_core::model::MotionBlur,
 }
 
 /// The lane guide-line mode — what the faint vertical lines mark.
@@ -2264,6 +2267,7 @@ impl AppState {
             lock_ratio: true,
             aspect: 1920.0 / 1080.0,
             pending_item,
+            motion_blur: lumit_core::model::MotionBlur::default(),
         };
         #[cfg(feature = "media")]
         if let Some(item) = pending_item {
@@ -2297,6 +2301,7 @@ impl AppState {
             lock_ratio: true,
             aspect: f64::from(comp.width) / f64::from(comp.height).max(1.0),
             pending_item: None,
+            motion_blur: comp.motion_blur,
         });
     }
 
@@ -2337,6 +2342,7 @@ impl AppState {
             let Some(comp) = doc.comp(comp_id) else {
                 return;
             };
+            let mb_changed = comp.motion_blur != dialog.motion_blur;
             self.commit(Op::SetCompSettings {
                 comp: comp_id,
                 name: dialog.name,
@@ -2346,6 +2352,12 @@ impl AppState {
                 duration,
                 background: comp.background,
             });
+            if mb_changed {
+                self.commit(Op::SetCompMotionBlur {
+                    comp: comp_id,
+                    motion_blur: dialog.motion_blur,
+                });
+            }
             #[cfg(feature = "media")]
             self.refresh_preview();
             return;

@@ -1065,6 +1065,40 @@ impl Shell {
                     }
                     ui.end_row();
                 });
+            // Motion blur (K-120): master enable + shutter, shown when editing
+            // an existing comp (a fresh comp starts with it off).
+            if !creating {
+                ui.add_space(6.0);
+                ui.separator();
+                ui.checkbox(&mut dialog.motion_blur.enabled, "Motion blur")
+                    .on_hover_text("Blur layers whose own motion-blur switch is set");
+                if dialog.motion_blur.enabled {
+                    egui::Grid::new("comp-mb-grid")
+                        .num_columns(2)
+                        .spacing([12.0, 4.0])
+                        .show(ui, |ui| {
+                            ui.label("Shutter angle");
+                            ui.add(
+                                egui::DragValue::new(&mut dialog.motion_blur.shutter_angle)
+                                    .range(0.0..=720.0)
+                                    .suffix("\u{00b0}"),
+                            );
+                            ui.end_row();
+                            ui.label("Shutter phase");
+                            ui.add(
+                                egui::DragValue::new(&mut dialog.motion_blur.shutter_phase)
+                                    .range(-360.0..=360.0)
+                                    .suffix("\u{00b0}"),
+                            );
+                            ui.end_row();
+                            ui.label("Samples");
+                            ui.add(
+                                egui::DragValue::new(&mut dialog.motion_blur.samples).range(2..=64),
+                            );
+                            ui.end_row();
+                        });
+                }
+            }
             ui.add_space(4.0);
             ui.label(
                 egui::RichText::new("Duration is HH:MM:SS:mmm.")

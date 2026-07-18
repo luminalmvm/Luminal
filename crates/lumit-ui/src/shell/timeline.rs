@@ -146,6 +146,18 @@ fn layer_context_menu(
         });
         ui.close_menu();
     }
+    if ui
+        .selectable_label(layer.switches.motion_blur, "Motion blur")
+        .on_hover_text("Blur this layer along its own motion (needs the comp's motion blur on)")
+        .clicked()
+    {
+        *ctx_op = Some(lumit_core::Op::SetLayerMotionBlur {
+            comp: comp_id,
+            layer: layer.id,
+            motion_blur: !layer.switches.motion_blur,
+        });
+        ui.close_menu();
+    }
     // Footage → sequenced layer (K-071).
     if matches!(layer.kind, lumit_core::model::LayerKind::Footage { .. })
         && ui.button("Convert to sequenced layer").clicked()
