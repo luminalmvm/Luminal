@@ -923,6 +923,45 @@ pub const BUILTINS: &[EffectSchema] = &[
             MIX_PARAM,
         ],
     },
+    // LUT (docs/08 §3.11, docs/impl/lut.md, K-114): a 3D colour look-up from a
+    // `.cube` file — a colourist's baked grade dropped onto a layer. A File
+    // parameter picks the cube (animatable only by stepping between paths, since
+    // two files cannot be blended) and Mix blends the graded result over the
+    // input. The heavy lifting lives elsewhere: `lumit_core::lut` parses the
+    // cube, `lumit_gpu::fx` samples it as a 3D texture. The resolve step carries
+    // only Mix — a path is not `Copy`, so (like Echo's neighbour frames and
+    // Motion blur's flow field) the loaded cube travels beside the resolved op,
+    // supplied by the caller's LUT cache. Unpremultiplied (§2.2: a LUT is an
+    // arbitrary colour map, so it must not see premultiplied values); an unset,
+    // missing, 1D or unreadable file is a labelled no-op, never a fault (§3.11
+    // never-crash rule). Moderate cost (a per-pixel 3D lookup), Exact ROI.
+    EffectSchema {
+        match_name: "lut",
+        label: "LUT",
+        version: 1,
+        category: FxCategory::Colour,
+        traits: EffectTraits {
+            cost: CostClass::Moderate,
+            roi: Roi::Exact,
+            temporal: &[0],
+            premultiplied: false, // §2.2: an arbitrary colour map must see straight colour
+            seeded: false,
+            beat_input: false,
+        },
+        params: &[
+            ParamSchema {
+                id: "file",
+                label: "File",
+                // A `.cube` LUT chosen from a dialog (K-111); the value steps
+                // between paths with hold keys only.
+                kind: ParamKind::File {
+                    filter: &["cube"],
+                    filter_name: "Cube LUT",
+                },
+            },
+            MIX_PARAM,
+        ],
+    },
     // Transform (docs/08 §3.5, K-090): the layer transform group as a stack
     // entry — same parameter names, units and animatability. Its point is
     // adjustment layers: applied there, it transforms the composite of
@@ -2022,6 +2061,17 @@ pub enum Resolved {
         /// 0..1.
         mix: f32,
     },
+    /// LUT (docs/08 §3.11, docs/impl/lut.md, K-114): a 3D `.cube` colour
+    /// lookup. Only the host Mix is `Copy`-carried here; the parsed-and-
+    /// uploaded cube is a whole 3D texture, so — like Echo's neighbour frames
+    /// and Motion blur's flow field — it travels beside the resolved op (the
+    /// caller's LUT cache fills a parallel `luts` slot), not inside it. An
+    /// unset/1D/unreadable file leaves that slot empty and the op is a
+    /// passthrough. `mix == 0` is the bit-exact input.
+    Lut {
+        /// 0..1.
+        mix: f32,
+    },
 }
 
 /// The inverse affine of a Transform effect (docs/08 §3.5): the forward map
@@ -2748,6 +2798,16 @@ pub fn resolve_stack(
                     mix,
                 })
             }
+            "lut" => {
+                // Only Mix is Copy-carried; the `.cube` file's parsed cube is a
+                // 3D texture threaded beside the resolved op (the caller's LUT
+                // cache), exactly as the flow field is for Motion blur. A `lut`
+                // effect always resolves to exactly one Resolved::Lut, so the
+                // ordered enabled-builtin-`lut` list stays 1:1 and in order with
+                // the Resolved::Lut ops — the whole threading contract.
+                let mix = (e.float_at("mix", lt).unwrap_or(100.0) as f32 / 100.0).clamp(0.0, 1.0);
+                Some(Resolved::Lut { mix })
+            }
             "glow" => {
                 let radius_pct = e.float_at("radius", lt).unwrap_or(8.0) as f32;
                 let threshold = (e.float_at("threshold", lt).unwrap_or(1.0) as f32).max(0.0);
@@ -3106,6 +3166,12 @@ pub mod cpu {
             // the GPU; here it is a pass-through, exactly like Echo and
             // Motion blur.
             Resolved::Datamosh { .. } => {}
+            // A LUT is a GPU colour map: the parsed cube never reaches this
+            // Resolved-based CPU dispatcher (the file path is threaded
+            // separately), so the CPU-degradation rung renders it as identity.
+            // The §1.6 oracle reference is `lut::Lut3d::sample`, exercised
+            // directly in the lumit-gpu test, not through cpu::apply.
+            Resolved::Lut { .. } => {}
         }
     }
 

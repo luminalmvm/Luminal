@@ -13,6 +13,17 @@ use lumit_gpu::GpuContext;
 
 type Tex = egui_wgpu::wgpu::Texture;
 
+/// A parsed-and-uploaded `.cube` LUT ready to bind (docs/08 §3.11,
+/// docs/impl/lut.md): the 3D cube texture plus its per-axis size `N`. Held by
+/// the caller's path-keyed cache and cloned into a `run_ops` `luts` slot;
+/// `wgpu::Texture` is an `Arc` handle, so the clone is cheap and shares the one
+/// upload.
+#[derive(Clone)]
+pub struct LoadedLut {
+    pub texture: Tex,
+    pub size: u32,
+}
+
 /// Run `ops` over `tex` in order, returning the final texture (the input
 /// unchanged when `ops` is empty). `w`/`h` are the texture's raster size.
 /// `neighbours` are the layer's decoded neighbour frames keyed by offset
@@ -21,7 +32,9 @@ type Tex = egui_wgpu::wgpu::Texture;
 /// dense motion field (per-pixel `(u, v)` at this raster size), present only
 /// when the stack has a flow-consuming effect (Flow motion blur, or Datamosh
 /// — §3.12, K-107); a missing field makes that effect a passthrough
-/// (degrade, never fault).
+/// (degrade, never fault). `luts` is the parallel LUT list (docs/08 §3.11): the
+/// k-th `Resolved::Lut` op binds `luts[k]` — a `None` slot (unset, missing, 1D
+/// or unreadable file) is a passthrough, exactly like a missing flow field.
 #[allow(clippy::too_many_arguments)]
 pub fn run_ops(
     fx: &FxEngine,
@@ -32,8 +45,13 @@ pub fn run_ops(
     ops: &[Resolved],
     neighbours: &[(i32, Tex)],
     flow_field: Option<&Tex>,
+    luts: &[Option<LoadedLut>],
 ) -> Tex {
     let mut tex = tex;
+    // The k-th Resolved::Lut op consumes the k-th `luts` slot (the whole
+    // threading contract — see resolve_stack's `lut` arm and CompLayerDraw's
+    // lut_files); a slot is present only when its `.cube` file loaded.
+    let mut lut_i = 0usize;
     for op in ops {
         match op {
             Resolved::Blur {
@@ -508,6 +526,18 @@ pub fn run_ops(
                             mix: *mix,
                         },
                     );
+                }
+            }
+            Resolved::Lut { mix } => {
+                // The k-th Lut op binds the k-th `luts` slot (§3.11). A None
+                // slot — an unset, missing, 1D or unreadable file — is a
+                // passthrough (the labelled no-op rule; never a fault). The
+                // parsed cube travels beside the op, exactly as Motion blur's
+                // flow field does, since a path is not Copy in `Resolved`.
+                let loaded = luts.get(lut_i).and_then(|o| o.as_ref());
+                lut_i += 1;
+                if let Some(l) = loaded {
+                    tex = fx.lut(ctx, &tex, w, h, &l.texture, l.size, *mix);
                 }
             }
         }

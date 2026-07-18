@@ -263,6 +263,13 @@ struct Renderer<'a> {
     /// Effect kernels, sharing the export device (docs/08; the same passes
     /// the preview runs, so effects export pixel-identically).
     fx: lumit_gpu::fx::FxEngine,
+    /// Parsed-and-uploaded `.cube` LUTs keyed by path (docs/08 §3.11,
+    /// docs/impl/lut.md §4), living across the whole export so each distinct
+    /// file is parsed and uploaded once, not per frame. `RefCell` because
+    /// `apply_fx` takes `&self`. The same load the preview's GpuViewer runs, so
+    /// LUTs export pixel-identically (K-031). Path-only key (mtime invalidation
+    /// is a documented follow-up).
+    lut_cache: std::cell::RefCell<HashMap<String, crate::fxops::LoadedLut>>,
 }
 
 /// A layer's source, prepared for compositing: a linear texture plus the
@@ -711,6 +718,55 @@ impl Renderer<'_> {
     /// effect's neighbour frames (empty for a plain stack); `flow_field` is
     /// the layer's dense motion field for Flow motion blur or Datamosh
     /// (None otherwise).
+    /// The parsed-and-uploaded `.cube` LUTs for a layer's enabled built-in
+    /// `lut` effects (docs/08 §3.11, K-114), 1:1 and in order with its
+    /// `Resolved::Lut` ops (the same filter `resolve_stack` applies, and a
+    /// `lut` effect always resolves to exactly one op). Each path is parsed and
+    /// uploaded once through `lut_cache`; a 1D/unreadable/absent file yields a
+    /// `None` slot (a labelled no-op, never a fault). Built and loaded exactly
+    /// like the preview's GpuViewer, so LUTs export pixel-identically (K-031).
+    fn layer_luts(
+        &self,
+        effects: &[lumit_core::model::EffectInstance],
+        lt: f64,
+    ) -> Vec<Option<crate::fxops::LoadedLut>> {
+        use lumit_core::model::EffectNamespace;
+        let mut cache = self.lut_cache.borrow_mut();
+        effects
+            .iter()
+            .filter(|e| {
+                e.enabled
+                    && e.effect.namespace == EffectNamespace::Builtin
+                    && e.effect.match_name == "lut"
+            })
+            .map(|e| {
+                let path = e.path_at("file", lt)?;
+                if !cache.contains_key(path) {
+                    // Any IO/parse error, or a 1D LUT, leaves the slot empty:
+                    // the effect is a passthrough, never a panic (§3.11).
+                    if let Some(loaded) = std::fs::read_to_string(path)
+                        .ok()
+                        .and_then(|text| lumit_core::lut::parse_cube(&text).ok())
+                        .and_then(|lut| match lut {
+                            lumit_core::lut::Lut::Cube3d(l) => Some(crate::fxops::LoadedLut {
+                                texture: lumit_gpu::fx::upload_lut_3d(
+                                    self.gpu,
+                                    l.size as u32,
+                                    &l.data,
+                                ),
+                                size: l.size as u32,
+                            }),
+                            lumit_core::lut::Lut::Cube1d(_) => None,
+                        })
+                    {
+                        cache.insert(path.to_owned(), loaded);
+                    }
+                }
+                cache.get(path).cloned()
+            })
+            .collect()
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn apply_fx(
         &self,
@@ -732,7 +788,12 @@ impl Renderer<'_> {
         // The motion field must match the texture it smears (both are the
         // full-resolution source); a mismatch degrades to a passthrough.
         let flow = flow_field.filter(|f| f.width() == w && f.height() == h);
-        crate::fxops::run_ops(&self.fx, self.gpu, tex, w, h, &resolved, neighbours, flow)
+        // The LUTs the stack's Resolved::Lut ops bind (§3.11), 1:1 with them;
+        // the same load the preview runs (K-031).
+        let luts = self.layer_luts(&layer.effects, lt);
+        crate::fxops::run_ops(
+            &self.fx, self.gpu, tex, w, h, &resolved, neighbours, flow, &luts,
+        )
     }
 
     /// Render a whole comp at time `t` into a linear fp16 texture (recursive
@@ -981,6 +1042,10 @@ impl Renderer<'_> {
                     acc.as_ref(),
                 );
                 draws.clear();
+                // The adjustment layer's LUT effects apply to the composite
+                // below (§3.11); loaded exactly as the per-layer path and the
+                // preview do (K-031).
+                let luts = self.layer_luts(&l.effects, lt);
                 let processed = crate::fxops::run_ops(
                     &self.fx,
                     self.gpu,
@@ -993,6 +1058,7 @@ impl Renderer<'_> {
                     // on adjustment layers are a later refinement).
                     &[],
                     None,
+                    &luts,
                 );
                 let coverage = self.adjust_coverage(comp, l, lt, camera);
                 let opacity = (l.transform.opacity.value_at(lt) as f32 / 100.0).clamp(0.0, 1.0);
@@ -1133,6 +1199,7 @@ fn run(
         decoders: HashMap::new(),
         flow: lumit_flow::FlowEngine::with_context(gpu),
         fx: lumit_gpu::fx::FxEngine::new(gpu),
+        lut_cache: std::cell::RefCell::new(HashMap::new()),
     };
     // Encoded frame dimensions must be even for 4:2:0 H.264/HEVC.
     let (tw, th) = (spec.target.0 & !1, spec.target.1 & !1);
