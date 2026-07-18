@@ -1088,13 +1088,15 @@ pub(crate) fn effect_controls_panel(ui: &mut egui::Ui, theme: &Theme, app: &mut 
         px_per_sec: 1.0,
         view_start: 0.0,
         graph_mode: true,
+        selected_prop: app.selected_prop,
     };
     let mut fx_edit = None;
+    let mut select = None;
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
         .id_salt("effect-controls-scroll")
         .show(ui, |ui| {
-            effects_rows(ui, &ctx, &mut pending, &mut fx_edit);
+            effects_rows(ui, &ctx, &mut pending, &mut fx_edit, &mut select);
         });
     // Live preview while an effect value is dragged. Only WRITE when this panel
     // has an active drag — the Timeline draws the same effect rows in the same
@@ -1102,6 +1104,11 @@ pub(crate) fn effect_controls_panel(ui: &mut egui::Ui, theme: &Theme, app: &mut 
     // versa). The shell clears fx_edit once at the top of the frame.
     if fx_edit.is_some() {
         app.fx_edit = fx_edit;
+    }
+    // Row selection (note 2.8.1/2.8.7): a click on any effect row highlights it,
+    // in this panel or the Timeline (both draw these rows).
+    if let Some(sel) = select {
+        app.selected_prop = Some(sel);
     }
     if let Some(op) = pending {
         app.commit(op);

@@ -537,6 +537,30 @@ pub(crate) struct RowCtx<'a> {
     /// True in graph mode (K-070): the outline half of every row still draws,
     /// but nothing is painted on the lane side — the curve owns that area.
     pub(crate) graph_mode: bool,
+    /// The currently highlighted property row (note 2.8.1), so each row can lift
+    /// its background when it is the selected one — and an effect title bar can
+    /// lift when one of its own params is selected (note 2.8.2).
+    pub(crate) selected_prop: Option<crate::app_state::PropSel>,
+}
+
+impl RowCtx<'_> {
+    /// Whether `row` on this row's layer is the highlighted property (2.8.1).
+    pub(crate) fn is_selected(&self, row: crate::app_state::PropRow) -> bool {
+        self.selected_prop
+            == Some(crate::app_state::PropSel {
+                layer: self.layer.id,
+                row,
+            })
+    }
+}
+
+/// True when the pointer clicked anywhere within `row_rect` this frame — the
+/// whole-row hit test behind row selection (note 2.8.1). A plain click on the
+/// row's controls still works them; this fires alongside so the row highlights
+/// wherever you click it. A drag (value scrub, key drag) is not a click, so it
+/// never trips selection.
+pub(crate) fn row_click(ui: &egui::Ui, row_rect: egui::Rect) -> bool {
+    ui.rect_contains_pointer(row_rect) && ui.input(|i| i.pointer.primary_clicked())
 }
 
 /// New (scale_x, scale_y) when the linked Scale control is dragged so x becomes
@@ -569,7 +593,7 @@ pub(crate) fn section_bar_fill(theme: &Theme) -> egui::Color32 {
 /// every other left-column paint. In the Timeline the bar spans the outline
 /// column (up to the lane divider); in the panel (no lane, `track_w == 0`)
 /// it spans the whole panel width.
-pub(crate) fn section_bar(ui: &egui::Ui, ctx: &RowCtx, row_rect: egui::Rect) {
+pub(crate) fn section_bar(ui: &egui::Ui, ctx: &RowCtx, row_rect: egui::Rect, highlight: bool) {
     let mut p = ui.painter().clone();
     p.set_clip_rect(ctx.viewport);
     let edge = if ctx.track_w > 0.0 {
@@ -578,10 +602,18 @@ pub(crate) fn section_bar(ui: &egui::Ui, ctx: &RowCtx, row_rect: egui::Rect) {
         ctx.track_left
     };
     let right = edge.max(row_rect.left() + 1.0);
+    // A brighter fill when one of this effect's params is the highlighted row
+    // (note 2.8.2) — the plain bar is already surface_2, so the highlight lifts
+    // one step further to read against it.
+    let fill = if highlight {
+        ctx.theme.surface_3
+    } else {
+        section_bar_fill(ctx.theme)
+    };
     p.rect_filled(
         egui::Rect::from_min_max(row_rect.min, egui::pos2(right, row_rect.bottom())),
         2.0,
-        section_bar_fill(ctx.theme),
+        fill,
     );
 }
 
@@ -682,6 +714,7 @@ pub(crate) fn transform_property_rows(
         px_per_sec,
         view_start,
         graph_mode: app.timeline_graph_mode,
+        selected_prop: app.selected_prop,
     };
 
     // Footage speed is a keyframable property too (K-072): its own row above
@@ -1191,7 +1224,14 @@ pub(crate) fn prop_row(
     let is_graphed = app.selected_layer == Some(ctx.layer.id)
         && !app.graph_retime
         && app.graph_prop == Some(prop);
-    let (row_rect, mut c) = row_frame(ui, ctx, is_graphed);
+    let sel_row = crate::app_state::PropRow::Transform(prop);
+    let (row_rect, mut c) = row_frame(ui, ctx, is_graphed || ctx.is_selected(sel_row));
+    if row_click(ui, row_rect) {
+        app.selected_prop = Some(crate::app_state::PropSel {
+            layer: ctx.layer.id,
+            row: sel_row,
+        });
+    }
 
     if let Some(animation) = stopwatch(&mut c, ctx.theme, slot, ctx.lt) {
         *pending = Some(lumit_core::Op::SetTransformProperty {
@@ -1411,7 +1451,15 @@ pub(crate) fn combined_scale_row(
             app.graph_prop,
             Some(TransformProp::ScaleX | TransformProp::ScaleY)
         );
-    let (row_rect, mut c) = row_frame(ui, ctx, is_graphed);
+    // The linked Scale row selects as its x axis (both move together).
+    let sel_row = crate::app_state::PropRow::Transform(TransformProp::ScaleX);
+    let (row_rect, mut c) = row_frame(ui, ctx, is_graphed || ctx.is_selected(sel_row));
+    if row_click(ui, row_rect) {
+        app.selected_prop = Some(crate::app_state::PropSel {
+            layer: ctx.layer.id,
+            row: sel_row,
+        });
+    }
 
     // Stopwatch drives both axes together (drawn, like every other row).
     let animated = sx.is_animated() || sy.is_animated();
@@ -1554,7 +1602,15 @@ pub(crate) fn linked_pair_row(
     let is_graphed = app.selected_layer == Some(ctx.layer.id)
         && !app.graph_retime
         && (app.graph_prop == Some(px) || app.graph_prop == Some(py));
-    let (row_rect, mut c) = row_frame(ui, ctx, is_graphed);
+    // The linked pair selects as its x channel (both share the row furniture).
+    let sel_row = crate::app_state::PropRow::Transform(px);
+    let (row_rect, mut c) = row_frame(ui, ctx, is_graphed || ctx.is_selected(sel_row));
+    if row_click(ui, row_rect) {
+        app.selected_prop = Some(crate::app_state::PropSel {
+            layer: ctx.layer.id,
+            row: sel_row,
+        });
+    }
 
     // Stopwatch drives both axes together as one undo step.
     let animated = sx.is_animated() || sy.is_animated();
@@ -2103,6 +2159,9 @@ pub(crate) fn effects_rows(
     // Float effect parameter is being dragged, so the caller can drive a live
     // preview (`AppState::fx_edit`) without committing until release.
     fx_edit: &mut Option<(uuid::Uuid, usize, usize, f64)>,
+    // Set to the clicked row when an effect param row is clicked (note 2.8.1),
+    // for the caller to apply to `AppState::selected_prop`.
+    select: &mut Option<crate::app_state::PropSel>,
 ) {
     use lumit_core::fx::{self, ParamKind};
     use lumit_core::model::{EffectValue, FileParam};
@@ -2208,8 +2267,16 @@ pub(crate) fn effects_rows(
         // is a drag handle: dragging it up or down reorders the stack (one
         // SetLayerEffects, so one undo step).
         {
+            // The title bar lifts when one of this effect's own param rows is the
+            // highlighted property (note 2.8.2), so the highlighted param's effect
+            // reads at a glance.
+            let title_hl = matches!(
+                ctx.selected_prop,
+                Some(crate::app_state::PropSel { layer: l, row: crate::app_state::PropRow::Effect { effect, .. } })
+                    if l == layer.id && effect == idx
+            );
             let (row_rect, mut c) = row_frame(ui, ctx, false);
-            section_bar(ui, ctx, row_rect);
+            section_bar(ui, ctx, row_rect, title_hl);
             fx_title_rows.push(row_rect);
             // The per-effect visibility toggle (K-090 confirmation of §1.5):
             // the same eye as layer visibility, dimmed while bypassed.
@@ -2280,10 +2347,27 @@ pub(crate) fn effects_rows(
             let Some(ps) = schema.params.iter().find(|p| p.id == param.id) else {
                 continue;
             };
+            // Row selection (note 2.8.1): this param's row identity, whether it
+            // is the highlighted one, and — set below on a click anywhere in the
+            // row — the selection to hand back to the caller.
+            let eff_row = crate::app_state::PropRow::Effect {
+                effect: idx,
+                param: pi,
+            };
+            let row_hl = ctx.is_selected(eff_row);
+            let mut set_sel = |ui: &egui::Ui, rect: egui::Rect| {
+                if row_click(ui, rect) {
+                    *select = Some(crate::app_state::PropSel {
+                        layer: layer.id,
+                        row: eff_row,
+                    });
+                }
+            };
             match (&param.value, ps.kind) {
                 (EffectValue::Float(prop), ParamKind::Float { slider, hard, .. }) => {
                     let is_animated = prop.is_animated();
-                    let (row_rect, mut c) = row_frame(ui, ctx, false);
+                    let (row_rect, mut c) = row_frame(ui, ctx, row_hl);
+                    set_sel(ui, row_rect);
                     if let Some(animation) = stopwatch(&mut c, ctx.theme, prop, ctx.lt) {
                         let mut effects = layer.effects.clone();
                         effects[idx].params[pi].value =
@@ -2366,7 +2450,8 @@ pub(crate) fn effects_rows(
                     }
                 }
                 (EffectValue::Choice(cur), ParamKind::Choice { options, .. }) => {
-                    let (_row, mut c) = row_frame(ui, ctx, false);
+                    let (row_rect, mut c) = row_frame(ui, ctx, row_hl);
+                    set_sel(ui, row_rect);
                     c.label(
                         egui::RichText::new(ps.label)
                             .small()
@@ -2385,7 +2470,8 @@ pub(crate) fn effects_rows(
                     });
                 }
                 (EffectValue::Bool(cur), ParamKind::Bool { .. }) => {
-                    let (_row, mut c) = row_frame(ui, ctx, false);
+                    let (row_rect, mut c) = row_frame(ui, ctx, row_hl);
+                    set_sel(ui, row_rect);
                     let mut v = *cur;
                     if c.checkbox(&mut v, egui::RichText::new(ps.label).small())
                         .changed()
@@ -2399,7 +2485,8 @@ pub(crate) fn effects_rows(
                     // An integer drag plus the §2.4 reseed button; the
                     // chosen value is stored project data, so determinism
                     // is untouched.
-                    let (_row, mut c) = row_frame(ui, ctx, false);
+                    let (row_rect, mut c) = row_frame(ui, ctx, row_hl);
+                    set_sel(ui, row_rect);
                     c.label(
                         egui::RichText::new(ps.label)
                             .small()
@@ -2435,7 +2522,8 @@ pub(crate) fn effects_rows(
                     // boxes. The parameter's channels are animatable in the
                     // model; the row edits static values for now, like
                     // Bool/Choice.
-                    let (_row, mut c) = row_frame(ui, ctx, false);
+                    let (row_rect, mut c) = row_frame(ui, ctx, row_hl);
+                    set_sel(ui, row_rect);
                     c.label(
                         egui::RichText::new(ps.label)
                             .small()
@@ -2522,7 +2610,8 @@ pub(crate) fn effects_rows(
                     // The file's basename plus a dialog button. The path is
                     // project data (the hold-keyed index picks it at this time);
                     // choosing a file replaces the path set with the one pick.
-                    let (_row, mut c) = row_frame(ui, ctx, false);
+                    let (row_rect, mut c) = row_frame(ui, ctx, row_hl);
+                    set_sel(ui, row_rect);
                     c.label(
                         egui::RichText::new(ps.label)
                             .small()
@@ -2559,7 +2648,8 @@ pub(crate) fn effects_rows(
                 (EffectValue::Layer(cur), ParamKind::Layer { .. }) => {
                     // A picker for a layer-reference parameter (K-123), e.g. the
                     // DoF depth layer: this comp's other layers, plus None.
-                    let (_row, mut c) = row_frame(ui, ctx, false);
+                    let (row_rect, mut c) = row_frame(ui, ctx, row_hl);
+                    set_sel(ui, row_rect);
                     c.label(
                         egui::RichText::new(ps.label)
                             .small()

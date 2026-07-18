@@ -267,6 +267,8 @@ pub(crate) fn timeline_panel(ui: &mut egui::Ui, theme: &Theme, app: &mut AppStat
     // Live effect-value drag (layer, effect index, param index, value), applied
     // to `app.fx_edit` after the loop for the live preview.
     let mut fx_edit: Option<(uuid::Uuid, usize, usize, f64)> = None;
+    // A click that selects an effect row (note 2.8.1), applied after the loop.
+    let mut fx_select: Option<crate::app_state::PropSel> = None;
     // A per-clip speed-ramp edit (start %, end %, ease), applied after the loop.
     let mut clip_ramp_edit: Option<(f64, f64, lumit_core::retime::Ease)> = None;
     // A per-clip frame-interpolation edit, applied after the layer loop.
@@ -1561,8 +1563,9 @@ pub(crate) fn timeline_panel(ui: &mut egui::Ui, theme: &Theme, app: &mut AppStat
                             px_per_sec,
                             view_start,
                             graph_mode: app.timeline_graph_mode,
+                            selected_prop: app.selected_prop,
                         };
-                        effects_rows(ui, &fx_ctx, &mut pending, &mut fx_edit);
+                        effects_rows(ui, &fx_ctx, &mut pending, &mut fx_edit, &mut fx_select);
                     }
                     // Flow group (K-088): present only while the option is on.
                     if matches!(
@@ -1588,6 +1591,7 @@ pub(crate) fn timeline_panel(ui: &mut egui::Ui, theme: &Theme, app: &mut AppStat
                                 px_per_sec,
                                 view_start,
                                 graph_mode: app.timeline_graph_mode,
+                                selected_prop: app.selected_prop,
                             };
                             flow_group_rows(ui, &flow_ctx, &mut pending);
                         }
@@ -1782,6 +1786,9 @@ pub(crate) fn timeline_panel(ui: &mut egui::Ui, theme: &Theme, app: &mut AppStat
     // drag (or vice versa). The shell clears fx_edit once at the top of the frame.
     if fx_edit.is_some() {
         app.fx_edit = fx_edit;
+    }
+    if let Some(sel) = fx_select {
+        app.selected_prop = Some(sel);
     }
     if let Some(op) = pending {
         follow_edit(app, &op); // the graph follows the key you just touched

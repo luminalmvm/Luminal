@@ -907,6 +907,27 @@ impl GraphSelection {
     }
 }
 
+/// Which property row is highlighted in the layer/Effect Controls area (note
+/// 2.8.1). Clicking anywhere on a property row selects it; the row's background
+/// lifts, and if the row is an effect parameter its effect's title bar lifts too
+/// (note 2.8.2). One row at a time in v1 — multi-property selection (note 2.6)
+/// will grow this into a set. Shared by the Timeline and Effect Controls panels
+/// so a row highlights in both (note 2.8.7).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PropSel {
+    pub layer: Uuid,
+    pub row: PropRow,
+}
+
+/// The identity of a property row within a layer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PropRow {
+    /// A transform channel (position, anchor, scale, rotation, opacity).
+    Transform(lumit_core::model::TransformProp),
+    /// One effect parameter: the effect's index in the stack and the param index.
+    Effect { effect: usize, param: usize },
+}
+
 pub struct AppState {
     pub store: DocumentStore,
     pub path: Option<PathBuf>,
@@ -1016,6 +1037,10 @@ pub struct AppState {
     /// Keyframes selected in the graph editor — by the marquee, or the last
     /// dragged key. Pinned to one channel; see `GraphSelection`.
     pub graph_selection: Option<GraphSelection>,
+    /// The highlighted property row in the layer/Effect Controls area (note
+    /// 2.8.1; see [`PropSel`]). Set by clicking a row; None when nothing is
+    /// selected.
+    pub selected_prop: Option<PropSel>,
     /// In-flight speed-graph drag: (key index, provisional speed in
     /// value-units/second). Separate from `graph_edit` because the speed lens
     /// edits a keyframe's tangent (K-070), not its value or time.
@@ -1220,6 +1245,7 @@ impl Default for AppState {
             graph_edit: None,
             graph_marquee: None,
             graph_selection: None,
+            selected_prop: None,
             graph_speed_edit: None,
             graph_tangent_edit: None,
             graph_tangent_mode: None,
