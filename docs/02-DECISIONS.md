@@ -1684,3 +1684,22 @@ Auto-scale cover behaviour itself is gone (an intentional change — the wobble 
 zooms to hide edges). CPU/GPU parity and the §1.6 oracle hold across all three edge modes.
 Spec: [08-EFFECTS.md](08-EFFECTS.md) §3.4. Built in an isolated worktree; not pushed —
 another agent may also claim K-146, renumber on merge if so.
+
+**K-150 · DECIDED · A new layer's transform centres its anchor on its own content (FX-20).**
+A freshly added layer defaults its **anchor** (origin) to the centre of its *own* pixel
+content and its **position** to the composition centre, so it appears centred and pivots
+about its middle under scale and rotation — the After Effects default the glossary already
+describes ([01-GLOSSARY.md](01-GLOSSARY.md) §2, "New layers default their anchor to the
+centre of their content"). Sized per layer kind: **footage** by the footage's natural pixel
+size (comp size until the probe lands), **precomp** by the nested comp's size, **solid** by
+the `SolidDef`'s own size, **sequenced layer** by the comp (a "fancy precomp", K-071), and
+comp-sized kinds (**adjustment**) by the comp. One private helper,
+`AppState::centred_transform(nat_w, nat_h, comp_w, comp_h)`, is the single wiring point every
+add-layer path routes through, so the rule cannot drift between kinds. Two deliberate
+exceptions: a **camera** is a viewpoint, not a picture, so it keeps position at the comp
+centre with no content anchor; a **text** layer keeps its origin at the text insertion point
+(anchor 0,0) because its content size is only known after glyph layout, matching AE's
+point-text convention. Only *new* layers default this way — saved projects load their stored
+transforms unchanged (the transform is serialised in full). Added 2026-07-19 at Mack's
+request. Built in an isolated worktree; not pushed — another agent may also claim K-150,
+renumber on merge if so.
