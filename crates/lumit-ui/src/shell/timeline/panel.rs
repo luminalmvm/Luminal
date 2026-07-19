@@ -258,31 +258,65 @@ pub(crate) fn timeline_panel(ui: &mut egui::Ui, theme: &Theme, app: &mut AppStat
         app.refresh_preview();
     }
     // Audio waveform strip (mono peaks) beneath the ruler, aligned to the same
-    // time axis so beats and transients line up.
+    // time axis so beats and transients line up. Optional (T25): right-clicking
+    // the strip hides it, and right-clicking the ruler shows it again.
     #[cfg(feature = "media")]
-    if let Some((wc, wf)) = &app.comp_waveform {
-        if *wc == comp_id && !wf.is_empty() {
-            let (wave_rect, _) = ui
-                .allocate_exact_size(egui::vec2(ui.available_width(), 26.0), egui::Sense::hover());
-            ui.painter().rect_filled(
-                egui::Rect::from_min_max(
-                    egui::pos2(track_left, wave_rect.top()),
-                    egui::pos2(track_left + track_w, wave_rect.bottom()),
-                ),
-                0.0,
-                theme.surface_0,
-            );
-            let cy = wave_rect.center().y;
-            let half = wave_rect.height() * 0.45;
-            let n = wf.len().max(1) as f32;
-            let col = theme.text_muted.gamma_multiply(0.7);
-            for (i, (lo, hi)) in wf.iter().enumerate() {
-                let x = track_left + (i as f32 / n) * track_w;
-                ui.painter().line_segment(
-                    [egui::pos2(x, cy - hi * half), egui::pos2(x, cy - lo * half)],
-                    egui::Stroke::new(1.0_f32, col),
-                );
+    {
+        let mut toggle_bar = false;
+        if app.show_audio_bar {
+            if let Some((wc, wf)) = &app.comp_waveform {
+                if *wc == comp_id && !wf.is_empty() {
+                    let (wave_rect, wave_resp) = ui.allocate_exact_size(
+                        egui::vec2(ui.available_width(), 26.0),
+                        egui::Sense::click(),
+                    );
+                    ui.painter().rect_filled(
+                        egui::Rect::from_min_max(
+                            egui::pos2(track_left, wave_rect.top()),
+                            egui::pos2(track_left + track_w, wave_rect.bottom()),
+                        ),
+                        0.0,
+                        theme.surface_0,
+                    );
+                    let cy = wave_rect.center().y;
+                    let half = wave_rect.height() * 0.45;
+                    let n = wf.len().max(1) as f64;
+                    let col = theme.text_muted.gamma_multiply(0.7);
+                    // Map each peak through the SAME time axis as the ruler and
+                    // the layers (`x_of`), not a full-width stretch (T25): the
+                    // waveform then tracks zoom, scroll and a moved audio layer's
+                    // transients instead of standing still. Peaks off-screen are
+                    // skipped so a zoomed view never draws past the track.
+                    for (i, (lo, hi)) in wf.iter().enumerate() {
+                        let t = (i as f64 / n) * duration;
+                        let x = x_of(t);
+                        if x < track_left || x > track_left + track_w {
+                            continue;
+                        }
+                        ui.painter().line_segment(
+                            [egui::pos2(x, cy - hi * half), egui::pos2(x, cy - lo * half)],
+                            egui::Stroke::new(1.0_f32, col),
+                        );
+                    }
+                    wave_resp.context_menu(|ui| {
+                        if ui.button("Hide audio waveform").clicked() {
+                            toggle_bar = true;
+                            ui.close_menu();
+                        }
+                    });
+                }
             }
+        } else {
+            // Hidden: offer to bring it back from the ruler's context menu.
+            ruler_resp.context_menu(|ui| {
+                if ui.button("Show audio waveform").clicked() {
+                    toggle_bar = true;
+                    ui.close_menu();
+                }
+            });
+        }
+        if toggle_bar {
+            app.show_audio_bar = !app.show_audio_bar;
         }
     }
     let rows_top = ui.cursor().top();

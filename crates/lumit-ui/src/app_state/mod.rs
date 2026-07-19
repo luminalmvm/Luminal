@@ -626,6 +626,10 @@ pub struct AppState {
     /// comp's audio is mixed. Drawn under the ruler.
     #[cfg(feature = "media")]
     pub comp_waveform: Option<(Uuid, Vec<(f32, f32)>)>,
+    /// Whether the audio-preview waveform strip under the ruler is shown (T25):
+    /// right-clicking the strip hides it; it defaults on. A view preference, not
+    /// project data.
+    pub show_audio_bar: bool,
     /// In-flight property drag (layer, property, provisional value): commits
     /// once on release so a drag is ONE undo step, not hundreds.
     pub prop_edit: Option<(Uuid, lumit_core::model::TransformProp, f64)>,
@@ -1027,6 +1031,7 @@ impl Default for AppState {
             layer_reorder: None,
             selected_item: None,
             selected_items: Vec::new(),
+            show_audio_bar: true,
             mask_drag: None,
             tool: ToolMode::default(),
             eyedropper: None,
