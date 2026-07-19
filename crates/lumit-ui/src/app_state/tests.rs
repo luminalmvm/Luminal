@@ -470,3 +470,52 @@ fn discarding_recovery_opens_last_save_and_clears_journal() {
         "journal cleared on discard"
     );
 }
+
+/// Regression (owner bug): an effect-value drag in the layer area only updated
+/// the preview on frames that had a keyframe at the playhead. Cause — a frame
+/// served from the composite cache is presented without a decode, so it never
+/// populates `last_comp`, which the live patch re-composites from; a keyframe at
+/// the playhead invalidated the cache entry and forced the decode, masking the
+/// bug. Fix: while a live value edit is active, `refresh_comp_preview` skips the
+/// cache shortcut and decodes, so `last_comp` is populated.
+#[cfg(feature = "media")]
+#[test]
+fn a_live_edit_decodes_instead_of_taking_the_composite_cache() {
+    let mut app = AppState::default();
+    app.new_composition();
+    app.confirm_comp_dialog();
+    app.add_solid_layer();
+    let comp_id = app.selected_comp.unwrap();
+    app.preview_comp = Some(comp_id);
+    app.preview_frame = 0;
+
+    // Warm the composite cache for the current frame.
+    let key = app.frame_key_for(comp_id, 0).expect("frame key");
+    app.comp_frame_cache.insert(
+        key,
+        CachedCompFrame {
+            width: 8,
+            height: 8,
+            rgba: vec![0u8; 8 * 8 * 4],
+        },
+    );
+
+    // No live edit: the cache hit presents from the cache (no decode).
+    app.cached_present = None;
+    app.refresh_comp_preview();
+    assert_eq!(
+        app.cached_present,
+        Some(key),
+        "a cache hit presents from the composite cache"
+    );
+
+    // A live edit active: it must NOT take the shortcut — it decodes so the
+    // live patch has `last_comp` (before the fix this asserted Some(key)).
+    app.cached_present = None;
+    app.fx_edit = Some((comp_id, 0, 0, 1.0));
+    app.refresh_comp_preview();
+    assert_eq!(
+        app.cached_present, None,
+        "a live edit forces a decode rather than a cache hit"
+    );
+}

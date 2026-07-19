@@ -310,11 +310,17 @@ impl AppState {
         // A real request supersedes any background fill in flight.
         self.fill_in_flight = None;
 
-        // Kura warm path: a cached frame presents without decoding anything.
-        if let Some(key) = self.frame_key_for(comp_id, self.preview_frame) {
-            if self.comp_frame_cache.contains_key(&key) {
-                self.cached_present = Some(key);
-                return;
+        // Kura warm path: a cached frame presents without decoding anything —
+        // but a live value edit needs this frame's decoded per-layer pixels
+        // (`last_comp`) to re-composite, and a cache hit never populates them, so
+        // skip the shortcut and decode while one is active (owner bug — see
+        // `live_edit_active`).
+        if !self.live_edit_active() {
+            if let Some(key) = self.frame_key_for(comp_id, self.preview_frame) {
+                if self.comp_frame_cache.contains_key(&key) {
+                    self.cached_present = Some(key);
+                    return;
+                }
             }
         }
 
@@ -349,6 +355,23 @@ impl AppState {
             || self.mask_drag.is_some()
             || self.origin_drag.is_some()
             || self.shape_drag.is_some()
+    }
+
+    /// Any value edit whose live preview re-composites from the presented
+    /// frame's decoded per-layer pixels (the present path's live patch): an
+    /// effect-value drag (`fx_edit`), a linked-scale drag (`scale_preview`), a
+    /// transform-value drag (`prop_edit`), or a graph keyframe drag
+    /// (`graph_edit`). When one is active on a *cache-hit* frame, the preview
+    /// must DECODE rather than take the composite-cache shortcut, so `last_comp`
+    /// is populated and the live patch can render — otherwise the drag shows
+    /// nothing until release (the owner-reported bug: an effect-value drag in
+    /// the layer area only updated on frames with a keyframe, because a keyframe
+    /// at the playhead invalidated the cache and forced the decode).
+    pub fn live_edit_active(&self) -> bool {
+        self.fx_edit.is_some()
+            || self.scale_preview.is_some()
+            || self.prop_edit.is_some()
+            || self.graph_edit.is_some()
     }
 
     pub fn target_width_for(&self, natural_w: u32) -> Option<u32> {

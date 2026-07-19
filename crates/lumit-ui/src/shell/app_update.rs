@@ -454,6 +454,22 @@ impl Shell {
             // re-decode, since a transform change never alters which footage
             // frame a layer shows.
             if let Some(comp_id) = self.app.preview_comp {
+                // The live patch below re-composites from this frame's decoded
+                // per-layer pixels (`last_comp`). A frame served from the
+                // composite cache never populates `last_comp`, so a value drag on
+                // a cache-hit frame would show nothing live until release (the
+                // owner bug: effect-value drags in the layer area only updated on
+                // frames that had a keyframe — a keyframe at the playhead
+                // invalidated the cache and forced the decode). When a live edit
+                // is active and `last_comp` is stale, request a decode; the engine
+                // coalesces repeats until it lands, then this stops firing.
+                let stale = !matches!(
+                    &self.last_comp,
+                    Some(cf) if cf.comp == comp_id && cf.frame == self.app.preview_frame
+                );
+                if stale && self.app.live_edit_active() {
+                    self.app.refresh_preview();
+                }
                 if let (Some(gpu), Some(cf)) = (&mut self.gpu, &self.last_comp) {
                     if cf.comp == comp_id && cf.frame == self.app.preview_frame {
                         let doc = self.app.store.snapshot();
