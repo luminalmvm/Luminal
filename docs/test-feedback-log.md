@@ -68,11 +68,13 @@ changes update `docs/08` and ship their oracle test; new concepts update `GUIDE.
 - [ ] **FX-1** Posterize time doesn't work (5 fps in a 24 fps comp looked normal). Also its
   scope should be: only this layer's own effects, or the default (everything below in the
   stack).
-- [ ] **FX-2** Split Blur into three effects — **Gaussian** (Radius), **Directional**
+- [x] **FX-2** Split Blur into three effects — **Gaussian** (Radius), **Directional**
   (Length, Angle), **Radial** (Amount, Centre X/Y, Type = Spin/Zoom, Edges). Directional
-  length and radial amount should exceed 100.
-- [ ] **FX-3** Sharpen is an unsharp filter — rename it **Unsharp Mask**, and add a plain
-  **Sharpen** (amount).
+  length and radial amount should exceed 100. — done (K-137): three separate effects; old
+  "blur" loads as Gaussian; Length/Amount hard-unbounded above; Edges kept on Radial.
+- [x] **FX-3** Sharpen is an unsharp filter — rename it **Unsharp Mask**, and add a plain
+  **Sharpen** (amount). — done (K-138): existing effect relabelled "Unsharp mask"; new
+  "Sharpen" is a 3×3 high-pass with an Amount dial + oracle test.
 - [ ] **FX-4** Matte after-effects → combobox (see **P1**); remove the bool everywhere.
 - [ ] **FX-5** Saturation should exceed 200.
 - [ ] **FX-6** Vignette softness should go `0..inf` (see **P5** value-range policy);
