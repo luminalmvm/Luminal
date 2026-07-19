@@ -1356,7 +1356,12 @@ impl Renderer<'_> {
                 // what keeps such an adjustment live.
                 let posterize = lumit_core::fx::stack_posterize(&l.effects, l.switches.fx, lt)
                     .filter(|p| p.scope == lumit_core::fx::PosterizeScope::EverythingBelow);
-                if fx.is_empty() && posterize.is_none() {
+                // Accumulation motion blur everything-below (docs/08 §3.26): N
+                // sub-frame below-renders averaged. Like Posterize it resolves to
+                // no op, so this — not `fx` — keeps such an adjustment live.
+                let accumulation =
+                    lumit_core::fx::stack_accumulation_mb(&l.effects, l.switches.fx, lt);
+                if fx.is_empty() && posterize.is_none() && accumulation.is_none() {
                     continue;
                 }
                 let below = self.compositor.composite_seeded(
@@ -1383,7 +1388,64 @@ impl Renderer<'_> {
                 // reuses `build_comp_draws` + the shared `Realiser`, so the held
                 // texture is identical to the preview's (K-031); the coverage
                 // blend below still lays it over the live below-at-t.
-                let fx_input = if let Some(p) = posterize {
+                let fx_input = if let Some(ab) = accumulation {
+                    // Render each sub-frame below-stack through the SAME
+                    // render_below_at the preview drives, average the N finished
+                    // composites with the hardware additive-at-1/N pass, then
+                    // blend against the frame-time below by Mix (docs/08 §3.26).
+                    // The held decode is gathered once (footage is held), and the
+                    // playhead `t` is threaded so a sample_temporally == false
+                    // effect still holds live (§5). Identical to the preview's
+                    // accumulate_below (K-031).
+                    let offsets = ab.sample_offsets();
+                    if offsets.is_empty() {
+                        below.clone()
+                    } else {
+                        let dt = 1.0 / comp.frame_rate.fps().max(1.0);
+                        let below_layers = &comp.layers[idx + 1..];
+                        let mut pixels_map = HashMap::new();
+                        self.collect_below_pixels(below_layers, t, visited, &mut pixels_map)?;
+                        let pixels_ref: HashMap<Uuid, &crate::app_state::preview::CompLayerPixels> =
+                            pixels_map.iter().map(|(k, v)| (*k, v)).collect();
+                        let realiser = self.realiser();
+                        let frames: Vec<Tex> = offsets
+                            .iter()
+                            .map(|off| {
+                                let tau = t + off * dt;
+                                crate::shell::render_below_at(
+                                    &realiser,
+                                    self.doc,
+                                    comp,
+                                    below_layers,
+                                    tau,
+                                    t,
+                                    &pixels_ref,
+                                    visited,
+                                )
+                            })
+                            .collect();
+                        let weight = 1.0 / frames.len() as f32;
+                        let avg_layers: Vec<(&Tex, f32)> =
+                            frames.iter().map(|f| (f, weight)).collect();
+                        let average = self.compositor.accumulate(
+                            self.gpu,
+                            comp.width,
+                            comp.height,
+                            &avg_layers,
+                        );
+                        let mix = ab.mix as f32;
+                        if mix >= 1.0 {
+                            average
+                        } else {
+                            self.compositor.accumulate(
+                                self.gpu,
+                                comp.width,
+                                comp.height,
+                                &[(&below, 1.0 - mix), (&average, mix)],
+                            )
+                        }
+                    }
+                } else if let Some(p) = posterize {
                     let tau = lumit_core::fx::posterize_held_time(t, p.rate, p.phase);
                     let below_layers = &comp.layers[idx + 1..];
                     let mut pixels_map = HashMap::new();

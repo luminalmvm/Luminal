@@ -38,10 +38,26 @@ helper so a preview frame equals an export frame (K-031), exactly as `render_lay
 ## 3. Accumulation MB
 - Params: **Samples** N, **Shutter angle**, **Shutter phase** (reuse `MotionBlur::sample_offsets`
   maths for the centred offsets), Mix. Category Temporal, cost Heavy (≈ N× a full comp render).
-- Render below at `τ_k = t + off_k·dt` for each k; **average** the N textures with the
-  pure-additive-at-`1/N` accumulation pipeline `motion_blur_average` already added (colour AND
-  alpha additive, so a static scene is unchanged). Composite the average in place of the plain
-  below-composite.
+- Render below at `τ_k = t + off_k·dt` for each k; **average** the N textures with a
+  pure-additive-at-`1/N` pass (colour AND alpha additive, so a static scene is unchanged).
+  Composite the average in place of the plain below-composite.
+
+**Landed (K-134).** `lumit_core::fx::stack_accumulation_mb` resolves the effect to an
+`AccumulationMbParams { samples, shutter_angle, shutter_phase, mix }`, whose `sample_offsets()`
+reuses `MotionBlur::sample_offsets` (empty for N < 2 — no blur). It is an **adjustment** effect,
+detected exactly as Posterize is: `accumulation_mb_below(...)` builds one `below_draws_at(τ_k)`
+per sample into an `AccumulationBelow { samples, mix }` carried on the adjustment draw. The
+combine is a **new** GPU pass — `Compositor::accumulate(&[(&Texture, weight)])` over the
+premultiplied-passthrough fragment `fs_accumulate` (the inputs are already-premultiplied comp
+composites, so unlike per-layer `motion_blur_average`'s `fs_layer` it must NOT re-premultiply).
+Preview (`Realiser::accumulate_below`) and export both render the N sub-frames through the one
+`render_below_at`, average at `1/N`, then blend the average against the frame-time below by
+`mix` (a second `accumulate` of two weighted layers `1 − mix` and `mix` — a linear interpolation
+the additive pass gives exactly). Still-scene bit-identity holds because `1/N` is exact in fp16
+for a power-of-two N and the N copies sum back exactly; a moving scene smears. `sample_temporally`
+(K-132) is honoured through the shared `below_draws_at`/`build_comp_draws_at` threading. It takes
+precedence over Posterize when an adjustment somehow carries both (one temporal re-render per
+adjustment in v1).
 
 ## 4. Posterize Time
 - Params: **Rate** (fps, e.g. 12), optional **Phase**; **Scope** = *Everything below* | *This
@@ -88,7 +104,7 @@ share a key — the deduplication that makes it cheap). No new non-determinism.
 2. Posterize Time, *Everything below* scope (one render at `τ`) — the simplest consumer.
 3. `EffectInstance.sample_temporally` (landed, K-132) + Posterize Time *this-layer* scope
    (landed, K-133).
-4. Accumulation MB (N samples + the additive average) on top of (1).
+4. Accumulation MB (N samples + the additive average) on top of (1) (landed, K-134).
 Each step is a K-decision + docs/08 section + oracle/parity test where one applies (these have
 no per-pixel oracle; the test is a still-scene identity + a moving-scene coverage check, as
 per-layer MB used).

@@ -103,6 +103,40 @@ fn this_layer_effect_time_holds_only_the_this_layer_scope() {
     );
 }
 
+// stack_accumulation_mb (docs/08 §3.26) finds the effect, resolves its shutter
+// and Mix, and derives the centred sub-frame offsets; a bypassed or plain stack
+// reports nothing, and it resolves to no per-pixel op (executed at the
+// orchestration layer, like Posterize).
+#[test]
+fn stack_accumulation_mb_detects_resolves_and_offsets() {
+    let e = instantiate("accumulation_mb").unwrap();
+    let p = stack_accumulation_mb(std::slice::from_ref(&e), true, 0.0).unwrap();
+    assert_eq!(p.samples, 8); // default
+    assert_eq!(p.shutter_angle, 180.0);
+    assert_eq!(p.shutter_phase, -90.0);
+    assert!((p.mix - 1.0).abs() < 1e-9);
+    // Eight centred sub-frame offsets across the open shutter (the shared
+    // per-layer motion-blur shutter maths).
+    assert_eq!(p.sample_offsets().len(), 8);
+    // A degenerate single sample is no blur — empty offsets, so the caller falls
+    // back to the plain frame-time composite.
+    let one = AccumulationMbParams { samples: 1, ..p };
+    assert!(one.sample_offsets().is_empty());
+    // Bypassed or a plain stack report nothing.
+    assert!(stack_accumulation_mb(std::slice::from_ref(&e), false, 0.0).is_none());
+    let blur = instantiate("blur").unwrap();
+    assert!(stack_accumulation_mb(std::slice::from_ref(&blur), true, 0.0).is_none());
+    // No per-pixel op: it never reaches a kernel.
+    assert!(resolve_stack(
+        std::slice::from_ref(&e),
+        0.0,
+        1000.0,
+        1.0,
+        &MarkerContext::NONE
+    )
+    .is_empty());
+}
+
 // A Posterize Time effect has no per-pixel op: it must resolve to nothing (it is
 // executed at the orchestration layer, not in run_ops), exactly like a
 // placeholder — so it never reaches a kernel.

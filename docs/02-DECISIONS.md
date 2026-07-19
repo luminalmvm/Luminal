@@ -1394,3 +1394,28 @@ Both `build_comp_draws_at` (preview) and export's `apply_fx` compute it and feed
 equals export (K-031). With no this-layer Posterize this is byte-identical to the previous
 `resolve_stack`, so ordinary layers are unchanged. Concurrent-worktree risk: another agent may
 also claim K-133 — renumber on merge if so. Built in an isolated worktree; not pushed.
+
+**K-134 · DECIDED · Accumulation motion blur ships: the second temporal re-render effect
+(docs/08 §3.26, docs/impl/temporal-rerender.md §3).** The expensive, correct motion blur — it
+re-renders the whole scene below at N sub-frame times and averages the finished frames, so
+footage motion, animated effects, depth passes and the camera are all correct per sample (no
+blurred-depth artefact). An **adjustment** effect detected exactly as Posterize is; it resolves
+to no per-pixel op, so the detection keeps the adjustment live. The sub-frame times reuse the
+per-layer motion-blur shutter maths (`MotionBlur::sample_offsets`, so `τ_k = t + off_k·dt`) via
+`lumit_core::fx::stack_accumulation_mb` → `AccumulationMbParams`. The combine is a **new** GPU
+pass, `Compositor::accumulate(&[(&Texture, weight)])` over a premultiplied-passthrough fragment
+`fs_accumulate` (the inputs are already-premultiplied comp composites, so — unlike per-layer
+`motion_blur_average`, which premultiplies a straight-alpha source — it must NOT re-premultiply);
+colour AND alpha add, so a static scene is unchanged. Preview (`Realiser::accumulate_below`) and
+export both render the N sub-frames through the one shared `render_below_at`, average at `1/N`,
+then blend the average against the frame-time below by Mix (a second weighted `accumulate`, a
+pure linear interpolation), so preview equals export (K-031). Proved by a still-scene bit-identity
+test (`1/N` is exact in fp16 for a power-of-two N, the N copies sum back exactly) and a
+moving-scene coverage-widening test. Params: Samples N, Shutter angle, Shutter phase, Mix; cost
+Heavy (≈ N× a full comp render). Honours the per-effect `sample_temporally` flag (K-132) via the
+shared `below_draws_at` threading. **Boundaries (v1):** temporal effects inside the sampled
+below-stack hold to stills (K-125); an accumulation adjustment inside a collapsed Precomp is a
+no-op (its sampled draws are sized for the nested comp); it takes precedence over Posterize when
+an adjustment somehow carries both; sub-frame sample-count reduction under draft/scrub is a
+tracked follow-up (full N always on export). Concurrent-worktree risk: another agent may also
+claim K-134 — renumber on merge if so. Built in an isolated worktree; not pushed.

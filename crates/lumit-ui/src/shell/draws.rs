@@ -424,7 +424,10 @@ pub(crate) fn build_comp_draws_at(
                         // the parent would mis-size the re-render. Clear it — the
                         // effect degrades to a no-op here, a documented boundary;
                         // a non-collapsed Precomp posterises on its own path.
+                        // Accumulation motion blur (§3.26) takes the same boundary
+                        // for the same sizing reason.
                         d.temporal_below = None;
+                        d.accumulation_below = None;
                     }
                     draws.extend(inner);
                     continue;
@@ -489,7 +492,21 @@ pub(crate) fn build_comp_draws_at(
                     pixels_by_layer,
                     visited,
                 );
-                if fx.is_empty() && temporal_below.is_none() {
+                // Accumulation motion blur everything-below (docs/08 §3.26): N
+                // sub-frame below-stacks realise averages, standing in for the
+                // plain below-composite. Like Posterize it resolves to no op, so
+                // this — not `fx` — is what keeps such an adjustment live.
+                let accumulation_below = accumulation_mb_below(
+                    doc,
+                    comp,
+                    layer,
+                    idx,
+                    t_comp,
+                    frame_t,
+                    pixels_by_layer,
+                    visited,
+                );
+                if fx.is_empty() && temporal_below.is_none() && accumulation_below.is_none() {
                     continue;
                 }
                 draws.push(CompLayerDraw {
@@ -547,6 +564,7 @@ pub(crate) fn build_comp_draws_at(
                     // motion blur has no image of its own to smear (docs/06 §4).
                     mb: Vec::new(),
                     temporal_below,
+                    accumulation_below,
                 });
                 continue;
             }
@@ -730,8 +748,9 @@ pub(crate) fn build_comp_draws_at(
             // Built the same way export does, so the two smear identically.
             mb: motion_blur_samples(comp, layer, t_comp),
             // Ordinary layers never carry a temporal re-render — that is an
-            // adjustment-only capability in v1 (docs/08 §3.25).
+            // adjustment-only capability in v1 (docs/08 §3.25, §3.26).
             temporal_below: None,
+            accumulation_below: None,
         });
     }
     draws
@@ -864,6 +883,53 @@ pub(crate) fn posterize_below(
     let below = &comp.layers[idx + 1..];
     let (draws, camera) = below_draws_at(doc, comp, below, tau, frame_t, pixels_by_layer, visited);
     Some(TemporalBelow { draws, camera })
+}
+
+/// The N sub-frame below-stacks for an accumulation motion blur adjustment
+/// (docs/08 §3.26, docs/impl/temporal-rerender.md §3), or None when `layer`
+/// carries no such effect (or its Samples < 2, which is no blur — the adjustment
+/// then falls back to the plain below-composite). `idx` is the layer's document
+/// index, so the below-set is `comp.layers[idx + 1..]`. Each sample time is
+/// `τ_k = t_comp + off_k·dt` with the offsets from [`lumit_core::fx::
+/// AccumulationMbParams::sample_offsets`] (the shared per-layer motion-blur
+/// shutter maths), and each below-stack is built by the same `below_draws_at`
+/// export drives, so preview equals export (K-031). `frame_t` threads the
+/// playhead so a sample_temporally == false effect in the below-stack still holds
+/// at the frame time (§5).
+#[cfg(feature = "media")]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn accumulation_mb_below(
+    doc: &lumit_core::model::Document,
+    comp: &lumit_core::model::Composition,
+    layer: &lumit_core::model::Layer,
+    idx: usize,
+    t_comp: f64,
+    frame_t: f64,
+    pixels_by_layer: &std::collections::HashMap<
+        uuid::Uuid,
+        &crate::app_state::preview::CompLayerPixels,
+    >,
+    visited: &mut Vec<uuid::Uuid>,
+) -> Option<AccumulationBelow> {
+    let lt = t_comp - layer.start_offset.0.to_f64();
+    let p = lumit_core::fx::stack_accumulation_mb(&layer.effects, layer.switches.fx, lt)?;
+    let offsets = p.sample_offsets();
+    if offsets.is_empty() {
+        return None;
+    }
+    let dt = 1.0 / comp.frame_rate.fps().max(1.0);
+    let below = &comp.layers[idx + 1..];
+    let samples = offsets
+        .iter()
+        .map(|off| {
+            let tau = t_comp + off * dt;
+            below_draws_at(doc, comp, below, tau, frame_t, pixels_by_layer, visited)
+        })
+        .collect();
+    Some(AccumulationBelow {
+        samples,
+        mix: p.mix as f32,
+    })
 }
 
 /// Drop the neighbour frames and flow field a temporal effect reads, recursing
@@ -1365,6 +1431,163 @@ mod render_below_at_tests {
         assert_eq!(
             posterised_bytes, held_bytes,
             "a full-coverage posterised frame must equal a plain render at the held time"
+        );
+    }
+
+    // An adjustment layer carrying an accumulation motion blur effect at the
+    // given sample count (defaults otherwise: 180° shutter centred on the frame).
+    fn accumulation_adjustment(samples: f64) -> Layer {
+        let mut e = lumit_core::fx::instantiate("accumulation_mb").unwrap();
+        for p in &mut e.params {
+            if p.id == "samples" {
+                p.value = lumit_core::model::EffectValue::Float(Property::fixed(samples));
+            }
+        }
+        Layer {
+            id: Uuid::now_v7(),
+            name: "accumulation".into(),
+            kind: LayerKind::Adjustment,
+            in_point: CompTime(Rational::ZERO),
+            out_point: CompTime(Rational::new(10, 1).unwrap()),
+            start_offset: CompTime(Rational::ZERO),
+            transform: TransformGroup::default(),
+            matte: None,
+            parent: None,
+            blend: Default::default(),
+            masks: Vec::new(),
+            effects: vec![e],
+            switches: Switches::default(),
+            extra: serde_json::Map::new(),
+        }
+    }
+
+    fn comp_with(fps: u32, layers: Vec<Layer>) -> Composition {
+        Composition {
+            id: Uuid::now_v7(),
+            name: "c".into(),
+            width: 320,
+            height: 180,
+            frame_rate: FrameRate::new(fps, 1).unwrap(),
+            duration: Duration(Rational::new(10, 1).unwrap()),
+            background: LinearColour([0.1, 0.1, 0.1, 1.0]),
+            work_area: None,
+            layers,
+            markers: Vec::new(),
+            motion_blur: Default::default(),
+            extra: serde_json::Map::new(),
+        }
+    }
+
+    // docs/08 §3.26: an accumulation motion blur adjustment carries N sub-frame
+    // below-stacks, one per shutter sample, centred on the frame. A moving text
+    // (x = 200·t) in a 2 fps comp (dt = 0.5 s) spreads visibly; at t = 0.5 the 4
+    // below-stacks straddle x = 100, their positions strictly increasing across
+    // the centred shutter. GPU-free structural check.
+    #[test]
+    fn accumulation_adjustment_holds_n_subframe_below_stacks_centred_on_the_frame() {
+        let mut text = text_layer(0.0);
+        text.transform.position_x = ramp(0.0, 200.0); // x = 200·t
+        let comp = comp_with(2, vec![accumulation_adjustment(4.0), text]);
+        let doc = Document::new();
+        let pixels: HashMap<Uuid, &crate::app_state::preview::CompLayerPixels> = HashMap::new();
+        let mut visited = vec![comp.id];
+        let draws = build_comp_draws(&doc, &comp, 0.5, &pixels, &mut visited);
+        let adj = draws
+            .iter()
+            .find(|d| matches!(d.source, DrawSource::Adjust))
+            .expect("the accumulation adjustment emits a staging draw");
+        let ab = adj
+            .accumulation_below
+            .as_ref()
+            .expect("an accumulation adjustment carries N sub-frame below-stacks");
+        assert_eq!(ab.samples.len(), 4, "one below-stack per shutter sample");
+        let xs: Vec<f32> = ab
+            .samples
+            .iter()
+            .map(|(draws, _)| draws[0].position.0)
+            .collect();
+        // Strictly increasing (the centred shutter sweeps forward in time).
+        assert!(
+            xs.windows(2).all(|w| w[0] < w[1]),
+            "sub-frame positions increase across the shutter: {xs:?}"
+        );
+        // Centred on the frame: the samples straddle x = 100 (the frame-time
+        // position at t = 0.5).
+        assert!(
+            xs[0] < 100.0 && *xs.last().unwrap() > 100.0,
+            "the shutter is centred on x = 100: {xs:?}"
+        );
+        assert!((ab.mix - 1.0).abs() < 1e-6, "full Mix by default");
+    }
+
+    // docs/08 §3.26 + K-031: a still scene averaged over N is bit-identical to the
+    // plain composite (the accumulation adjustment is a pure identity when nothing
+    // moves), while a moving scene smears — differs from the plain composite and
+    // covers a wider horizontal extent. The same combine drives the export path.
+    #[test]
+    fn accumulation_still_scene_is_identity_and_moving_scene_smears() {
+        let Ok(ctx) = lumit_gpu::GpuContext::headless() else {
+            return; // no GPU here — skip, as the gpu crate's own tests do
+        };
+        let engine = lumit_gpu::ColourEngine::new(&ctx);
+        let compositor = lumit_gpu::Compositor::new(&ctx);
+        let fx = lumit_gpu::fx::FxEngine::new(&ctx);
+        let lut_cache = std::cell::RefCell::new(HashMap::new());
+        let realiser = Realiser {
+            ctx: lumit_gpu::GpuContext::from_parts(ctx.device.clone(), ctx.queue.clone()),
+            engine: &engine,
+            compositor: &compositor,
+            fx: &fx,
+            lut_cache: &lut_cache,
+        };
+        let doc = Document::new();
+        let pixels: HashMap<Uuid, &crate::app_state::preview::CompLayerPixels> = HashMap::new();
+        let render = |comp: &Composition, t: f64| -> Vec<u8> {
+            let mut v = vec![comp.id];
+            let draws = build_comp_draws(&doc, comp, t, &pixels, &mut v);
+            let bg = comp.background.0.map(f64::from);
+            let tex = realiser.realise(comp.camera_pose(t), comp.width, comp.height, bg, &draws);
+            engine.readback8(&ctx, &engine.display(&ctx, &tex)).unwrap()
+        };
+
+        // STILL scene: a static text below a 4-sample accumulation adjustment must
+        // be a bit-exact identity — every sub-frame render is equal, so their
+        // average is the plain composite (1/4 is exact in fp16, four copies sum
+        // back exactly), and the full-coverage blend lays it back unchanged.
+        let still_text = text_layer(120.0);
+        let still_plain = comp_with(30, vec![still_text.clone()]);
+        let still_acc = comp_with(30, vec![accumulation_adjustment(4.0), still_text]);
+        assert_eq!(
+            render(&still_plain, 0.5),
+            render(&still_acc, 0.5),
+            "a still scene averaged over N must equal the plain composite bit-for-bit"
+        );
+
+        // MOVING scene: text sweeping x = 200·t in a 2 fps comp (dt = 0.5 s) so the
+        // shutter spreads ~37 px. The accumulation frame must differ from the plain
+        // composite (the smear) and cover a wider horizontal extent.
+        let mut moving_text = text_layer(0.0);
+        moving_text.transform.position_x = ramp(0.0, 200.0);
+        let moving_plain = comp_with(2, vec![moving_text.clone()]);
+        let moving_acc = comp_with(2, vec![accumulation_adjustment(4.0), moving_text]);
+        let plain = render(&moving_plain, 0.5);
+        let smeared = render(&moving_acc, 0.5);
+        assert_ne!(
+            plain, smeared,
+            "a moving scene must smear (differ from the plain composite)"
+        );
+        // Columns carrying visible text (red well above the dark background).
+        let (w, h) = (320usize, 180usize);
+        let text_cols = |b: &[u8]| {
+            (0..w)
+                .filter(|&x| (0..h).any(|y| b[(y * w + x) * 4] > 130))
+                .count()
+        };
+        assert!(
+            text_cols(&smeared) > text_cols(&plain),
+            "the smear must widen the covered columns: plain {}, smeared {}",
+            text_cols(&plain),
+            text_cols(&smeared)
         );
     }
 }
