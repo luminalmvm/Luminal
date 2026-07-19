@@ -595,6 +595,7 @@ fn motion_blur_and_datamosh_together_the_first_in_stack_order_wins() {
 fn datamosh_instantiates_and_resolves() {
     let e = instantiate("datamosh").unwrap();
     assert_eq!(e.float_at("intensity", 0.0), Some(0.5));
+    assert_eq!(e.float_at("streak_length", 0.0), Some(4.0));
     assert_eq!(e.float_at("mix", 0.0), Some(100.0));
 
     let r = resolve_stack(
@@ -608,6 +609,7 @@ fn datamosh_instantiates_and_resolves() {
         r,
         vec![Resolved::Datamosh {
             intensity: 0.5,
+            streak: 4.0,
             mix: 1.0,
         }]
     );
@@ -633,6 +635,51 @@ fn datamosh_instantiates_and_resolves() {
         r,
         vec![Resolved::Datamosh {
             intensity: 0.0,
+            streak: 4.0,
+            mix: 1.0,
+        }]
+    );
+}
+
+#[test]
+fn datamosh_intensity_ceiling_is_open_and_streak_migrates() {
+    // FX-14/K-148: the Intensity hard cap lifted (K-135), so a typed value
+    // above 1 resolves through for a punchier tear; Streak length is clamped
+    // at 1 below and open above.
+    let mut e = instantiate("datamosh").unwrap();
+    for p in &mut e.params {
+        if p.id == "intensity" {
+            p.value = EffectValue::Float(Property::fixed(2.5));
+        }
+        if p.id == "streak_length" {
+            p.value = EffectValue::Float(Property::fixed(9.0));
+        }
+    }
+    let r = resolve_stack(&[e], 0.0, 1000.0, 1.0, &MarkerContext::NONE);
+    assert_eq!(
+        r,
+        vec![Resolved::Datamosh {
+            intensity: 2.5,
+            streak: 9.0,
+            mix: 1.0,
+        }]
+    );
+
+    // An old project (pre-FX-14) has no streak_length param: it folds to the
+    // default 4-frame reach, and its intensity is no longer capped at 1.
+    let mut legacy = instantiate("datamosh").unwrap();
+    legacy.params.retain(|p| p.id != "streak_length");
+    for p in &mut legacy.params {
+        if p.id == "intensity" {
+            p.value = EffectValue::Float(Property::fixed(1.0));
+        }
+    }
+    let r = resolve_stack(&[legacy], 0.0, 1000.0, 1.0, &MarkerContext::NONE);
+    assert_eq!(
+        r,
+        vec![Resolved::Datamosh {
+            intensity: 1.0,
+            streak: 4.0,
             mix: 1.0,
         }]
     );
@@ -652,6 +699,7 @@ fn cpu_apply_datamosh_is_a_passthrough() {
         h,
         &Resolved::Datamosh {
             intensity: 1.0,
+            streak: 4.0,
             mix: 1.0,
         },
     );
@@ -897,7 +945,8 @@ fn cpu_datamosh_zero_intensity_is_the_bit_exact_current_frame() {
     let current: Vec<f32> = (0..n * 4).map(|i| (i % 7) as f32 * 0.1).collect();
     let prev: Vec<f32> = (0..n * 4).map(|i| (i % 5) as f32 * 0.2).collect();
     let (u, v) = (vec![3.0f32; n], vec![-2.0f32; n]);
-    let out = cpu::datamosh(&current, &prev, w, h, &u, &v, 0.0);
+    // Streak has no effect at intensity 0 — the blend collapses to `current`.
+    let out = cpu::datamosh(&current, &prev, w, h, &u, &v, 0.0, 8.0);
     assert_eq!(out, current, "intensity 0 is a bit-exact passthrough");
 }
 
@@ -917,12 +966,37 @@ fn cpu_datamosh_full_intensity_reads_the_shifted_previous_frame() {
     let mut u = vec![0.0f32; n];
     let v = vec![0.0f32; n];
     u[(4 * w + 4) as usize] = 2.0;
-    let out = cpu::datamosh(&current, &prev, w, h, &u, &v, 1.0);
+    // Streak 1 is the historical one-frame prediction: u = 2 lands on (6, 4).
+    let out = cpu::datamosh(&current, &prev, w, h, &u, &v, 1.0, 1.0);
     let i = ((4 * w + 4) * 4) as usize;
     assert_eq!(&out[i..i + 4], &[4.0, 2.0, 1.0, 1.0]);
     // A pixel whose flow is zero and whose `prev` neighbourhood is dark
     // stays dark (current is also dark there) — no bleed from elsewhere.
     assert_eq!(&out[0..4], &[0.0, 0.0, 0.0, 0.0]);
+}
+
+#[test]
+fn cpu_datamosh_streak_scales_the_flow_reach() {
+    // A single bright pixel at (6, 4). A half-strength flow of u = 1 reaches
+    // it only when Streak length doubles the displacement to 2 (FX-14): the
+    // warp then predicts two frames of motion from one frame's flow.
+    let (w, h) = (9u32, 9u32);
+    let n = (w * h) as usize;
+    let current = vec![0.0f32; n * 4];
+    let mut prev = vec![0.0f32; n * 4];
+    let bright = ((4 * w + 6) * 4) as usize; // (x=6, y=4)
+    prev[bright..bright + 4].copy_from_slice(&[4.0, 2.0, 1.0, 1.0]);
+    let mut u = vec![0.0f32; n];
+    let v = vec![0.0f32; n];
+    u[(4 * w + 4) as usize] = 1.0; // one frame of flow points halfway there
+    let i = ((4 * w + 4) * 4) as usize;
+
+    // Streak 1: u = 1 lands on (5, 4) — still dark, the bright pixel unreached.
+    let short = cpu::datamosh(&current, &prev, w, h, &u, &v, 1.0, 1.0);
+    assert_eq!(&short[i..i + 4], &[0.0, 0.0, 0.0, 0.0]);
+    // Streak 2: u × 2 = 2 lands on (6, 4) — the bright pixel is now recovered.
+    let long = cpu::datamosh(&current, &prev, w, h, &u, &v, 1.0, 2.0);
+    assert_eq!(&long[i..i + 4], &[4.0, 2.0, 1.0, 1.0]);
 }
 
 #[test]

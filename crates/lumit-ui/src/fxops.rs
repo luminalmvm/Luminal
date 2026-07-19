@@ -579,15 +579,19 @@ pub fn run_ops(
                     },
                 );
             }
-            Resolved::Datamosh { intensity, mix } => {
+            Resolved::Datamosh {
+                intensity,
+                streak,
+                mix,
+            } => {
                 // Datamosh (§3.12, K-107) reads the layer's -1 neighbour and
                 // its current→previous flow field, exactly as Motion blur
                 // reads its own +1-neighbour flow field. Either missing (a
                 // non-footage layer, or a dropped decode) is a passthrough,
-                // never a fault. The existing GPU/CPU maths take a single
-                // blend fraction; Mix folds into Intensity here rather than
-                // adding a second uniform, since mixing the same two inputs
-                // twice collapses to one mix by the product.
+                // never a fault. The blend maths take a single fraction; Mix
+                // folds into Intensity here rather than adding a second
+                // uniform, since mixing the same two inputs twice collapses to
+                // one mix by the product. Streak length scales the flow reach.
                 if let (Some(flow), Some((_, prev))) =
                     (flow_field, neighbours.iter().find(|(o, _)| *o == -1))
                 {
@@ -600,6 +604,7 @@ pub fn run_ops(
                         h,
                         &lumit_gpu::fx::DatamoshOp {
                             intensity: *intensity * *mix,
+                            streak: *streak,
                         },
                     );
                 }

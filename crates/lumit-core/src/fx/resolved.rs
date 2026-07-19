@@ -374,8 +374,13 @@ pub enum Resolved {
     /// footage and the decode fetched them; a missing pair degrades this to
     /// a no-op, never a fault.
     Datamosh {
-        /// 0..1: blended against the current frame.
+        /// Blend against the current frame; 0 the passthrough, > 1
+        /// extrapolates past the moshed frame (open ceiling, K-135/FX-14).
         intensity: f32,
+        /// Frames of predicted motion the warp reaches (FX-14): scales the
+        /// flow displacement, so a longer streak accumulates more smearing
+        /// from the -1 reference. 1 is the historical one-frame prediction.
+        streak: f32,
         /// 0..1, the host Mix. Composes with `intensity` by multiplication
         /// before reaching the kernel (mixing the same two inputs twice
         /// collapses to one mix by the product), so the existing GPU/CPU
@@ -1039,9 +1044,19 @@ fn resolve_one(
             })
         }
         "datamosh" => {
-            let intensity = (e.float_at("intensity", lt).unwrap_or(0.5) as f32).clamp(0.0, 1.0);
+            // Intensity ceiling is open (K-135/FX-14): clamp only at zero, so
+            // > 1 extrapolates past the moshed frame. An old project with no
+            // Streak length param reaches the default 4 frames — deliberately
+            // stronger than the historical one-frame prediction (FX-14: the
+            // effect was too subtle), a sanctioned look change.
+            let intensity = (e.float_at("intensity", lt).unwrap_or(0.5) as f32).max(0.0);
+            let streak = (e.float_at("streak_length", lt).unwrap_or(4.0) as f32).max(1.0);
             let mix = (e.float_at("mix", lt).unwrap_or(100.0) as f32 / 100.0).clamp(0.0, 1.0);
-            Some(Resolved::Datamosh { intensity, mix })
+            Some(Resolved::Datamosh {
+                intensity,
+                streak,
+                mix,
+            })
         }
         "echo" => {
             // Echoes k = 1..count sit at offset -k with intensity

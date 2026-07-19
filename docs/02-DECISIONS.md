@@ -1699,3 +1699,25 @@ simplified (the dark half's base is black, band 0, so `eff_mult = 1 − Intensit
 CPU/GPU parity and the §1.6 oracle; Intensity 0 stays a bit-exact passthrough via the
 early-return. Spec: [08-EFFECTS.md](08-EFFECTS.md) §3.12. Built in an isolated worktree; not
 pushed — another agent may also claim K-147, renumber on merge if so.
+
+**K-148 · DECIDED · Datamosh gains Streak length and an open Intensity ceiling (FX-14).**
+The Datamosh effect (§3.12) was too subtle at its one-frame reach. Two changes: (1) the
+**Intensity** hard cap lifts (K-135 value-range policy) — clamped at zero below, open above,
+so a value over 1 extrapolates past the moshed frame for a punchier tear (`mix()` does not
+clamp in either the CPU oracle or the WGSL kernel; 0 stays a bit-exact passthrough). (2) a new
+**Streak length** (frames, default 4, hard min 1, open above) scales the flow displacement the
+single warp reaches, so it predicts that many frames of motion from the -1 reference — the
+accumulated smear of a long P-frame run before a clean reference frame (longer = more
+smearing). The shared optical-flow texture stays `rgba32float`; only its `.xy` is read (the
+`.z` confidence lane is untouched). The clean I-frame "reset" is content-driven — where the
+flow is zero/unmeasurable (a still, a cut) the warp lands on the pixel itself; a
+**fixed-interval** I-frame reset was considered but deferred, as it needs the comp frame index
+threaded through `resolve_stack` (a broad signature change for one parameter) and Streak length
+already delivers the "how much accumulated smear" control without it. The schema bumps version
+1 → 2. **Migration:** an old project (no `streak_length` param) folds to the default 4-frame
+reach — a deliberate look change (the effect was too subtle), the sanctioned kind K-146 also
+took. CPU/GPU parity and the §1.6 oracle hold (the oracle sweeps streaks 1–4 and an over-unity
+intensity). The `match_name` and label stay "datamosh" for now; a rename is wanted but
+unchosen (candidate names proposed to the owner). Spec: [08-EFFECTS.md](08-EFFECTS.md) §3.12.
+Built in an isolated worktree; not pushed — another agent may also claim K-148, renumber on
+merge if so.

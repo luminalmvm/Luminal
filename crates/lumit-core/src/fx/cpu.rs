@@ -784,17 +784,21 @@ pub fn motion_blur(
     }
 }
 
-/// The §1.6 oracle for Datamosh (docs/08 §3.12, K-104): the CPU twin of
-/// `fx_datamosh.wgsl`, op-for-op. `current` is the already block/scanline'd
-/// frame (linear premultiplied RGBA) this section blends against; `prev`
-/// is the raw -1 source neighbour; `u`/`v` are the dense flow the decode
-/// worker measured from the current frame to it (this raster's pixel
-/// grid, one entry per pixel — the same current→neighbour convention
-/// [`motion_blur`] uses for its own +1 neighbour, just pointed at -1). A
-/// single bilinear tap per pixel, not a streak integral: this looks up
-/// one displaced source pixel (motion-compensated prediction), not a
-/// line integral of motion. `intensity == 0.0` collapses every warped tap
-/// weight to zero, so the result is the bit-exact `current` input.
+/// The §1.6 oracle for Datamosh (docs/08 §3.12, K-104; Streak length added
+/// FX-14/K-148): the CPU twin of `fx_datamosh.wgsl`, op-for-op. `current` is
+/// the already block/scanline'd frame (linear premultiplied RGBA) this
+/// section blends against; `prev` is the raw -1 source neighbour; `u`/`v` are
+/// the dense flow the decode worker measured from the current frame to it
+/// (this raster's pixel grid, one entry per pixel — the same current→neighbour
+/// convention [`motion_blur`] uses for its own +1 neighbour, just pointed at
+/// -1). A single bilinear tap per pixel, not a streak integral: this looks up
+/// one displaced source pixel (motion-compensated prediction), not a line
+/// integral of motion. `streak` scales the flow displacement, so the warp
+/// reaches that many frames of predicted motion (1 = the historical
+/// one-frame prediction; higher accumulates more smear). `intensity == 0.0`
+/// collapses the blend to zero, so the result is the bit-exact `current`
+/// input regardless of `streak`.
+#[allow(clippy::too_many_arguments)]
 pub fn datamosh(
     current: &[f32],
     prev: &[f32],
@@ -803,13 +807,17 @@ pub fn datamosh(
     u: &[f32],
     v: &[f32],
     intensity: f32,
+    streak: f32,
 ) -> Vec<f32> {
     let mut out = current.to_vec();
     for y in 0..h {
         for x in 0..w {
             let idx = (y * w + x) as usize;
             let i = idx * 4;
-            let pos = (x as f32 + 0.5 + u[idx], y as f32 + 0.5 + v[idx]);
+            let pos = (
+                x as f32 + 0.5 + u[idx] * streak,
+                y as f32 + 0.5 + v[idx] * streak,
+            );
             let warped = bilinear(prev, w, h, pos.0, pos.1);
             for c in 0..4 {
                 out[i + c] = current[i + c] * (1.0 - intensity) + warped[c] * intensity;

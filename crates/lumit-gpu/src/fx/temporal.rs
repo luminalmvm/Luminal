@@ -54,23 +54,27 @@ struct MotionBlurParams {
 }
 
 /// One resolved Datamosh pass (docs/08 §3.12, K-104; its own effect since
-/// K-107). The raw -1 source neighbour and the dense current→previous flow
-/// field arrive as their own textures (see [`FxEngine::datamosh`]); this op
-/// carries only the scalar the kernel blends by. Callers fold the schema's
-/// Intensity and host Mix into this one field before calling (mixing the
-/// same two inputs twice collapses to one mix by the product), so this
-/// kernel and its CPU oracle need no second blend knob.
+/// K-107; Streak length added FX-14/K-148). The raw -1 source neighbour and
+/// the dense current→previous flow field arrive as their own textures (see
+/// [`FxEngine::datamosh`]); this op carries the blend scalar and the streak
+/// reach. Callers fold the schema's Intensity and host Mix into `intensity`
+/// before calling (mixing the same two inputs twice collapses to one mix by
+/// the product), so this kernel and its CPU oracle need no second blend knob.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DatamoshOp {
-    /// 0..1, blended against the current frame.
+    /// Blended against the current frame; > 1 extrapolates (K-135/FX-14).
     pub intensity: f32,
+    /// Frames of predicted motion the warp reaches (FX-14): scales the flow
+    /// displacement. 1 is the historical one-frame prediction.
+    pub streak: f32,
 }
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct DatamoshParams {
     intensity: f32,
-    _pad: [f32; 3],
+    streak: f32,
+    _pad: [f32; 2],
 }
 
 impl FxEngine {
@@ -223,9 +227,10 @@ impl FxEngine {
     /// Apply Datamosh (docs/08 §3.12, K-104; its own effect since K-107)
     /// to a linear working texture, returning a new texture of the
     /// same size. One pass: per output pixel, read its current→previous
-    /// motion vector from `flow` and take a single bilinear tap of `prev`
-    /// at the displaced position — a motion-compensated prediction, not a
-    /// streak integral — then blend against `cur` by Intensity. Shares
+    /// motion vector from `flow`, scale it by `op.streak` (the frames of
+    /// predicted motion the warp reaches), and take a single bilinear tap of
+    /// `prev` at the displaced position — a motion-compensated prediction,
+    /// not a streak integral — then blend against `cur` by Intensity. Shares
     /// [`Self::mb_layout`]/its pipeline layout with Motion blur (same
     /// three-sampled-input shape); its own pipeline and shader.
     #[allow(clippy::too_many_arguments)]
@@ -247,7 +252,8 @@ impl FxEngine {
                 label: Some("fx-dm-params"),
                 contents: bytemuck::bytes_of(&DatamoshParams {
                     intensity: op.intensity,
-                    _pad: [0.0; 3],
+                    streak: op.streak,
+                    _pad: [0.0; 2],
                 }),
                 usage: wgpu::BufferUsages::UNIFORM,
             });

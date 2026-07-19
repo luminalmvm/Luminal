@@ -2128,16 +2128,20 @@ fn wgsl_datamosh_matches_the_cpu_oracle() {
     }
     let varying = (vary_u, vary_v);
 
-    for (field, intensity, name) in [
-        (&constant, 1.0f32, "constant"),
-        (&varying, 0.6, "varying"),
-        (&constant, 0.35, "partial mix"),
+    // Streak length (FX-14) scales the flow reach; the > 1 intensity case
+    // exercises the open ceiling (K-135), which mix() extrapolates past the
+    // moshed frame in both the CPU and GPU paths.
+    for (field, intensity, streak, name) in [
+        (&constant, 1.0f32, 1.0f32, "constant streak1"),
+        (&varying, 0.6, 2.0, "varying streak2"),
+        (&constant, 0.35, 4.0, "partial mix streak4"),
+        (&varying, 1.4, 1.5, "over-unity streak1.5"),
     ] {
         let (u, v) = field;
-        let cpu = lumit_core::fx::cpu::datamosh(&current, &prev, w, h, u, v, intensity);
+        let cpu = lumit_core::fx::cpu::datamosh(&current, &prev, w, h, u, v, intensity, streak);
         // Datamosh reads only the flow .xy; confidence is irrelevant (empty).
         let flow_t = upload_flow_field(&ctx, u, v, &[], w, h);
-        let op = DatamoshOp { intensity };
+        let op = DatamoshOp { intensity, streak };
         let out = fx.datamosh(&ctx, &cur_t, &prev_t, &flow_t, w, h, &op);
         let gpu = readback_linear_f32(&ctx, &out, w, h).unwrap();
         let worst = worst_f16_ulp(&cpu, &gpu);
@@ -2151,7 +2155,7 @@ fn wgsl_datamosh_matches_the_cpu_oracle() {
         );
     }
 
-    // Intensity 0 must be a bit-exact passthrough regardless of motion.
+    // Intensity 0 must be a bit-exact passthrough regardless of motion/streak.
     let moving = upload_flow_field(&ctx, &constant.0, &constant.1, &[], w, h);
     let out = fx.datamosh(
         &ctx,
@@ -2160,7 +2164,10 @@ fn wgsl_datamosh_matches_the_cpu_oracle() {
         &moving,
         w,
         h,
-        &DatamoshOp { intensity: 0.0 },
+        &DatamoshOp {
+            intensity: 0.0,
+            streak: 8.0,
+        },
     );
     assert_eq!(
         readback_linear_f32(&ctx, &out, w, h).unwrap(),

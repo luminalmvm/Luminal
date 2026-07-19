@@ -711,7 +711,8 @@ beyond the ordinary parameter-animation case.
 
 #### Datamosh
 
-**Parameters:** Intensity (0–1, default 0.5), Mix.
+**Parameters:** Intensity (default 0.5, open above per K-135), Streak length (frames,
+default 4, hard min 1, open above per K-135), Mix.
 
 **Algorithm sketch.** Simulates I-frame removal by re-warping the previous source frame
 with the flow field measured from the current frame to it, instead of showing the current
@@ -719,9 +720,20 @@ frame — blended by Intensity × Mix. It is a *look*, not real bitstream corrup
 deterministic and safe. Reuses the §3.2 flow machinery Motion blur introduced (`flow_pair`
 on the shared `FlowEngine`) rather than needing new plumbing. A single bilinear tap per
 pixel reads the -1 neighbour at the position its own flow vector displaces to — a
-motion-compensated prediction, not Motion blur's multi-tap streak integral. Footage-only:
-with no -1 neighbour or flow field (a non-footage layer, or a dropped decode) it degrades to
-a no-op, never a fault. Temporal window `{-1, 0}` — statically, unlike its K-104-era shape as
+motion-compensated prediction, not Motion blur's multi-tap streak integral. **Streak length**
+(FX-14, K-148) scales that flow displacement, so the single warp reaches that many frames of
+predicted motion — the accumulated smear of a long P-frame run before a clean reference frame
+(longer = more smearing), directly addressing the effect being too subtle at one frame's
+reach. The clean "reset" is content-driven: where the flow is zero or unmeasurable (a still,
+a cut) the warp lands on the pixel itself, exactly where a real codec inserts an I-frame; a
+fixed-interval I-frame reset would need the comp frame index threaded into resolve and is a
+later refinement. **Intensity's hard ceiling is open** (K-135): above 1 the blend
+extrapolates past the moshed frame for a punchier tear (`mix()` does not clamp in either the
+CPU or GPU path); 0 stays the bit-exact passthrough regardless of Streak length. Only the
+flow's `.xy` is read (the shared field's `.z` confidence lane is left untouched).
+Footage-only: with no -1 neighbour or flow field (a non-footage layer, or a dropped decode)
+it degrades to a no-op, never a fault. Temporal window `{-1, 0}` — statically, unlike its
+K-104-era shape as
 a toggle inside the combined Glitch effect (see Status below). A layer can carry only one
 flow field per frame in v1; if a stack somehow has both a live Motion blur and a live
 Datamosh, whichever comes first in stack order wins the single slot and the other's

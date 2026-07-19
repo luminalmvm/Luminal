@@ -1721,28 +1721,30 @@ pub const BUILTINS: &[EffectSchema] = &[
             MIX_PARAM,
         ],
     },
-    // Datamosh (docs/08 §3.12, K-104, split out on its own by K-107):
-    // re-warps the -1 source neighbour along the flow measured from this
-    // frame to it — "reused an old frame's motion" — blended by Intensity.
-    // Reuses Motion blur's flow machinery and its own already-shipped GPU
-    // pass/CPU oracle unchanged (`FxEngine::datamosh`, `cpu::datamosh`):
-    // only the schema, the `Resolved` variant and the stack wiring are new.
-    // Previously a toggle inside the combined Glitch effect with a dynamic
-    // per-instance temporal reach (the one place `stack_temporal_window`/
-    // `stack_flow_neighbour` read a param value instead of the schema's own
-    // static `temporal`); as its own effect that toggle is gone and the
-    // reach is simply the schema's `{0, -1}`, exactly the static shape
-    // Motion blur's own `{0, 1}` already has. Footage-only: with no -1
-    // neighbour or flow field (a non-footage layer, or a dropped decode) it
-    // degrades to a no-op, never a fault. Category Distortion, matching
-    // Shake and RGB split (its closest siblings: a seeded positional
-    // wobble, a channel split) — but Datamosh itself reads no hash or seed,
-    // so `seeded: false`, unlike them.
+    // Datamosh (docs/08 §3.12, K-104, split out on its own by K-107; FX-14/
+    // K-148 lifted the Intensity cap and added Streak length): re-warps the
+    // -1 source neighbour along the flow measured from this frame to it —
+    // "reused an old frame's motion" — blended by Intensity. Streak length
+    // scales that flow displacement, so the single warp reaches that many
+    // frames of predicted motion — the accumulated smear of a long P-frame
+    // run before a clean reference frame (longer = more smearing). Reuses
+    // Motion blur's flow machinery and its GPU pass/CPU oracle
+    // (`FxEngine::datamosh`, `cpu::datamosh`). Previously a toggle inside the
+    // combined Glitch effect with a dynamic per-instance temporal reach (the
+    // one place `stack_temporal_window`/`stack_flow_neighbour` read a param
+    // value instead of the schema's own static `temporal`); as its own effect
+    // that toggle is gone and the reach is simply the schema's `{0, -1}`,
+    // exactly the static shape Motion blur's own `{0, 1}` already has.
+    // Footage-only: with no -1 neighbour or flow field (a non-footage layer,
+    // or a dropped decode) it degrades to a no-op, never a fault. Category
+    // Distortion, matching Shake and RGB split (its closest siblings: a
+    // seeded positional wobble, a channel split) — but Datamosh itself reads
+    // no hash or seed, so `seeded: false`, unlike them.
     EffectSchema {
         groups: &[],
         match_name: "datamosh",
         label: "Datamosh",
-        version: 1,
+        version: 2,
         category: FxCategory::Distortion,
         traits: EffectTraits {
             cost: CostClass::Cheap,
@@ -1759,12 +1761,27 @@ pub const BUILTINS: &[EffectSchema] = &[
             ParamSchema {
                 id: "intensity",
                 label: "Intensity",
-                // 0..1: blends between the ordinary frame and the moshed
-                // one. 0 is the bit-exact passthrough (pinned by test).
+                // Blends between the ordinary frame and the moshed one. 0 is
+                // the bit-exact passthrough (pinned by test); the hard ceiling
+                // is open (K-135/FX-14), so > 1 extrapolates past the moshed
+                // frame for a punchier tear.
                 kind: ParamKind::Float {
                     default: 0.5,
                     slider: (0.0, 1.0),
-                    hard: (Some(0.0), Some(1.0)),
+                    hard: (Some(0.0), None),
+                },
+            },
+            ParamSchema {
+                id: "streak_length",
+                label: "Streak length",
+                // Frames of predicted motion the single warp reaches: 1 is
+                // the historical one-frame prediction, higher reaches further
+                // along the flow so more smearing accumulates (the P-frame run
+                // length between clean reference frames). Open above (K-135).
+                kind: ParamKind::Float {
+                    default: 4.0,
+                    slider: (1.0, 16.0),
+                    hard: (Some(1.0), None),
                 },
             },
             MIX_PARAM,
