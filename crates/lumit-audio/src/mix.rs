@@ -162,6 +162,41 @@ mod tests {
         assert!(place_on_timeline(5.0, 6.0, 0.0, 96_000, 48_000).is_none()); // src_start past end
     }
 
+    #[test]
+    fn placement_confines_audio_to_the_active_span() {
+        // GEN-4 bug 3: a layer must only sound across its comp-time span.
+        // 4 s of 48 kHz source, audible only across comp time [1, 2).
+        let rate = 48_000u32;
+        let src = tone(4 * rate as usize, 0.5);
+        let (out_start, src_start, len) =
+            place_on_timeline(1.0, 2.0, 0.0, src.len() / 2, rate).unwrap();
+        // Exactly one second, landing at comp second 1.
+        assert_eq!(out_start, i64::from(rate));
+        assert_eq!(src_start, rate as usize);
+        assert_eq!(len, rate as usize);
+        // Mixed onto a 3 s strip: silence outside [1, 2), sound within it.
+        let placed = PlacedAudio {
+            start_frame: out_start,
+            samples: &src[src_start * 2..(src_start + len) * 2],
+            gain: 1.0,
+        };
+        let out = mix_stereo(&[placed], 3 * rate as usize);
+        assert!(
+            out[..rate as usize * 2].iter().all(|s| *s == 0.0),
+            "no audio before the in-point"
+        );
+        assert!(
+            out[2 * rate as usize * 2..].iter().all(|s| *s == 0.0),
+            "no audio after the out-point"
+        );
+        assert!(
+            out[rate as usize * 2..2 * rate as usize * 2]
+                .iter()
+                .all(|s| (*s - 0.5).abs() < 1e-6),
+            "the source sounds across the whole active span"
+        );
+    }
+
     fn tone(frames: usize, value: f32) -> Vec<f32> {
         vec![value; frames * 2]
     }

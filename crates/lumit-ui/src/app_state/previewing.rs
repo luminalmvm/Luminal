@@ -752,31 +752,50 @@ impl AppState {
             return; // silent comp: wall-clock fallback drives playback
         }
         let duration_s = comp.duration.0.to_f64();
+        let sig = super::audio_jobs_signature(&jobs, duration_s);
+        // Remember the bake we are about to spawn so [`Self::sync_comp_audio`]
+        // does not re-spawn the same one every frame while it decodes.
+        self.audio_preparing = Some((comp_id, sig));
         let tx = self.comp_audio_tx.clone();
         std::thread::spawn(move || {
             let samples = crate::export::mixdown(&jobs, rate, duration_s);
-            let _ = tx.send((comp_id, lumit_media::AudioBuffer { rate, samples }));
+            let _ = tx.send((comp_id, sig, lumit_media::AudioBuffer { rate, samples }));
         });
     }
 
     /// Drain any finished comp-audio mix; load it into the engine and, if the
-    /// comp is playing, start its clock at the current playhead.
+    /// comp is playing, start its clock at the current playhead. A delivery that
+    /// no longer matches the current comp (a newer edit changed it, or it fell
+    /// silent) is dropped — [`Self::sync_comp_audio`] handles the current state.
     #[cfg(feature = "media")]
     pub fn poll_comp_audio(&mut self) {
         let mut newest = None;
         while let Ok(msg) = self.comp_audio_rx.try_recv() {
             newest = Some(msg);
         }
-        let Some((comp_id, buffer)) = newest else {
+        let Some((comp_id, sig, buffer)) = newest else {
             return;
         };
+        if self.audio_preparing == Some((comp_id, sig)) {
+            self.audio_preparing = None;
+        }
         if self.preview_comp != Some(comp_id) {
             return; // the user moved on before the mix finished
         }
         let doc = self.store.snapshot();
-        let Some(fps) = doc.comp(comp_id).map(|c| c.frame_rate.fps().max(1.0)) else {
+        let Some(comp) = doc.comp(comp_id) else {
             return;
         };
+        let fps = comp.frame_rate.fps().max(1.0);
+        // Only present a mix that still matches the document: an edit made while
+        // it decoded (mute, move, trim, delete) supersedes it, and `sync` will
+        // have queued the right one. Dropping it here avoids a stale blip.
+        let current = self.comp_audio_jobs(&doc, comp);
+        if current.is_empty()
+            || super::audio_jobs_signature(&current, comp.duration.0.to_f64()) != sig
+        {
+            return;
+        }
         if self.ensure_audio_engine().is_none() {
             return;
         }
@@ -796,6 +815,61 @@ impl AppState {
             }
         }
         self.audio_loaded_comp = Some(comp_id);
+        self.audio_loaded_sig = Some(sig);
         self.audio_loaded = None; // the footage buffer is no longer loaded
+    }
+
+    /// Keep the loaded comp mix in step with the document. Runs each UI frame:
+    /// while a comp's audio is being managed (loaded, in flight, or playing),
+    /// an edit that changes what the comp sounds like re-bakes the mix, and a
+    /// comp that has fallen silent (every audio layer muted or deleted) is
+    /// unloaded so it stops sounding. This is what makes muting, moving,
+    /// trimming and deleting an audio layer take effect on playback (GEN-4).
+    #[cfg(feature = "media")]
+    pub fn sync_comp_audio(&mut self) {
+        let Some(comp_id) = self.preview_comp else {
+            return;
+        };
+        // Only manage audio we are already responsible for: a mix loaded for
+        // this comp, a bake in flight for it, or active playback of it. This
+        // keeps a comp with audio from decoding just because it is on screen.
+        let managing = self.comp_playback.is_some()
+            || self.audio_loaded_comp == Some(comp_id)
+            || self.audio_preparing.map(|(c, _)| c) == Some(comp_id);
+        if !managing {
+            return;
+        }
+        let doc = self.store.snapshot();
+        let Some(comp) = doc.comp(comp_id) else {
+            return;
+        };
+        let jobs = self.comp_audio_jobs(&doc, comp);
+        match super::comp_audio_sync(
+            self.audio_loaded_comp,
+            self.audio_loaded_sig,
+            self.audio_preparing,
+            comp_id,
+            &jobs,
+            comp.duration.0.to_f64(),
+        ) {
+            super::AudioSync::UpToDate => {}
+            super::AudioSync::Silence => {
+                if let Some(engine) = &self.audio_engine {
+                    engine.unload();
+                }
+                self.audio_loaded_comp = None;
+                self.audio_loaded_sig = None;
+                self.audio_preparing = None;
+                self.comp_waveform = None;
+                // Keep any in-progress playback going on the wall clock, from
+                // the current playhead (the audio clock has just gone away).
+                if self.comp_playback.is_some() {
+                    self.comp_playback = Some((Instant::now(), self.preview_frame));
+                }
+            }
+            super::AudioSync::Rebake(_) => {
+                self.prepare_comp_audio(comp_id);
+            }
+        }
     }
 }

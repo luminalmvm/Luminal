@@ -154,6 +154,72 @@ pub(crate) fn merge_paste_keys(
     out
 }
 
+/// A change-detection fingerprint of a comp's mixed audio: the ordered set of
+/// contributing sources with their comp-timeline placement, plus the mix length
+/// (the comp duration). Any edit that changes what the comp sounds like — mute,
+/// move, trim, delete, add a source — changes this. A baked mix is kept in step
+/// with the document by comparing this each frame, so a mix baked once never
+/// outlives the state it was baked from (the GEN-4 audio fixes). Pure, so the
+/// gating is a plain deterministic test.
+#[cfg(feature = "media")]
+pub(crate) fn audio_jobs_signature(jobs: &[crate::export::AudioJob], duration_s: f64) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    jobs.len().hash(&mut h);
+    duration_s.to_bits().hash(&mut h);
+    for j in jobs {
+        j.path.hash(&mut h);
+        j.in_s.to_bits().hash(&mut h);
+        j.out_s.to_bits().hash(&mut h);
+        j.offset_s.to_bits().hash(&mut h);
+    }
+    h.finish()
+}
+
+/// What keeping the loaded comp-audio mix in step with the document needs this
+/// frame, derived purely from the current jobs and what is loaded / in flight.
+#[cfg(feature = "media")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AudioSync {
+    /// The loaded mix already matches the comp: nothing to do.
+    UpToDate,
+    /// The comp is silent now (every audio layer muted or gone): unload it.
+    Silence,
+    /// The comp's audio changed: (re)bake to this signature.
+    Rebake(u64),
+}
+
+/// Decide how to reconcile the loaded comp mix with the current document. When
+/// the comp has no audible audio a loaded mix is unloaded ([`AudioSync::Silence`]);
+/// otherwise the mix is re-baked whenever its signature no longer matches, unless
+/// exactly that bake is already in flight. Pure — the four GEN-4 behaviours
+/// (mute, move, span, delete) are asserted against it without a device.
+#[cfg(feature = "media")]
+pub(crate) fn comp_audio_sync(
+    loaded_comp: Option<Uuid>,
+    loaded_sig: Option<u64>,
+    preparing: Option<(Uuid, u64)>,
+    comp_id: Uuid,
+    jobs: &[crate::export::AudioJob],
+    duration_s: f64,
+) -> AudioSync {
+    if jobs.is_empty() {
+        return if loaded_comp == Some(comp_id) {
+            AudioSync::Silence
+        } else {
+            AudioSync::UpToDate
+        };
+    }
+    let sig = audio_jobs_signature(jobs, duration_s);
+    if loaded_comp == Some(comp_id) && loaded_sig == Some(sig) {
+        return AudioSync::UpToDate;
+    }
+    if preparing == Some((comp_id, sig)) {
+        return AudioSync::UpToDate;
+    }
+    AudioSync::Rebake(sig)
+}
+
 /// The Y partner of a linked pair's X channel (Anchor/Position/Scale), or None —
 /// so copy carries both axes of a linked keyframe.
 fn linked_axis_partner(
@@ -522,11 +588,22 @@ pub struct AppState {
     /// The comp whose mixed audio is loaded in the engine (drives its clock).
     #[cfg(feature = "media")]
     audio_loaded_comp: Option<Uuid>,
-    /// Background-mixed comp audio arriving from the prepare thread.
+    /// Signature of the loaded comp mix (its contributing layers and their
+    /// placement). When an edit — mute, move, trim, delete — changes what the
+    /// comp sounds like, this stops matching the document and the mix is
+    /// re-baked, so playback always follows the current comp (GEN-4 fixes).
     #[cfg(feature = "media")]
-    comp_audio_rx: std::sync::mpsc::Receiver<(Uuid, lumit_media::AudioBuffer)>,
+    audio_loaded_sig: Option<u64>,
+    /// A comp-audio bake in flight: (comp, target signature). Stops the same
+    /// bake being re-spawned every frame while it decodes.
     #[cfg(feature = "media")]
-    comp_audio_tx: std::sync::mpsc::Sender<(Uuid, lumit_media::AudioBuffer)>,
+    audio_preparing: Option<(Uuid, u64)>,
+    /// Background-mixed comp audio arriving from the prepare thread, tagged with
+    /// the signature it was baked from so a superseded mix can be dropped.
+    #[cfg(feature = "media")]
+    comp_audio_rx: std::sync::mpsc::Receiver<(Uuid, u64, lumit_media::AudioBuffer)>,
+    #[cfg(feature = "media")]
+    comp_audio_tx: std::sync::mpsc::Sender<(Uuid, u64, lumit_media::AudioBuffer)>,
     /// Detected beats (comp id, bpm, (time_s, confidence)…) from the analysis
     /// thread.
     #[cfg(feature = "media")]
@@ -838,6 +915,10 @@ impl Default for AppState {
             audio_loaded: None,
             #[cfg(feature = "media")]
             audio_loaded_comp: None,
+            #[cfg(feature = "media")]
+            audio_loaded_sig: None,
+            #[cfg(feature = "media")]
+            audio_preparing: None,
             #[cfg(feature = "media")]
             comp_audio_rx,
             #[cfg(feature = "media")]

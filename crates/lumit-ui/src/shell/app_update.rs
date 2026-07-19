@@ -134,6 +134,9 @@ impl Shell {
         {
             self.app.poll_audio();
             self.app.poll_comp_audio();
+            // Keep the loaded comp mix in step with the document: mute, move,
+            // trim and delete of an audio layer all take effect here (GEN-4).
+            self.app.sync_comp_audio();
             self.app.poll_beats();
             // Transport keys (07-UI-SPEC keymap; shuttle speeds arrive with
             // the ring buffer — J/left step back, L plays, K/Space pause).

@@ -928,6 +928,15 @@ Two mechanisms make this safe, and you'll see them by name in the code:
   background thread so pressing Space never stalls; a silent comp just plays on a plain
   timer instead. This retires the old stopgap where comp playback guessed the time from a
   wall clock.
+  The mixed track is kept **in step with the comp**: each frame Lumit works out a small
+  fingerprint of what the comp should sound like (which layers make sound, and where each
+  sits on the timeline). If you mute a layer, slide it, trim it, or delete it, the
+  fingerprint changes and the track is re-mixed from the new state — and if muting or
+  deleting leaves nothing audible, the track is dropped so it stops sounding at once. Before
+  this, the track was mixed once when you pressed Space and never revisited, so those edits
+  had no effect on what you heard (the GEN-4 audio fixes). The fingerprint is a plain,
+  tested function, so "a muted layer is silent" and "a moved layer's sound moves with it"
+  are checked without needing a sound card.
 - **Beat detection** (`lumit-audio::beat`) — the groundwork for cutting to the music. It
   slides a short window along the track and, at each step, measures how much *new* energy
   appeared since the last step (the "spectral flux"); a kick or snare makes that number

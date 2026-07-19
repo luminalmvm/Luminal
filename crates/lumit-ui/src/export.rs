@@ -55,7 +55,7 @@ pub struct ItemInfo {
 /// One audio-bearing layer, as the export thread needs it: where its file
 /// is, its comp-timeline span, and its start offset (the same trio the
 /// preview mix uses, so export audio matches playback).
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub struct AudioJob {
     pub path: PathBuf,
     pub in_s: f64,

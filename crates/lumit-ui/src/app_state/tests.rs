@@ -665,3 +665,240 @@ fn repro_click_grabs_focus() {
     run(vec![]);
     eprintln!("focused after click = {}", focused_after.get());
 }
+
+// --- GEN-4 audio: the comp mix must follow the current comp state ---------
+//
+// The four owner-reported bugs (mute does nothing, moving a layer does not move
+// its audio, audio bleeds beyond the active span, a deleted layer keeps
+// sounding) shared one cause: the comp mix was baked once and never re-derived
+// from the document. These exercise the scheduler that decides *which* layers
+// contribute (`comp_audio_jobs`) and the reconciliation that keeps a loaded mix
+// in step (`comp_audio_sync` / `sync_comp_audio`) — device-free, since the
+// gating is pure arithmetic over the document.
+
+/// A composition with one audible footage layer (5 s of injected audio, no
+/// real decode): returns the app plus the comp and layer ids.
+#[cfg(feature = "media")]
+fn app_with_audio_layer() -> (AppState, Uuid, Uuid) {
+    use lumit_core::model::{FootageItem, MediaRef, ProjectItem};
+    let mut app = AppState::default();
+    app.new_composition();
+    app.confirm_comp_dialog();
+    let comp_id = app.selected_comp.unwrap();
+    let item_id = Uuid::now_v7();
+    app.commit(Op::AddItem {
+        index: app.store.snapshot().items.len(),
+        item: Box::new(ProjectItem::Footage(FootageItem {
+            id: item_id,
+            name: "clip.wav".into(),
+            extra: serde_json::Map::new(),
+            media: MediaRef {
+                relative_path: "clip.wav".into(),
+                absolute_path: "/tmp/clip.wav".into(),
+                extra: serde_json::Map::new(),
+            },
+        })),
+    });
+    // A Ready probe with an audio stream — enough for `comp_audio_jobs` to place
+    // the layer, without touching a file or a device.
+    app.media.map.insert(
+        item_id,
+        media::MediaStatus::Ready {
+            probe: lumit_media::MediaProbe {
+                duration_seconds: 5.0,
+                container: "wav".into(),
+                video: None,
+                audio: Some(lumit_media::AudioInfo {
+                    sample_rate: 48_000,
+                    channels: 2,
+                    codec: "pcm".into(),
+                }),
+            },
+            frames: 0,
+            vfr: false,
+        },
+    );
+    app.preview_comp = Some(comp_id);
+    app.add_footage_to_comp(item_id);
+    let layer_id = app.store.snapshot().comp(comp_id).unwrap().layers[0].id;
+    (app, comp_id, layer_id)
+}
+
+/// Mark the current comp mix as loaded (as `poll_comp_audio` would), returning
+/// its signature, so an edit afterwards can be seen to stale it.
+#[cfg(feature = "media")]
+fn mark_mix_loaded(app: &mut AppState, comp_id: Uuid) -> u64 {
+    let doc = app.store.snapshot();
+    let comp = doc.comp(comp_id).unwrap();
+    let jobs = app.comp_audio_jobs(&doc, comp);
+    let sig = super::audio_jobs_signature(&jobs, comp.duration.0.to_f64());
+    drop(doc);
+    app.audio_loaded_comp = Some(comp_id);
+    app.audio_loaded_sig = Some(sig);
+    sig
+}
+
+/// The reconciliation decision for the comp as it stands now.
+#[cfg(feature = "media")]
+fn audio_sync_decision(app: &AppState, comp_id: Uuid) -> AudioSync {
+    let doc = app.store.snapshot();
+    let comp = doc.comp(comp_id).unwrap();
+    let jobs = app.comp_audio_jobs(&doc, comp);
+    super::comp_audio_sync(
+        app.audio_loaded_comp,
+        app.audio_loaded_sig,
+        app.audio_preparing,
+        comp_id,
+        &jobs,
+        comp.duration.0.to_f64(),
+    )
+}
+
+/// The comp audio job for the sole footage layer, if any.
+#[cfg(feature = "media")]
+fn only_audio_job(app: &AppState, comp_id: Uuid) -> Option<crate::export::AudioJob> {
+    let doc = app.store.snapshot();
+    let comp = doc.comp(comp_id).unwrap();
+    app.comp_audio_jobs(&doc, comp).into_iter().next()
+}
+
+/// Bug 1: a muted layer must drop out of the mix. The mixer is fed from
+/// `comp_audio_jobs`, so muting must remove the layer's contribution, and a
+/// loaded mix must reconcile to silence.
+#[cfg(feature = "media")]
+#[test]
+fn muting_an_audio_layer_drops_it_from_the_mix() {
+    let (mut app, comp_id, layer_id) = app_with_audio_layer();
+    assert!(only_audio_job(&app, comp_id).is_some(), "audible to start");
+
+    mark_mix_loaded(&mut app, comp_id);
+    assert_eq!(audio_sync_decision(&app, comp_id), AudioSync::UpToDate);
+
+    app.commit(Op::SetLayerAudible {
+        comp: comp_id,
+        layer: layer_id,
+        audible: false,
+    });
+    assert!(
+        only_audio_job(&app, comp_id).is_none(),
+        "a muted layer contributes nothing"
+    );
+    assert_eq!(
+        audio_sync_decision(&app, comp_id),
+        AudioSync::Silence,
+        "the loaded mix must unload once its only audio is muted"
+    );
+}
+
+/// Bug 1, wired: `sync_comp_audio` unloads a comp that muting has silenced, so
+/// the engine stops sounding it (and playback continues on the wall clock).
+#[cfg(feature = "media")]
+#[test]
+fn sync_unloads_a_comp_silenced_by_muting() {
+    let (mut app, comp_id, layer_id) = app_with_audio_layer();
+    mark_mix_loaded(&mut app, comp_id);
+    app.comp_playback = Some((Instant::now(), 0));
+
+    app.commit(Op::SetLayerAudible {
+        comp: comp_id,
+        layer: layer_id,
+        audible: false,
+    });
+    app.sync_comp_audio();
+
+    assert_eq!(app.audio_loaded_comp, None, "the silenced mix is unloaded");
+    assert_eq!(app.audio_loaded_sig, None);
+    assert!(
+        app.comp_playback.is_some(),
+        "playback keeps going on the wall clock"
+    );
+}
+
+/// Bug 2: moving the layer in time must move its audio — the placement follows
+/// the layer's in-point and start offset, so a loaded mix stales and re-bakes.
+#[cfg(feature = "media")]
+#[test]
+fn moving_an_audio_layer_moves_its_audio_and_rebakes() {
+    use lumit_core::time::CompTime;
+    let (mut app, comp_id, layer_id) = app_with_audio_layer();
+    let job = only_audio_job(&app, comp_id).unwrap();
+    assert!((job.offset_s - 0.0).abs() < 1e-9 && (job.in_s - 0.0).abs() < 1e-9);
+
+    let sig = mark_mix_loaded(&mut app, comp_id);
+    // Slide the whole layer 2 s later (in, out and start offset together).
+    let at = |t: f64| CompTime(Rational::from_f64_on_grid(t, 1000).unwrap());
+    app.commit(Op::SetLayerSpan {
+        comp: comp_id,
+        layer: layer_id,
+        in_point: at(2.0),
+        out_point: at(7.0),
+        start_offset: at(2.0),
+    });
+
+    let moved = only_audio_job(&app, comp_id).unwrap();
+    assert!(
+        (moved.offset_s - 2.0).abs() < 1e-9 && (moved.in_s - 2.0).abs() < 1e-9,
+        "the audio now starts 2 s later: in={} offset={}",
+        moved.in_s,
+        moved.offset_s
+    );
+    match audio_sync_decision(&app, comp_id) {
+        AudioSync::Rebake(new_sig) => assert_ne!(new_sig, sig, "the mix must change"),
+        other => panic!("moving a layer should re-bake, got {other:?}"),
+    }
+}
+
+/// Bug 3: audio must not sound outside the layer's active span. Trimming the
+/// out-point shorter changes the placed span, so the loaded mix stales and the
+/// re-bake confines the audio to the new span.
+#[cfg(feature = "media")]
+#[test]
+fn trimming_an_audio_layer_confines_the_audio_to_the_new_span() {
+    use lumit_core::time::CompTime;
+    let (mut app, comp_id, layer_id) = app_with_audio_layer();
+    let job = only_audio_job(&app, comp_id).unwrap();
+    assert!((job.out_s - 5.0).abs() < 0.02, "out at ~5 s: {}", job.out_s);
+
+    let sig = mark_mix_loaded(&mut app, comp_id);
+    // Trim the out-point back to 2 s (in and offset unchanged).
+    app.commit(Op::SetLayerSpan {
+        comp: comp_id,
+        layer: layer_id,
+        in_point: CompTime(Rational::ZERO),
+        out_point: CompTime(Rational::from_f64_on_grid(2.0, 1000).unwrap()),
+        start_offset: CompTime(Rational::ZERO),
+    });
+
+    let trimmed = only_audio_job(&app, comp_id).unwrap();
+    assert!(
+        (trimmed.out_s - 2.0).abs() < 1e-9,
+        "the audible span shrank to [0, 2): {}",
+        trimmed.out_s
+    );
+    match audio_sync_decision(&app, comp_id) {
+        AudioSync::Rebake(new_sig) => assert_ne!(new_sig, sig),
+        other => panic!("trimming a layer should re-bake, got {other:?}"),
+    }
+}
+
+/// Bug 4: deleting the audio layer must stop its sound — with no audio layer
+/// left, the comp is silent and the loaded mix reconciles to silence.
+#[cfg(feature = "media")]
+#[test]
+fn deleting_the_audio_layer_silences_the_comp() {
+    let (mut app, comp_id, layer_id) = app_with_audio_layer();
+    mark_mix_loaded(&mut app, comp_id);
+
+    app.selected_layer = Some(layer_id);
+    app.delete_selected_layer();
+
+    assert!(
+        only_audio_job(&app, comp_id).is_none(),
+        "the deleted layer no longer contributes"
+    );
+    assert_eq!(
+        audio_sync_decision(&app, comp_id),
+        AudioSync::Silence,
+        "a comp with no audio layer must unload its mix"
+    );
+}
