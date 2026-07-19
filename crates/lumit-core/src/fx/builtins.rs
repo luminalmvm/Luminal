@@ -1640,11 +1640,12 @@ pub const BUILTINS: &[EffectSchema] = &[
                 id: "edge",
                 label: "Edges",
                 // How the resample treats the border the wobble reveals (P3,
-                // K-145). Default Repeat: full-frame game footage never
-                // darkens along the edge, matching the blur family's choice.
+                // K-145). Default Mirror (owner, 2026-07-19; was Repeat): the
+                // reflected border reads more naturally under the shake's own
+                // motion blur than a smeared repeat edge.
                 kind: ParamKind::Choice {
                     options: EDGE_OPTIONS,
-                    default: 1,
+                    default: 2,
                     dividers_after: CHOICE_UNGROUPED,
                 },
             },
@@ -1897,9 +1898,11 @@ pub const BUILTINS: &[EffectSchema] = &[
                 // Blends between the ordinary frame and the moshed one. 0 is
                 // the bit-exact passthrough (pinned by test); the hard ceiling
                 // is open (K-135/FX-14), so > 1 extrapolates past the moshed
-                // frame for a punchier tear.
+                // frame for a punchier tear. Default 1 (owner, 2026-07-19):
+                // below 1 it reads like a lowered Mix, so the full melt is the
+                // out-of-the-box look.
                 kind: ParamKind::Float {
-                    default: 0.5,
+                    default: 1.0,
                     slider: (0.0, 1.0),
                     hard: (Some(0.0), None),
                 },
@@ -2092,19 +2095,11 @@ pub const BUILTINS: &[EffectSchema] = &[
                     hard: (None, None),
                 },
             },
-            ParamSchema {
-                id: "scope",
-                label: "Scope",
-                // Everything below = adjustment behaviour (the whole composite
-                // beneath holds); This layer's effects = only the layer's own
-                // source and stack hold. Default adjustment, the owner's global
-                // pass.
-                kind: ParamKind::Choice {
-                    options: &["Everything below", "This layer's effects"],
-                    default: 0,
-                    dividers_after: CHOICE_UNGROUPED,
-                },
-            },
+            // The Scope choice was removed (owner, 2026-07-19 / K-166): the
+            // reach is implied by the carrier now — a plain layer holds its own
+            // source and effect stack, an adjustment layer holds everything
+            // below (that IS its effect input). A stored `scope` on an old
+            // instance is simply unread.
         ],
     },
     // Accumulation motion blur (docs/08 §3.26, docs/impl/temporal-rerender.md):

@@ -1016,7 +1016,9 @@ impl Default for AppState {
             graph_last_fit: None,
             graph_retime: false,
             vegas_default_lens: false,
-            timeline_grid: TimelineGrid::Time,
+            // Off by default (owner): the vertical lane guide lines are opt-in,
+            // via the bottom-bar Grid pick or the lane right-click menu.
+            timeline_grid: TimelineGrid::Off,
             graph_retime_edit: None,
             preview_comp: None,
             comp_playback: None,

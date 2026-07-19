@@ -917,7 +917,9 @@ pub(crate) fn posterize_below(
 ) -> Option<TemporalBelow> {
     let lt = t_comp - layer.start_offset.0.to_f64();
     let p = lumit_core::fx::stack_posterize(&layer.effects, layer.switches.fx, lt)?;
-    if p.scope != lumit_core::fx::PosterizeScope::EverythingBelow {
+    // The below-render reach is implied by the carrier (K-166): only an
+    // adjustment layer's Posterize holds the composite beneath it.
+    if !matches!(layer.kind, lumit_core::model::LayerKind::Adjustment) {
         return None;
     }
     let tau = lumit_core::fx::posterize_held_time(t_comp, p.rate, p.phase);

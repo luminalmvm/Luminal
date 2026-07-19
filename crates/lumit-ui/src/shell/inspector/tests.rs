@@ -419,6 +419,11 @@ mod motion_blur_switch_tests {
     /// commits, if any.
     fn click_motion_blur(comp_id: Uuid, layer: &Layer) -> Option<lumit_core::Op> {
         let ctx = egui::Context::default();
+        // The switch paints an icon-font glyph now, so the headless context
+        // needs the icon family installed or epaint faults on the unknown font.
+        let mut fonts = egui::FontDefinitions::default();
+        crate::icons::install(&mut fonts);
+        ctx.set_fonts(fonts);
         let theme = Theme::for_scheme(ColorScheme::ALL[0], ThemeShape::Sharp);
         let pending: std::cell::RefCell<Option<lumit_core::Op>> = std::cell::RefCell::new(None);
         let slot = egui::Rect::from_min_size(egui::pos2(50.0, 50.0), egui::vec2(40.0, 16.0));

@@ -27,28 +27,24 @@ fn posterize_held_time_snaps_to_the_grid() {
     assert_eq!(posterize_held_time(0.42, -5.0, 0.0), 0.42);
 }
 
-// stack_posterize finds the effect, resolves its grid and scope, and reports
-// nothing for a bypassed stack or a plain one — so a layer with no Posterize
-// pays nothing.
+// stack_posterize finds the effect, resolves its grid, and reports nothing for
+// a bypassed stack or a plain one — so a layer with no Posterize pays nothing.
+// The Scope choice is gone (K-166): the reach is implied by the carrier.
 #[test]
 fn stack_posterize_detects_and_resolves() {
     let mut e = instantiate("posterize_time").unwrap();
-    // Default scope is Everything below; default rate 12, phase 0.
+    // No scope parameter any more (K-166); default rate 12, phase 0.
+    assert!(e.params.iter().all(|p| p.id != "scope"));
     let p = stack_posterize(std::slice::from_ref(&e), true, 0.0).unwrap();
     assert_eq!(p.rate, 12.0);
     assert_eq!(p.phase, 0.0);
-    assert_eq!(p.scope, PosterizeScope::EverythingBelow);
-    // The This-layer scope is reported so the adjustment path can skip it.
     for param in &mut e.params {
-        match param.id.as_str() {
-            "rate" => param.value = EffectValue::Float(Property::fixed(8.0)),
-            "scope" => param.value = EffectValue::Choice(1),
-            _ => {}
+        if param.id == "rate" {
+            param.value = EffectValue::Float(Property::fixed(8.0));
         }
     }
     let p = stack_posterize(std::slice::from_ref(&e), true, 0.0).unwrap();
     assert_eq!(p.rate, 8.0);
-    assert_eq!(p.scope, PosterizeScope::ThisLayer);
     // Bypassed (fx off) or disabled → nothing.
     assert!(stack_posterize(std::slice::from_ref(&e), false, 0.0).is_none());
     e.enabled = false;
@@ -58,18 +54,15 @@ fn stack_posterize_detects_and_resolves() {
     assert!(stack_posterize(std::slice::from_ref(&blur), true, 0.0).is_none());
 }
 
-// this_layer_effect_time (docs/08 §3.25): a *This layer's effects* Posterize
-// holds this layer's own stack on the coarse grid, while *Everything below*, a
-// plain stack, or a bypassed one leave the layer time untouched (that scope
-// re-renders the layers beneath instead).
+// this_layer_effect_time (docs/08 §3.25, K-166): any live Posterize holds this
+// layer's own stack on the coarse grid; a plain or bypassed stack leaves the
+// layer time untouched.
 #[test]
-fn this_layer_effect_time_holds_only_the_this_layer_scope() {
+fn this_layer_effect_time_holds_the_stack_on_the_grid() {
     let mut e = instantiate("posterize_time").unwrap();
     for p in &mut e.params {
-        match p.id.as_str() {
-            "rate" => p.value = EffectValue::Float(Property::fixed(10.0)),
-            "scope" => p.value = EffectValue::Choice(1), // This layer's effects
-            _ => {}
+        if p.id == "rate" {
+            p.value = EffectValue::Float(Property::fixed(10.0));
         }
     }
     // 10 fps grid, no offset: t = 0.35 holds at 0.3.
@@ -80,18 +73,7 @@ fn this_layer_effect_time_holds_only_the_this_layer_scope() {
     assert!(
         (this_layer_effect_time(std::slice::from_ref(&e), true, -0.65, 1.0) - (-0.7)).abs() < 1e-9
     );
-    // Everything below leaves the layer time untouched (its re-render is the
-    // adjustment path, not a per-layer substitution).
-    for p in &mut e.params {
-        if p.id == "scope" {
-            p.value = EffectValue::Choice(0);
-        }
-    }
-    assert_eq!(
-        this_layer_effect_time(std::slice::from_ref(&e), true, 0.35, 0.0),
-        0.35
-    );
-    // Bypassed or plain stacks are untouched too.
+    // Bypassed or plain stacks are untouched.
     assert_eq!(
         this_layer_effect_time(std::slice::from_ref(&e), false, 0.35, 0.0),
         0.35
@@ -163,33 +145,15 @@ fn posterize_sample_times_snap_covered_layers_to_the_grid() {
     );
     assert!((st[2] - 0.3).abs() < 1e-9);
 
-    // T12: a Posterize on a plain (footage) layer holds THAT layer's own source,
-    // so applying Posterize to footage steps it — before, only an adjustment
-    // above a layer held anything. Everything-below also holds the layer below.
+    // K-166: a Posterize on a plain (footage) layer holds ONLY that layer's own
+    // sampling — the reach is implied by the carrier, so a non-adjustment
+    // carrier never holds the layers beneath it.
     let on_footage = vec![footage(vec![post.clone()]), footage(vec![])];
     let stf = posterize_sample_times(&on_footage, 0.37);
     assert!((stf[0] - 0.3).abs() < 1e-9, "the posterised footage snaps");
-    assert!((stf[1] - 0.3).abs() < 1e-9, "and everything below it snaps");
-
-    // A This-layer Posterize holds only its own layer's sampling; the layer
-    // below it stays live.
-    let mut this = instantiate("posterize_time").unwrap();
-    for p in &mut this.params {
-        match p.id.as_str() {
-            "rate" => p.value = EffectValue::Float(Property::fixed(10.0)),
-            "scope" => p.value = EffectValue::Choice(1),
-            _ => {}
-        }
-    }
-    let layers = vec![footage(vec![this]), footage(vec![])];
-    let st = posterize_sample_times(&layers, 0.37);
     assert!(
-        (st[0] - 0.3).abs() < 1e-9,
-        "the This-layer layer snaps its own sampling"
-    );
-    assert!(
-        (st[1] - 0.37).abs() < 1e-9,
-        "a layer below a This-layer Posterize is untouched"
+        (stf[1] - 0.37).abs() < 1e-9,
+        "a layer below a plain-layer Posterize stays live (K-166)"
     );
 
     // No live Posterize → every layer stays at the live playhead.
@@ -604,7 +568,7 @@ fn motion_blur_and_datamosh_together_the_first_in_stack_order_wins() {
 #[test]
 fn datamosh_instantiates_and_resolves() {
     let e = instantiate("datamosh").unwrap();
-    assert_eq!(e.float_at("intensity", 0.0), Some(0.5));
+    assert_eq!(e.float_at("intensity", 0.0), Some(1.0));
     assert_eq!(e.float_at("displacement", 0.0), Some(4.0));
     assert_eq!(e.float_at("bloom", 0.0), Some(0.6));
     assert_eq!(e.float_at("reset_interval", 0.0), Some(0.0));
@@ -621,7 +585,7 @@ fn datamosh_instantiates_and_resolves() {
     assert_eq!(
         r,
         vec![Resolved::Datamosh {
-            intensity: 0.5,
+            intensity: 1.0,
             displacement: 4.0,
             bloom: 0.6,
             steps: 4,
@@ -697,7 +661,7 @@ fn datamosh_intensity_ceiling_is_open_and_displacement_migrates() {
     assert_eq!(
         r,
         vec![Resolved::Datamosh {
-            intensity: 0.5,
+            intensity: 1.0,
             displacement: 7.0,
             bloom: 0.6,
             steps: 7,
@@ -742,7 +706,7 @@ fn datamosh_reset_interval_ramps_the_melt() {
     assert_eq!(datamosh_reach(&e, 2.0), (0.0, 0.0));
     // Half-way through the interval the ramp is 0.5.
     let (mid_i, mid_d) = datamosh_reach(&e, 1.0);
-    assert!((mid_i - 0.25).abs() < 1e-6, "intensity 0.5 × 0.5");
+    assert!((mid_i - 0.5).abs() < 1e-6, "intensity 1.0 × 0.5");
     assert!((mid_d - 2.0).abs() < 1e-6, "displacement 4 × 0.5");
     // Just before the next reset the ramp is near full.
     let (late_i, late_d) = datamosh_reach(&e, 1.9);
@@ -754,7 +718,7 @@ fn datamosh_reset_interval_ramps_the_melt() {
     let off = instantiate("datamosh").unwrap();
     assert_eq!(
         datamosh_reach(&off, 0.0),
-        (0.5, 4.0),
+        (1.0, 4.0),
         "reset off → full melt at t=0"
     );
 }
@@ -3563,7 +3527,7 @@ fn shake_instantiates_with_a_per_instance_seed_and_resolves() {
     assert_eq!(e.float_at("x_amp", 0.0), Some(1.0));
     assert_eq!(e.float_at("y_freq", 0.0), Some(1.0));
     assert_eq!(e.float_at("z_amp", 0.0), Some(0.0));
-    assert!(matches!(e.param("edge"), Some(EffectValue::Choice(1))));
+    assert!(matches!(e.param("edge"), Some(EffectValue::Choice(2))));
     assert!(e.param("zoom_pump").is_none());
     assert!(e.param("auto_scale").is_none());
     assert!(matches!(e.param("seed"), Some(EffectValue::Seed(_))));
@@ -3612,10 +3576,10 @@ fn shake_instantiates_with_a_per_instance_seed_and_resolves() {
     };
     // 1.5% of a 1000px diagonal = 15px ceiling; the wobble stays
     // within it, z amount 0 leaves zoom at exactly 1, and the default
-    // Edges control is Repeat (code 1).
+    // Edges control is Mirror (code 2 — owner, 2026-07-19).
     assert!(offset_px[0].abs() <= 15.0 && offset_px[1].abs() <= 15.0);
     assert_eq!(zoom, 1.0);
-    assert_eq!(edge, 1);
+    assert_eq!(edge, 2);
     assert_eq!(mix, 1.0);
 
     // Different frames wobble differently; different seeds too.

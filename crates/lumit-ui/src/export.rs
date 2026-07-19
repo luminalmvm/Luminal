@@ -1393,8 +1393,10 @@ impl Renderer<'_> {
                 // layers beneath at the held time, exactly as the preview does. A
                 // Posterize Time effect resolves to no op, so this — not `fx` — is
                 // what keeps such an adjustment live.
+                // The reach is implied by the carrier (K-166): only an
+                // adjustment layer's Posterize re-renders the layers beneath.
                 let posterize = lumit_core::fx::stack_posterize(&l.effects, l.switches.fx, lt)
-                    .filter(|p| p.scope == lumit_core::fx::PosterizeScope::EverythingBelow);
+                    .filter(|_| matches!(l.kind, lumit_core::model::LayerKind::Adjustment));
                 // Accumulation motion blur everything-below (docs/08 §3.26): N
                 // sub-frame below-renders averaged. Like Posterize it resolves to
                 // no op, so this — not `fx` — keeps such an adjustment live.

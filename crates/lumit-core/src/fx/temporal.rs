@@ -1,27 +1,17 @@
 use super::*;
-use crate::model::{EffectInstance, EffectNamespace, EffectValue, Layer};
-
-/// Which layers a Posterize Time effect (docs/08 §3.25) holds in time — the
-/// owner's Scope choice.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PosterizeScope {
-    /// Adjustment behaviour: the composite of everything below the effect's
-    /// layer renders at the held time (the owner's global stop-motion pass).
-    EverythingBelow,
-    /// Only the layer's own source and effect stack sample the held time.
-    ThisLayer,
-}
+use crate::model::{EffectInstance, EffectNamespace, Layer};
 
 /// A Posterize Time effect resolved at a layer time (docs/08 §3.25,
-/// docs/impl/temporal-rerender.md): the coarse grid it snaps time to and the
-/// scope it covers.
+/// docs/impl/temporal-rerender.md): the coarse grid it snaps time to. Its
+/// reach is implied by the carrier (K-166, superseding the old Scope choice):
+/// a plain layer holds its own source and effect stack; an adjustment layer
+/// holds everything below it — that composite IS its effect input.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PosterizeParams {
     /// Posterised frame rate in fps — the grid the current time snaps down to.
     pub rate: f64,
     /// Grid phase offset in comp seconds (shifts where the steps land).
     pub phase: f64,
-    pub scope: PosterizeScope,
 }
 
 /// The held comp time for Posterize Time (docs/08 §3.25): the current comp time
@@ -38,19 +28,18 @@ pub fn posterize_held_time(t: f64, rate: f64, phase: f64) -> f64 {
     ((t - phase) * rate).floor() / rate + phase
 }
 
-/// The layer time a *This layer's effects* Posterize Time holds this layer's
-/// own effect stack at (docs/08 §3.25): the coarse-grid held time in the layer's
-/// own time base. Returns `lt` unchanged when the stack has no live Posterize or
-/// its scope is *Everything below* (that scope re-renders the layers beneath
-/// instead — the adjustment path, not this per-layer time substitution). `lt` is
-/// the layer time the stack would otherwise resolve at and `start_offset` is the
-/// layer's own offset, so the hold is computed on the comp time `lt +
-/// start_offset` (matching the *Everything below* path, which holds on comp
-/// time) and mapped back into the layer's base. Only the effect stack is held —
-/// the caller keeps the layer's transform and source live, so the effects step
-/// on the grid while the layer itself moves smoothly. Pure and deterministic, so
-/// the preview and export derive the identical held time (K-031); shared by both
-/// so a *This layer's effects* frame is identical in the viewport and the file.
+/// The layer time a Posterize Time holds this layer's own effect stack at
+/// (docs/08 §3.25, K-166): the coarse-grid held time in the layer's own time
+/// base, whenever the stack carries a live Posterize. `lt` is the layer time
+/// the stack would otherwise resolve at and `start_offset` the layer's own
+/// offset, so the hold is computed on the comp time `lt + start_offset`
+/// (matching the adjustment below-render path, which holds on comp time) and
+/// mapped back into the layer's base. Only the effect stack is held — the
+/// caller keeps the layer's transform and source live, so the effects step on
+/// the grid while the layer itself moves smoothly. On an adjustment layer the
+/// below-render seam holds the input on the same grid, so this snap is
+/// consistent with it. Pure and deterministic, shared by preview and export
+/// (K-031).
 pub fn this_layer_effect_time(
     effects: &[EffectInstance],
     fx_on: bool,
@@ -58,10 +47,8 @@ pub fn this_layer_effect_time(
     start_offset: f64,
 ) -> f64 {
     match stack_posterize(effects, fx_on, lt) {
-        Some(p) if p.scope == PosterizeScope::ThisLayer => {
-            posterize_held_time(lt + start_offset, p.rate, p.phase) - start_offset
-        }
-        _ => lt,
+        Some(p) => posterize_held_time(lt + start_offset, p.rate, p.phase) - start_offset,
+        None => lt,
     }
 }
 
@@ -84,11 +71,9 @@ pub fn stack_posterize(
         .map(|e| {
             let rate = e.float_at("rate", lt).unwrap_or(12.0);
             let phase = e.float_at("phase", lt).unwrap_or(0.0);
-            let scope = match e.param("scope") {
-                Some(EffectValue::Choice(1)) => PosterizeScope::ThisLayer,
-                _ => PosterizeScope::EverythingBelow,
-            };
-            PosterizeParams { rate, phase, scope }
+            // A stored `scope` from a pre-K-166 project is simply unread: the
+            // reach is implied by the carrier now.
+            PosterizeParams { rate, phase }
         })
 }
 
@@ -99,12 +84,14 @@ pub fn stack_posterize(
 /// in the same top-to-bottom document order (index 0 is the topmost layer, so a
 /// layer at a higher index is *below*).
 ///
-/// Two holds compose onto a running sample time as the walk descends:
-/// * a **This layer** Posterize on a layer holds that layer's own sample time
-///   (so its footage playback and transform step — the owner's per-layer
-///   stop-motion), affecting only itself;
-/// * an **Everything below** Posterize on an adjustment layer holds the sample
-///   time of every layer beneath it (the owner's global stop-motion pass).
+/// Two holds compose onto a running sample time as the walk descends (K-166 —
+/// the reach is implied by the carrier, no Scope choice):
+/// * a Posterize on a plain layer holds that layer's own sample time (so its
+///   footage playback and transform step — the owner's per-layer stop-motion),
+///   affecting only itself;
+/// * a Posterize on an ADJUSTMENT layer holds the sample time of every layer
+///   beneath it (the owner's global stop-motion pass) — the composite below is
+///   that layer's effect input, so "this layer's effects" reaches it.
 ///
 /// This is the piece that makes Posterize Time visibly step *footage playback*,
 /// not only comp-driven animation: the decode planner reads this to snap which
@@ -131,12 +118,12 @@ pub fn posterize_sample_times(layers: &[Layer], t_comp: f64) -> Vec<f64> {
             sample_t = posterize_held_time(below_hold, p.rate, p.phase);
         }
         out.push(sample_t);
-        // An Everything-below Posterize holds every layer beneath it too, whatever
-        // the carrying layer's kind (an adjustment stop-motion pass, or a plain
-        // layer with content below it) — compose its grid onto the running
-        // below-hold so nested holds snap the already-held time again.
+        // A Posterize carried by an ADJUSTMENT layer holds every layer beneath
+        // it too (K-166: the composite below is its effect input) — compose its
+        // grid onto the running below-hold so nested holds snap the
+        // already-held time again.
         if let Some(p) = &here {
-            if p.scope == PosterizeScope::EverythingBelow {
+            if matches!(layer.kind, crate::model::LayerKind::Adjustment) {
                 below_hold = posterize_held_time(below_hold, p.rate, p.phase);
             }
         }

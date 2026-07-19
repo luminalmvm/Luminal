@@ -232,4 +232,7 @@ pub(crate) fn column_header_icons(
     label(edge - 120.0, "Blend", egui::Align2::CENTER_CENTER);
     icon(edge - 75.0, Icon::Flow);
     icon(edge - 49.0, Icon::Cube3d);
+    // The motion-blur column (owner): the same speed-lines glyph the per-layer
+    // switch and the comp master wear, over the far-right slot.
+    icon(edge - 17.0, Icon::MotionBlur);
 }

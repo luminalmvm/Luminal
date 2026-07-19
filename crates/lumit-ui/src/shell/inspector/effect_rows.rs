@@ -564,34 +564,10 @@ pub(crate) fn effects_rows(
                 }
                 c.data_mut(|d| d.remove::<(usize, f32)>(fx_drag_id));
             }
-            // Clicking the effect name (a click, not a reorder drag) selects the
-            // whole effect (T6): every param row joins the selection so the title
-            // highlights and the effect can be keyed or saved as a preset. Plain
-            // click replaces the selection; Ctrl toggles this effect's rows.
+            // Clicking the effect name focuses its layer (UI-2) and nothing
+            // more — the whole-effect select-on-title-click (T6) was reversed
+            // by the owner (2026-07-19).
             if name_resp.clicked() {
-                let rows: Vec<crate::app_state::PropSel> = (0..e.params.len())
-                    .map(|pi| crate::app_state::PropSel {
-                        layer: layer.id,
-                        row: crate::app_state::PropRow::Effect {
-                            effect: idx,
-                            param: pi,
-                        },
-                    })
-                    .collect();
-                if ui.input(|i| i.modifiers.command || i.modifiers.ctrl) {
-                    if rows.iter().all(|r| app.selected_props.contains(r)) {
-                        app.selected_props.retain(|s| !rows.contains(s));
-                    } else {
-                        for r in &rows {
-                            if !app.selected_props.contains(r) {
-                                app.selected_props.push(*r);
-                            }
-                        }
-                    }
-                } else {
-                    app.selected_props = rows.clone();
-                }
-                app.selected_prop = rows.first().copied();
                 app.selected_layer = Some(layer.id);
             }
             // Remove (×) and reset, right-aligned on the header (EC2/EC4).

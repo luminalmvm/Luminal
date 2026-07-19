@@ -225,8 +225,10 @@ pub(crate) fn timeline_panel(ui: &mut egui::Ui, theme: &Theme, app: &mut AppStat
             egui::Stroke::new(1.0_f32, theme.hairline_strong),
         );
         if s % label_every == 0 {
+            // Time labels live in the TOP band of the taller time bar (owner):
+            // the whole strip reads as one tall row, labels up top, ticks below.
             ui.painter().text(
-                egui::pos2(x + 3.0, ruler_rect.top() + 2.0),
+                egui::pos2(x + 3.0, top_rect.top() + 3.0),
                 egui::Align2::LEFT_TOP,
                 format!("{s}s"),
                 egui::FontId::monospace(9.0),
@@ -234,12 +236,12 @@ pub(crate) fn timeline_panel(ui: &mut egui::Ui, theme: &Theme, app: &mut AppStat
             );
         }
     }
-    // Detected tempo readout, right-aligned in the ruler.
+    // Detected tempo readout, right-aligned in the time bar's top band.
     #[cfg(feature = "media")]
     if let Some((bc, bpm)) = app.detected_bpm {
         if bc == comp_id && bpm > 0.0 {
             ui.painter().text(
-                egui::pos2(track_left + track_w - 2.0, ruler_rect.top() + 2.0),
+                egui::pos2(track_left + track_w - 2.0, top_rect.top() + 3.0),
                 egui::Align2::RIGHT_TOP,
                 format!("♪ {bpm:.0} BPM"),
                 egui::FontId::monospace(9.0),
@@ -431,6 +433,8 @@ pub(crate) fn timeline_panel(ui: &mut egui::Ui, theme: &Theme, app: &mut AppStat
                 // menu closure never double-borrows `app`.
                 let mut open_settings = false;
                 let mut reveal = false;
+                let mut toggle_grid = false;
+                let mut toggle_wave = false;
                 bg.context_menu(|ui| {
                     if ui.button("Composition settings\u{2026}").clicked() {
                         open_settings = true;
@@ -440,7 +444,38 @@ pub(crate) fn timeline_panel(ui: &mut egui::Ui, theme: &Theme, app: &mut AppStat
                         reveal = true;
                         ui.close_menu();
                     }
+                    ui.separator();
+                    // View toggles (owner): the lane guide lines and the audio
+                    // waveform strip, reachable from empty lane space.
+                    let grid_on =
+                        !matches!(app.timeline_grid, crate::app_state::TimelineGrid::Off);
+                    if ui
+                        .selectable_label(grid_on, "Show time grid")
+                        .on_hover_text("Vertical guide lines through the lanes")
+                        .clicked()
+                    {
+                        toggle_grid = true;
+                        ui.close_menu();
+                    }
+                    if ui
+                        .selectable_label(app.show_audio_bar, "Show audio waveform")
+                        .clicked()
+                    {
+                        toggle_wave = true;
+                        ui.close_menu();
+                    }
                 });
+                if toggle_grid {
+                    app.timeline_grid =
+                        if matches!(app.timeline_grid, crate::app_state::TimelineGrid::Off) {
+                            crate::app_state::TimelineGrid::Time
+                        } else {
+                            crate::app_state::TimelineGrid::Off
+                        };
+                }
+                if toggle_wave {
+                    app.show_audio_bar = !app.show_audio_bar;
+                }
                 if open_settings {
                     app.open_comp_settings(comp_id);
                 }
@@ -503,6 +538,17 @@ pub(crate) fn timeline_panel(ui: &mut egui::Ui, theme: &Theme, app: &mut AppStat
                 let (row_rect, row_resp) =
                     ui.allocate_exact_size(egui::vec2(ui.available_width(), 20.0), row_sense);
                 layer_row_centers.push((layer.id, row_rect.center().y));
+                // Divider under every layer title row too (owner: below every
+                // line — this is also the line ABOVE an open Transform header).
+                {
+                    let mut dp = ui.painter().clone();
+                    dp.set_clip_rect(viewport);
+                    dp.hline(
+                        row_rect.left()..=row_rect.right(),
+                        row_rect.bottom() - 0.5_f32,
+                        egui::Stroke::new(1.0_f32, theme.hairline),
+                    );
+                }
                 if row_resp.clicked() {
                     app.selected_layer = Some(layer.id);
                 }
@@ -1716,17 +1762,31 @@ pub(crate) fn timeline_panel(ui: &mut egui::Ui, theme: &Theme, app: &mut AppStat
         // the grip is a layers-view control (the column width it sets is kept in
         // the graph view), and the graph view draws a plain division at
         // `track_left`, clear of the scrollbar gutter to its left.
-        let (sep_x, active) = if app.timeline_graph_mode {
-            (track_left, false)
+        // The grip is draggable in BOTH views now (owner): in the graph view
+        // its strip sits entirely on the RIGHT of the divider (into the curve
+        // area), clear of the outline scrollbar gutter on the left — the
+        // conflict that once made it layers-view-only.
+        let (sep_x, handle) = if app.timeline_graph_mode {
+            let x = track_left;
+            (
+                x,
+                egui::Rect::from_min_max(
+                    egui::pos2(x, ruler_rect.top()),
+                    egui::pos2(x + 6.0, sep_bottom.max(ruler_rect.top() + 1.0)),
+                ),
+            )
         } else {
-            (track_left - 4.0, true)
+            let x = track_left - 4.0;
+            (
+                x,
+                egui::Rect::from_min_max(
+                    egui::pos2(x - 4.0, ruler_rect.top()),
+                    egui::pos2(x + 4.0, sep_bottom.max(ruler_rect.top() + 1.0)),
+                ),
+            )
         };
-        let mut hot = false;
-        if active {
-            let handle = egui::Rect::from_min_max(
-                egui::pos2(sep_x - 4.0, ruler_rect.top()),
-                egui::pos2(sep_x + 4.0, sep_bottom.max(ruler_rect.top() + 1.0)),
-            );
+        let hot;
+        {
             let hresp = ui.interact(
                 handle,
                 ui.id().with("name-col-resize"),
@@ -1737,7 +1797,9 @@ pub(crate) fn timeline_panel(ui: &mut egui::Ui, theme: &Theme, app: &mut AppStat
                 ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
             }
             if hresp.drag_started() {
-                app.timeline_divider_raw = Some(app.timeline_name_w);
+                // Seed from the SHOWN width (the stored field may still be the
+                // 0 "use the default" sentinel — owner TL-B).
+                app.timeline_divider_raw = Some(name_w);
             }
             if hresp.dragged() {
                 // Clamp to the same bounds the layout applies, so the divider never

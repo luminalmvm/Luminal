@@ -268,15 +268,11 @@ pub(crate) fn three_d_control(
     }
 }
 
-/// Per-layer motion-blur subcolumn (K-120, docs/06 §4): a compact "MB" toggle in
-/// the layer's far-right switch slot. Accent when on, secondary otherwise, and
+/// Per-layer motion-blur subcolumn (K-120, docs/06 §4): the motion-blur glyph
+/// (an arrow with speed lines — [`Icon::MotionBlur`], owner) as a toggle in the
+/// layer's far-right switch slot. Accent when on, secondary otherwise, and
 /// bright under the cursor like the other switches. The hover note reminds that
 /// it only shows once the comp's motion-blur master is on.
-///
-/// No Iconoir glyph in the [`Icon`] set means "motion blur", and the only
-/// motion-adjacent one (Flow's wind) is already the flow column's icon — reusing
-/// it would put two identical wind glyphs on the same footage row — so this reads
-/// as a short label, like the Matte and Blend text switches.
 pub(crate) fn motion_blur_control(
     ui: &mut egui::Ui,
     theme: &Theme,
@@ -292,12 +288,12 @@ pub(crate) fn motion_blur_control(
     } else {
         theme.text_secondary
     };
-    ui.painter().text(
-        rect.center(),
-        egui::Align2::CENTER_CENTER,
-        "MB",
-        egui::FontId::proportional(10.0),
+    crate::icons::paint(
+        ui.painter(),
+        egui::Rect::from_center_size(rect.center(), egui::vec2(14.0, 14.0)),
+        Icon::MotionBlur,
         col,
+        1.2,
     );
     if resp
         .on_hover_text(
@@ -489,7 +485,7 @@ pub(crate) fn flow_group_rows(
     flow_input_rate_nav(&mut c, ctx, rt, params, &prop, pending, nav_jump);
 
     c.label(
-        egui::RichText::new("Input rate")
+        egui::RichText::new("Input frame rate")
             .small()
             .color(ctx.theme.text_muted),
     )
@@ -509,23 +505,11 @@ pub(crate) fn flow_group_rows(
     let mut v = c.data(|d| d.get_temp::<f64>(id)).unwrap_or(shown_default);
     let resp = c
         .add(
+            // A plain float box (owner T8): no unit suffix.
             egui::DragValue::new(&mut v)
                 .speed(0.25)
                 .range(0.0..=1000.0)
-                .max_decimals(2)
-                .custom_formatter(|n, _| format!("{n:.0} fps"))
-                .custom_parser(|s| {
-                    let t = s.trim();
-                    if t.is_empty() || t.eq_ignore_ascii_case("native") {
-                        return Some(0.0);
-                    }
-                    // A leading number, ignoring any trailing unit like "fps".
-                    let num: String = t
-                        .chars()
-                        .take_while(|c| c.is_ascii_digit() || *c == '.')
-                        .collect();
-                    num.parse::<f64>().ok()
-                }),
+                .max_decimals(2),
         )
         .on_hover_text("Frame rate the footage is read at (type 0 for native)");
     if resp.dragged() || resp.has_focus() {

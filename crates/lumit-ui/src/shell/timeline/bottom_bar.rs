@@ -104,7 +104,7 @@ pub(crate) fn timeline_top_row(
         .unwrap_or_default();
     rc.add_space(4.0);
     if rc
-        .selectable_label(mb.enabled, egui::RichText::new("MB").small())
+        .selectable_label(mb.enabled, crate::icons::text(Icon::MotionBlur, 13.0))
         .on_hover_text(
             "Composition motion blur (master): layers with their own motion-blur switch on then blur",
         )

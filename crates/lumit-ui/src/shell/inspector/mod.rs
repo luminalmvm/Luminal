@@ -141,12 +141,15 @@ pub(crate) fn section_bar(ui: &egui::Ui, ctx: &RowCtx, row_rect: egui::Rect, hig
     );
 }
 
-/// The height of one property row on the timeline. Grew 20 → 22 (T1, pair
-/// value-box headroom) → 24 (owner): the row-bottom divider hairline needs a
-/// few clear pixels below the ~18 px value boxes and the pair rows' link glyph,
-/// or they sit on the line. Content is vertically centred, so the extra height
-/// becomes breathing room above and below.
-pub(crate) const ROW_H: f32 = 24.0;
+/// The height of one property row on the timeline. Grew 20 → 22 (T1) → 26
+/// (owner, twice-reported divider overlap): the bottom of every row now
+/// RESERVES a clear band for the divider hairline — `row_frame` hands widgets a
+/// child rect that stops [`ROW_GAP`] px above the row bottom, so no value box,
+/// checkbox or pair-link chip can ever sit on the line, whatever its height.
+pub(crate) const ROW_H: f32 = 26.0;
+
+/// The reserved clearance between row content and the row-bottom divider.
+pub(crate) const ROW_GAP: f32 = 5.0;
 
 /// Allocate one property timeline row (`ROW_H` tall) and return (row_rect,
 /// left-column child ui). The child is clipped so widgets never spill into the
@@ -192,11 +195,13 @@ pub(crate) fn row_frame(
             egui::Stroke::new(1.0_f32, ctx.theme.hairline),
         );
     }
+    // The child band stops ROW_GAP above the row bottom (owner): the divider
+    // gets a reserved clear strip no widget can reach, however tall it renders.
     let left_rect = egui::Rect::from_min_max(
-        egui::pos2(row_rect.left() + 24.0, row_rect.top()),
+        egui::pos2(row_rect.left() + 24.0, row_rect.top() + 1.0),
         egui::pos2(
             (ctx.track_left - 6.0).max(row_rect.left() + 25.0),
-            row_rect.bottom(),
+            row_rect.bottom() - ROW_GAP,
         ),
     );
     let mut c = ui.new_child(
@@ -204,6 +209,9 @@ pub(crate) fn row_frame(
             .max_rect(left_rect)
             .layout(egui::Layout::left_to_right(egui::Align::Center)),
     );
+    // Property names are labels, not text to select: no drag-select, no I-beam
+    // cursor (owner T7 note).
+    c.style_mut().interaction.selectable_labels = false;
     // Clip to the outline column, but bounded by the scroll viewport's y so a
     // half-scrolled property row doesn't bleed past the ruler.
     c.set_clip_rect(left_rect.intersect(ctx.viewport));
