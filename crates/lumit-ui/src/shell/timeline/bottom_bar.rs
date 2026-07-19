@@ -35,11 +35,12 @@ pub(crate) fn timeline_top_row(
         egui::Stroke::new(1.0_f32, theme.hairline),
     );
 
-    // Current time / frame at the left (m:ss:ff plus the raw frame number).
-    let f = fps.max(1.0).round() as usize;
-    let (mm, ss, ff) = (frame / (f * 60), (frame / f) % 60, frame % f);
+    // Current time / frame at the left: the shared HH:MM:SS:FF timecode (the
+    // same formatter the Time row uses, so fractional rates read consistently)
+    // plus the raw frame number.
+    let secs = frame as f64 / fps.max(1.0);
     let galley = ui.painter().layout_no_wrap(
-        format!("{mm}:{ss:02}:{ff:02}  f{frame}"),
+        format!("{}  f{frame}", fmt_timecode_frames(secs, fps.max(1.0))),
         egui::FontId::proportional(12.0),
         theme.text_secondary,
     );

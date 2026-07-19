@@ -164,6 +164,10 @@ pub(crate) fn merge_paste_keys(
 #[cfg(feature = "media")]
 pub(crate) fn audio_jobs_signature(jobs: &[crate::export::AudioJob], duration_s: f64) -> u64 {
     use std::hash::{Hash, Hasher};
+    // DefaultHasher is fine HERE because this signature is session-only change
+    // detection (compared within one run, never written to disk) — unlike the
+    // persisted cache paths, where an unstable hasher was a shipped bug
+    // (`cache_root_for`, prior audit). Do not copy this into anything persisted.
     let mut h = std::collections::hash_map::DefaultHasher::new();
     jobs.len().hash(&mut h);
     duration_s.to_bits().hash(&mut h);
