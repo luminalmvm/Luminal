@@ -116,8 +116,8 @@ fn matte_key(@builtin(global_invocation_id) gid: vec3<u32>) {
     let m = mc + p.clip_rollback * (m0 - mc);
 
     // Unspill: pull the primary down toward the (bias-shifted) reference.
-    let target = secref(u) + db_off;
-    let removed = max(primary_of(u) - target, 0.0);
+    let spill_target = secref(u) + db_off;
+    let removed = max(primary_of(u) - spill_target, 0.0);
     let despill = p.spill * removed;
     let despilled = recompose(primary_of(u) - despill, u);
 

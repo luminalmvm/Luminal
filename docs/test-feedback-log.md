@@ -107,9 +107,12 @@ changes update `docs/08` and ship their oracle test; new concepts update `GUIDE.
 - [x] **FX-20** (K-150) New layers centre their anchor on their own content (footage=natural
   size, solid=solid size, precomp/sequence/adjustment=comp) with position at comp centre. Text
   kept at 0,0 (size unknown until glyph layout; AE point-text convention).
-- [ ] **FX-21** Matte effect: extra controls per Screenshot_136 (Keylight-style keyer —
-  screen colour/gain/balance, despill, screen matte clip/rollback/shrink/softness/despot,
-  inside/outside masks, fg/edge colour correction, source crops). Scope TBD with owner.
+- [x] **FX-21** (K-154) Matte key is now a Keylight-style colour-difference keyer: Screen
+  colour/gain/balance, Despill (bias + amount), Screen matte (clip black/white/rollback),
+  Replace method+colour, and View modes (Final / Screen matte / Status). DEFERRED (K-155): the
+  spatial controls (pre-blur, shrink/grow, softness, despot), inside/outside garbage masks,
+  fg/edge colour correction, and source crops — those need a multi-pass pipeline. The core keyer
+  is what "properly key footage" needs.
 - [ ] **FX-DoF** (deferred by owner until the rest are sorted) — fuller DoF look.
 
 ## Additions / general bugs
