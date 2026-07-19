@@ -277,15 +277,34 @@ impl AppState {
         // Composition playback.
         if let Some(comp_id) = self.preview_comp {
             let doc = self.store.snapshot();
-            let Some(fps) = doc.comp(comp_id).map(|c| c.frame_rate.fps().max(1.0)) else {
+            let Some(comp) = doc.comp(comp_id) else {
                 return;
             };
+            let fps = comp.frame_rate.fps().max(1.0);
             // Start on the wall clock immediately; audio joins when mixed.
             self.comp_playback = Some((Instant::now(), self.preview_frame));
-            if self.audio_loaded_comp == Some(comp_id) {
+            // Only replay the loaded mix when it still matches the comp; an edit
+            // since it was baked (mute, move, trim, delete) re-bakes it instead,
+            // so playback follows the current comp (GEN-4 fixes).
+            let jobs = self.comp_audio_jobs(&doc, comp);
+            let sig_matches = self.audio_loaded_comp == Some(comp_id)
+                && !jobs.is_empty()
+                && self.audio_loaded_sig
+                    == Some(super::audio_jobs_signature(&jobs, comp.duration.0.to_f64()));
+            if sig_matches {
                 if let Some(engine) = &self.audio_engine {
                     engine.seek_seconds(self.preview_frame as f64 / fps);
                     engine.play();
+                }
+            } else if jobs.is_empty() {
+                // No audible audio: drop any stale mix, play on the wall clock.
+                if self.audio_loaded_comp == Some(comp_id) {
+                    if let Some(engine) = &self.audio_engine {
+                        engine.unload();
+                    }
+                    self.audio_loaded_comp = None;
+                    self.audio_loaded_sig = None;
+                    self.comp_waveform = None;
                 }
             } else {
                 self.prepare_comp_audio(comp_id);

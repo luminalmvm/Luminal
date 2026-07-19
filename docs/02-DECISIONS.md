@@ -1501,3 +1501,24 @@ reference `cpu::sharpen_simple` (the oracle), the `fx_sharpen_simple.wgsl` kerne
 from `run_ops`, and the `wgsl_sharpen_simple_matches_the_cpu_oracle` parity test (cheap class,
 ≤ 2 fp16 ULP). Both effects sit in **Blur & sharpen**. Spec: [08-EFFECTS.md](08-EFFECTS.md)
 §3.9. Built in an isolated worktree; not pushed.
+
+**K-141 · DECIDED · Comp playback audio is kept in step with the document by a per-frame
+signature, not baked once (GEN-4 audio fixes).** The comp mix (`export::mixdown` of the
+audible footage layers, laid on the strip by `lumit_audio::mix::place_on_timeline`) was baked
+into one flat buffer when playback started and never revisited, so muting, moving, trimming or
+deleting an audio layer had no effect on what played — the four owner-reported GEN-4 bugs.
+Fix: beside the loaded mix Lumit stores a **signature** (`audio_jobs_signature`: the ordered
+contributing layers with their in/out/offset, plus the comp length). Each UI frame
+`sync_comp_audio` derives the current jobs from the live snapshot and, via the pure
+`comp_audio_sync`, either leaves a matching mix alone, re-bakes a stale one, or **unloads** a
+mix whose comp has fallen silent (every audio layer muted or deleted) so it stops sounding at
+once. `toggle_play` replays the loaded mix only when its signature still matches; otherwise it
+re-bakes. Deliveries from the background bake carry their signature and are dropped by
+`poll_comp_audio` if a newer edit has superseded them, so a stale mix never lands. Muting stays
+a decode-skipping filter in `comp_audio_jobs` (a muted layer is never decoded); the signature
+machinery makes that filter, and the placement, take effect live. Cost: one cheap hash of a
+handful of layers per frame while a comp's audio is managed (loaded, in flight, or playing);
+idle comps are untouched. A full per-audio-block re-mix from cached decoded sources (so edits
+apply with zero re-decode latency) is the natural next step but was deferred as a larger
+refactor of the single-baked-buffer engine. Built in an isolated worktree; not pushed —
+another agent may also claim K-141, renumber on merge if so.
