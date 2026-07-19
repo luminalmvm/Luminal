@@ -1067,6 +1067,11 @@ pub(crate) fn effects_panel(ui: &mut egui::Ui, theme: &Theme, app: &mut AppState
 
     let mut any_effect = false;
     egui::ScrollArea::vertical()
+        // Fill the panel's full width so the scrollbar hugs the far-right edge
+        // rather than shrinking to the content and sitting mid-panel, which
+        // clipped effect/preset names (owner-reported). Matches the Project
+        // panel's tree scroll.
+        .auto_shrink([false, false])
         .id_salt("effects-panel-scroll")
         .show(ui, |ui| {
             // Presets first — the user's own looks sit above the built-ins.
