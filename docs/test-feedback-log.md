@@ -33,9 +33,8 @@ changes update `docs/08` and ship their oracle test; new concepts update `GUIDE.
 - [ ] **UI-4** Project panel selected-layer info box: give it fixed padding so switching
   layers doesn't shift the info placement; clicking footage shows a small thumbnail
   preview *in that box*, not in the viewfinder.
-- [~] **UI-5** Lane keyframe selection: Shift and Ctrl should both allow *deselect* too
-  (Ctrl works, Shift doesn't) — including within a drag-marquee. — click gesture done
-  (Shift now toggles like Ctrl); the drag-marquee deselect path still to do.
+- [x] **UI-5** Lane keyframe selection: Shift and Ctrl both toggle now — click gesture and the
+  drag-marquee (a Shift/Ctrl box deselects covered keys instead of only adding).
 - [ ] **UI-6** Layer area: selecting a property *name* (Transform, an effect, …) should
   support multi-select, so a user can key several at the same point at once.
 - [x] **UI-7** Copy/paste keyframes fixed: egui-winit emits Copy/Paste events (not Key C/V), so the old shortcut watch never fired; now reads the events. (Nuance: needs non-empty OS clipboard, which self-heals on first copy.)

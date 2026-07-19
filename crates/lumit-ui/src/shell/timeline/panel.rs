@@ -337,7 +337,10 @@ pub(crate) fn timeline_panel(ui: &mut egui::Ui, theme: &Theme, app: &mut AppStat
                 if bg.drag_started() {
                     if let Some(p) = bg.interact_pointer_pos() {
                         app.lane_marquee = Some((p, p));
-                        app.lane_marquee_add = ui.input(|i| i.modifiers.shift);
+                        // Shift or Ctrl makes the marquee a toggle (UI-5), so it
+                        // can deselect covered keys just like the click gesture.
+                        app.lane_marquee_add =
+                            ui.input(|i| i.modifiers.shift || i.modifiers.command || i.modifiers.ctrl);
                     }
                 } else if bg.dragged() {
                     if let Some(p) = bg.interact_pointer_pos() {
@@ -1639,8 +1642,8 @@ pub(crate) fn timeline_panel(ui: &mut egui::Ui, theme: &Theme, app: &mut AppStat
         }
     }
     // Lane marquee release (notes 2.1/2.6): hit-test the box against the glyphs
-    // the rows just drew, across every property row. Shift-drag adds to the
-    // selection; a plain drag replaces it.
+    // the rows just drew, across every property row. A Shift/Ctrl drag toggles
+    // each covered key (so it can deselect too, UI-5); a plain drag replaces.
     if let Some((a, b)) = app.lane_marquee_commit.take() {
         let band = egui::Rect::from_two_pos(a, b);
         let mut hits: Vec<crate::app_state::LaneKeySel> = Vec::new();
@@ -1651,7 +1654,9 @@ pub(crate) fn timeline_panel(ui: &mut egui::Ui, theme: &Theme, app: &mut AppStat
         }
         if app.lane_marquee_add {
             for h in hits {
-                if !app.lane_selection.contains(&h) {
+                if let Some(i) = app.lane_selection.iter().position(|s| *s == h) {
+                    app.lane_selection.remove(i);
+                } else {
                     app.lane_selection.push(h);
                 }
             }
