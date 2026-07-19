@@ -188,7 +188,7 @@ parallel pass left several not-quite-right). No migration burden (pre-release).
 - [ ] T21 Mode param must have exact parity with the layer Blend dropdown (shared tool, auto-updates when blend modes change); Max becomes a normal blend mode; add an In-front to match Behind; effect-only extras (Behind/In-front) go at the TOP with a divider.
 - [ ] T22 Motion blur (accumulation) still does nothing even with Force-on-all (layer + adjustment). PROPOSAL from owner: make it a COMPOSITION option (not an effect) that forces MB on all comps/layers below per the DAG, keeping the params. (Give thoughts + do.)
 - [ ] T23 Transform anchor/position centre never happened (still 0,0; rotation pivots top-left). Use the T14 x/y tool for anchor/position.
-- [ ] T24 Add ALL After Effects blend modes (Subtract is a start).
+- [x] T24 Added the full AE colour-blend set (K-162): 16 new modes (Colour burn/dodge, Linear burn, Darker/Lighter colour, Linear/Vivid/Pin light, Hard mix, Difference, Exclusion, Divide, Hue/Saturation/Colour/Luminosity), 26 total. Grouped dropdown with AE dividers; single source of truth (BlendMode::ALL/name) shared with the effect Mode param (T21). GPU-verified against a Rust reference. (Dissolve + stencil/silhouette/alpha operators deferred post-v1.)
 - [ ] T25 The top audio-preview bar doesn't move when moving an audio layer; make the bar optional (right-click to hide).
 
 ## Also (A)

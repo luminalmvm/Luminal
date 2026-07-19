@@ -1810,20 +1810,11 @@ fn comp_layer_pixels(
 
 /// Model blend → GPU blend (export copy of the preview mapping; both paths
 /// must agree or preview and export diverge, K-031).
+/// The `model::BlendMode` → `gpu::Blend` mapping. Delegates to the single
+/// shared mapper (`shell::inspector::blend_of`) so the preview and export
+/// paths cannot disagree (K-031).
 fn blend_of(b: lumit_core::model::BlendMode) -> lumit_gpu::Blend {
-    use lumit_core::model::BlendMode;
-    match b {
-        BlendMode::Normal => lumit_gpu::Blend::Normal,
-        BlendMode::Add => lumit_gpu::Blend::Add,
-        BlendMode::Multiply => lumit_gpu::Blend::Multiply,
-        BlendMode::Screen => lumit_gpu::Blend::Screen,
-        BlendMode::Overlay => lumit_gpu::Blend::Overlay,
-        BlendMode::SoftLight => lumit_gpu::Blend::SoftLight,
-        BlendMode::HardLight => lumit_gpu::Blend::HardLight,
-        BlendMode::Lighten => lumit_gpu::Blend::Lighten,
-        BlendMode::Darken => lumit_gpu::Blend::Darken,
-        BlendMode::Subtract => lumit_gpu::Blend::Subtract,
-    }
+    crate::shell::inspector::blend_of(b)
 }
 
 /// CameraPose (core model) -> GPU camera matrix: the single conversion both

@@ -20,7 +20,9 @@ struct LayerUniform {
     target: [f32; 4],
 }
 
-/// Composite operator (linear subset — docs/06-RENDER-PIPELINE.md §blend).
+/// Composite operator (docs/06-RENDER-PIPELINE.md §blend). Normal / Add /
+/// Multiply are fixed-function linear blends; the rest are shader-computed
+/// from a destination snapshot (the full After Effects set, K-162 / T24).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Blend {
     #[default]
@@ -40,6 +42,24 @@ pub enum Blend {
     /// (GEN-1, K-151), computed in linear (Add's darkening twin). Snapshot
     /// path so opacity and mattes mix correctly.
     Subtract,
+    // The rest of the After Effects set (K-162, T24): all snapshot-computed,
+    // in the encoded (display-referred) domain to match AE's 8/16-bit look.
+    ColourBurn,
+    LinearBurn,
+    DarkerColour,
+    ColourDodge,
+    LighterColour,
+    LinearLight,
+    VividLight,
+    PinLight,
+    HardMix,
+    Difference,
+    Exclusion,
+    Divide,
+    Hue,
+    Saturation,
+    Colour,
+    Luminosity,
 }
 
 impl Blend {
@@ -49,6 +69,8 @@ impl Blend {
     }
 
     /// Shader selector (composite.wgsl blend_encoded / fs_layer_snapshot).
+    /// The float ids are private to the GPU crate (not persisted), so they may
+    /// be reassigned freely — the persisted key is `lumit_eval::blend_tag`.
     fn snapshot_mode(self) -> f32 {
         match self {
             Blend::Screen => 0.0,
@@ -58,6 +80,22 @@ impl Blend {
             Blend::Lighten => 4.0,
             Blend::Darken => 5.0,
             Blend::Subtract => 6.0,
+            Blend::ColourBurn => 7.0,
+            Blend::LinearBurn => 8.0,
+            Blend::DarkerColour => 9.0,
+            Blend::ColourDodge => 10.0,
+            Blend::LighterColour => 11.0,
+            Blend::VividLight => 12.0,
+            Blend::LinearLight => 13.0,
+            Blend::PinLight => 14.0,
+            Blend::HardMix => 15.0,
+            Blend::Difference => 16.0,
+            Blend::Exclusion => 17.0,
+            Blend::Divide => 18.0,
+            Blend::Hue => 19.0,
+            Blend::Saturation => 20.0,
+            Blend::Colour => 21.0,
+            Blend::Luminosity => 22.0,
             Blend::Normal | Blend::Add | Blend::Multiply => -1.0,
         }
     }
@@ -1434,6 +1472,232 @@ mod tests {
             (i16::from(out) - expect).abs() <= 2,
             "screen {out} vs {expect}"
         );
+    }
+
+    /// Every encoded-domain (perceptual) blend mode matches a Rust reference of
+    /// its formula (K-162, T24). An opaque full-frame source over an opaque
+    /// full-frame destination isolates the blend: the shown pixel is the
+    /// encoded-domain blend result, byte-for-byte within fp16 + 8-bit rounding.
+    /// The reference mirrors composite.wgsl's `blend_encoded` op-for-op — the
+    /// GPU is the thing under test, this is the oracle.
+    #[test]
+    fn perceptual_blend_modes_match_the_reference_formula() {
+        let Ok(ctx) = GpuContext::headless() else {
+            eprintln!("skipping: no GPU adapter");
+            return;
+        };
+        let colour = ColourEngine::new(&ctx);
+        let compositor = Compositor::new(&ctx);
+
+        // --- Rust reference, encoded domain [0,1] (== composite.wgsl). ---
+        type C = [f64; 3];
+        let per = |s: C, d: C, f: &dyn Fn(f64, f64) -> f64| -> C {
+            [f(s[0], d[0]), f(s[1], d[1]), f(s[2], d[2])]
+        };
+        let colour_burn = |s: f64, d: f64| {
+            if d >= 1.0 {
+                1.0
+            } else if s <= 0.0 {
+                0.0
+            } else {
+                1.0 - (1.0f64).min((1.0 - d) / s)
+            }
+        };
+        let colour_dodge = |s: f64, d: f64| {
+            if d <= 0.0 {
+                0.0
+            } else if s >= 1.0 {
+                1.0
+            } else {
+                (1.0f64).min(d / (1.0 - s))
+            }
+        };
+        let hard_light = |s: f64, d: f64| {
+            if s <= 0.5 {
+                2.0 * s * d
+            } else {
+                1.0 - 2.0 * (1.0 - s) * (1.0 - d)
+            }
+        };
+        let soft_light = |s: f64, d: f64| {
+            let dd = if d <= 0.25 {
+                ((16.0 * d - 12.0) * d + 4.0) * d
+            } else {
+                d.sqrt()
+            };
+            if s <= 0.5 {
+                d - (1.0 - 2.0 * s) * d * (1.0 - d)
+            } else {
+                d + (2.0 * s - 1.0) * (dd - d)
+            }
+        };
+        let vivid = |s: f64, d: f64| {
+            if s <= 0.5 {
+                colour_burn(2.0 * s, d)
+            } else {
+                colour_dodge(2.0 * s - 1.0, d)
+            }
+        };
+        let lum = |c: C| 0.3 * c[0] + 0.59 * c[1] + 0.11 * c[2];
+        let clip = |c: C| -> C {
+            let l = lum(c);
+            let n = c[0].min(c[1]).min(c[2]);
+            let x = c[0].max(c[1]).max(c[2]);
+            let mut r = c;
+            if n < 0.0 {
+                for (i, ri) in r.iter_mut().enumerate() {
+                    *ri = l + (c[i] - l) * (l / (l - n).max(1e-6));
+                }
+            }
+            let r2 = r;
+            if x > 1.0 {
+                for (i, ri) in r.iter_mut().enumerate() {
+                    *ri = l + (r2[i] - l) * ((1.0 - l) / (x - l).max(1e-6));
+                }
+            }
+            r
+        };
+        let set_lum = |c: C, l: f64| -> C {
+            let d = l - lum(c);
+            clip([c[0] + d, c[1] + d, c[2] + d])
+        };
+        let sat = |c: C| c[0].max(c[1]).max(c[2]) - c[0].min(c[1]).min(c[2]);
+        let set_sat = |c: C, s: f64| -> C {
+            let mn = c[0].min(c[1]).min(c[2]);
+            let mx = c[0].max(c[1]).max(c[2]);
+            if mx > mn {
+                [
+                    (c[0] - mn) * s / (mx - mn),
+                    (c[1] - mn) * s / (mx - mn),
+                    (c[2] - mn) * s / (mx - mn),
+                ]
+            } else {
+                [0.0; 3]
+            }
+        };
+        let reference = |mode: Blend, s: C, d: C| -> C {
+            match mode {
+                Blend::Screen => per(s, d, &|s, d| 1.0 - (1.0 - s) * (1.0 - d)),
+                Blend::Overlay => per(s, d, &|s, d| hard_light(d, s)),
+                Blend::SoftLight => per(s, d, &soft_light),
+                Blend::HardLight => per(s, d, &hard_light),
+                Blend::ColourBurn => per(s, d, &colour_burn),
+                Blend::LinearBurn => per(s, d, &|s, d| (s + d - 1.0).clamp(0.0, 1.0)),
+                Blend::DarkerColour => {
+                    if lum(s) < lum(d) {
+                        s
+                    } else {
+                        d
+                    }
+                }
+                Blend::ColourDodge => per(s, d, &colour_dodge),
+                Blend::LighterColour => {
+                    if lum(s) > lum(d) {
+                        s
+                    } else {
+                        d
+                    }
+                }
+                Blend::VividLight => per(s, d, &vivid),
+                Blend::LinearLight => per(s, d, &|s, d| (d + 2.0 * s - 1.0).clamp(0.0, 1.0)),
+                Blend::PinLight => per(s, d, &|s, d| {
+                    if s <= 0.5 {
+                        d.min(2.0 * s)
+                    } else {
+                        d.max(2.0 * s - 1.0)
+                    }
+                }),
+                Blend::HardMix => per(s, d, &|s, d| if vivid(s, d) >= 0.5 { 1.0 } else { 0.0 }),
+                Blend::Difference => per(s, d, &|s, d| (s - d).abs()),
+                Blend::Exclusion => per(s, d, &|s, d| s + d - 2.0 * s * d),
+                Blend::Divide => per(s, d, &|s, d| (d / s.max(1e-6)).clamp(0.0, 1.0)),
+                Blend::Hue => set_lum(set_sat(s, sat(d)), lum(d)),
+                Blend::Saturation => set_lum(set_sat(d, sat(s)), lum(d)),
+                Blend::Colour => set_lum(s, lum(d)),
+                Blend::Luminosity => set_lum(d, lum(s)),
+                _ => unreachable!("not an encoded-domain mode"),
+            }
+        };
+
+        // Source and destination solids, chosen away from 0/0.5/1 boundaries.
+        let s_b = [179u8, 89, 204];
+        let d_b = [64u8, 199, 120];
+        let s_enc: C = [
+            f64::from(s_b[0]) / 255.0,
+            f64::from(s_b[1]) / 255.0,
+            f64::from(s_b[2]) / 255.0,
+        ];
+        let d_enc: C = [
+            f64::from(d_b[0]) / 255.0,
+            f64::from(d_b[1]) / 255.0,
+            f64::from(d_b[2]) / 255.0,
+        ];
+        let src = solid_linear(&ctx, &colour, [s_b[0], s_b[1], s_b[2], 255], 4, 4);
+        let dst = solid_linear(&ctx, &colour, [d_b[0], d_b[1], d_b[2], 255], 4, 4);
+
+        fn plain(texture: &wgpu::Texture, blend: Blend) -> CompositeLayer<'_> {
+            CompositeLayer {
+                texture,
+                size: (4.0, 4.0),
+                position: (0.0, 0.0),
+                anchor: (0.0, 0.0),
+                scale: (100.0, 100.0),
+                rotation_deg: 0.0,
+                opacity: 100.0,
+                matte: None,
+                blend,
+                z: 0.0,
+                rotation_x_deg: 0.0,
+                rotation_y_deg: 0.0,
+                three_d: false,
+                layer_mask: None,
+                pre: None,
+            }
+        }
+
+        for mode in [
+            Blend::Screen,
+            Blend::Overlay,
+            Blend::SoftLight,
+            Blend::HardLight,
+            Blend::ColourBurn,
+            Blend::LinearBurn,
+            Blend::DarkerColour,
+            Blend::ColourDodge,
+            Blend::LighterColour,
+            Blend::VividLight,
+            Blend::LinearLight,
+            Blend::PinLight,
+            Blend::HardMix,
+            Blend::Difference,
+            Blend::Exclusion,
+            Blend::Divide,
+            Blend::Hue,
+            Blend::Saturation,
+            Blend::Colour,
+            Blend::Luminosity,
+        ] {
+            // dst solid as the bottom (Normal), src on top with the mode.
+            let shown = render_for_display(
+                &ctx,
+                &colour,
+                &compositor,
+                4,
+                4,
+                [0.0, 0.0, 0.0, 1.0],
+                &[plain(&dst, Blend::Normal), plain(&src, mode)],
+            );
+            let back = colour.readback8(&ctx, &shown).unwrap();
+            let want = reference(mode, s_enc, d_enc);
+            for c in 0..3 {
+                let expect = (want[c] * 255.0).round() as i16;
+                let got = i16::from(back[c]);
+                assert!(
+                    (got - expect).abs() <= 3,
+                    "{mode:?} ch{c}: got {got} vs reference {expect}"
+                );
+            }
+        }
     }
 
     /// The layer-space mask binding gates alpha: a white layer with a

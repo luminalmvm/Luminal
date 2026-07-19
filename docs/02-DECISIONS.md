@@ -1987,3 +1987,22 @@ picker colours do nothing in **Wavelength** mode — is not addressed here for t
 `SpectralSplit` still uses the physically-based `SPECTRAL_BASIS`, so the picker governs the
 classic mode only; whether Wavelength should also be driven by the picker colours is left open
 (see §3.6 Open questions). Built on `main`.
+
+**K-162 · DECIDED · The full After Effects colour-blend set ships in v1 (T24).** From the
+owner (testing T24, "add ALL After Effects blend modes"): `BlendMode` grows from the ten-mode
+v1 subset to the complete AE colour set — adding Colour burn, Linear burn, Darker colour,
+Colour dodge, Lighter colour, Linear light, Vivid light, Pin light, Hard mix, Difference,
+Exclusion, Divide, Hue, Saturation, Colour, and Luminosity (16 new, 26 total). All run on the
+existing snapshot path in the encoded (display-referred) domain — matching AE's 8/16-bit look
+and the docs/06 §3.5 rationale — except the domain-invariant Darken/Lighten/Subtract, which stay
+linear. The formulas are the W3C/PDF compositing set; the four HSL modes and Darker/Lighter
+colour are non-separable (whole-pixel), the rest per-channel. `BlendMode::ALL` and
+`BlendMode::name()` on the core enum are the single source of truth the layer dropdown and the
+effect Mode param (T21) both consume, so the two never drift, and the AE group dividers come
+from `blend_group_break`. `lumit_eval::blend_tag` gains stable cache-key bytes 10–25 (never
+reused). A new GPU test (`perceptual_blend_modes_match_the_reference_formula`) verifies every
+encoded-domain mode against a Rust reference of its formula — the compositor blends had no
+oracle before. Deliberately deferred to post-v1: Dissolve / Dancing dissolve (need a dither
+seed), the legacy "Classic" variants, and the alpha operators (Stencil / Silhouette / Alpha add
+/ Luminescent premul, which modify alpha compositing, not colour). Extends docs/06 §3.5's own
+list without reversing it. Built on `main`.

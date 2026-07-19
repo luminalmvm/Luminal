@@ -265,18 +265,25 @@ set exists because those formulas were designed on gamma-encoded 8-bit pixels an
 expect that look; running them in linear is mathematically tidy and visually wrong to the
 target audience. Out-of-range values pass through the extended (unclamped) transfer function.
 
+The full After Effects colour-blend set ships in v1 (K-162, T24): every mode below is
+implemented, verified against a Rust reference of its formula
+(`composite::tests::perceptual_blend_modes_match_the_reference_formula`). The layer dropdown and
+the effect Mode param both list them from one source (`BlendMode::ALL`), in AE's grouped order.
+
 | Mode | Domain | Notes |
 |---|---|---|
 | Normal | linear | Premultiplied `over`: `A + B·(1−a_A)`. |
 | Add | linear | Physically additive; the montage staple for glows/flashes. |
 | Subtract | linear | `dst − src` per channel, clamped at black — Add's darkening twin (GEN-1, K-151). |
-| Multiply | linear | Physical filter/shadow behaviour. |
+| Multiply | linear | Physical filter/shadow behaviour (fixed-function `Dst` blend). |
 | Darken, Lighten | either (invariant) | Per-channel min/max; monotonic transfer makes the domain irrelevant. Computed in linear. |
 | Screen | perceptual | |
 | Overlay, Soft light, Hard light | perceptual | |
-| Colour dodge, Colour burn | perceptual | |
-| Difference, Exclusion | perceptual | |
-| Hue, Saturation, Colour, Luminosity | perceptual | HSL decomposition on encoded values. |
+| Linear light, Vivid light, Pin light, Hard mix | perceptual | Contrast group; Hard mix thresholds Vivid light at 0.5. |
+| Colour dodge, Colour burn, Linear burn | perceptual | |
+| Darker colour, Lighter colour | perceptual (non-separable) | Whole-pixel min/max by perceptual luma. |
+| Difference, Exclusion, Divide | perceptual | |
+| Hue, Saturation, Colour, Luminosity | perceptual | HSL decomposition on encoded values (W3C non-separable). |
 | Stencil alpha, Silhouette alpha | n/a (alpha only) | Gate the alpha of the entire composite below. |
 | Stencil luma, Silhouette luma | luma per §3.5a | |
 | Alpha add | n/a (alpha only) | Sums alphas without re-compositing colour; fixes seams on edge-abutting layers. |
@@ -286,9 +293,11 @@ luma = Rec.709 Y of the sRGB-encoded signal (perceptual luma), so a 50% grey sol
 approximately 50% coverage, matching editor expectation. This is a single normative definition;
 no per-feature variation.
 
-Modes not listed (Dissolve, Linear/Vivid/Pin light, Hard mix, Divide, legacy
-"Classic" variants) are post-v1; the enum is open-ended and serialised by name
-([10-FILE-FORMAT.md](10-FILE-FORMAT.md)) so adding modes never breaks projects.
+The remaining AE modes — Dissolve / Dancing dissolve (need a dither seed), the legacy
+"Classic" variants, and the alpha operators (Stencil / Silhouette / Alpha add / Luminescent
+premul, which change alpha compositing rather than colour) — are post-v1. The enum is
+open-ended and serialised by name ([10-FILE-FORMAT.md](10-FILE-FORMAT.md)) so adding modes never
+breaks projects.
 
 ## 4. Motion blur
 

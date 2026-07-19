@@ -218,20 +218,40 @@ pub(crate) fn mask_space(
     }
 }
 
+/// The single `model::BlendMode` → `gpu::Blend` mapping shared by the preview
+/// and the export path (K-031: they must never disagree). Every mode maps to
+/// its like-named GPU variant (K-162, T24).
 #[cfg(feature = "media")]
 pub(crate) fn blend_of(b: lumit_core::model::BlendMode) -> lumit_gpu::Blend {
-    use lumit_core::model::BlendMode;
+    use lumit_core::model::BlendMode as M;
+    use lumit_gpu::Blend as G;
     match b {
-        BlendMode::Normal => lumit_gpu::Blend::Normal,
-        BlendMode::Add => lumit_gpu::Blend::Add,
-        BlendMode::Multiply => lumit_gpu::Blend::Multiply,
-        BlendMode::Screen => lumit_gpu::Blend::Screen,
-        BlendMode::Overlay => lumit_gpu::Blend::Overlay,
-        BlendMode::SoftLight => lumit_gpu::Blend::SoftLight,
-        BlendMode::HardLight => lumit_gpu::Blend::HardLight,
-        BlendMode::Lighten => lumit_gpu::Blend::Lighten,
-        BlendMode::Darken => lumit_gpu::Blend::Darken,
-        BlendMode::Subtract => lumit_gpu::Blend::Subtract,
+        M::Normal => G::Normal,
+        M::Add => G::Add,
+        M::Multiply => G::Multiply,
+        M::Screen => G::Screen,
+        M::Overlay => G::Overlay,
+        M::SoftLight => G::SoftLight,
+        M::HardLight => G::HardLight,
+        M::Lighten => G::Lighten,
+        M::Darken => G::Darken,
+        M::Subtract => G::Subtract,
+        M::ColourBurn => G::ColourBurn,
+        M::LinearBurn => G::LinearBurn,
+        M::DarkerColour => G::DarkerColour,
+        M::ColourDodge => G::ColourDodge,
+        M::LighterColour => G::LighterColour,
+        M::LinearLight => G::LinearLight,
+        M::VividLight => G::VividLight,
+        M::PinLight => G::PinLight,
+        M::HardMix => G::HardMix,
+        M::Difference => G::Difference,
+        M::Exclusion => G::Exclusion,
+        M::Divide => G::Divide,
+        M::Hue => G::Hue,
+        M::Saturation => G::Saturation,
+        M::Colour => G::Colour,
+        M::Luminosity => G::Luminosity,
     }
 }
 

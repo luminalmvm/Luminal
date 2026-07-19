@@ -175,23 +175,23 @@ pub(crate) fn matte_control(
     }
 }
 
+/// The mode's display name — the single source of truth lives on the core
+/// enum ([`lumit_core::model::BlendMode::name`]), so the layer dropdown and
+/// the effect Mode param (T21) never drift.
 pub(crate) fn blend_name(b: lumit_core::model::BlendMode) -> &'static str {
-    use lumit_core::model::BlendMode;
-    match b {
-        BlendMode::Normal => "Normal",
-        BlendMode::Add => "Add",
-        BlendMode::Multiply => "Multiply",
-        BlendMode::Screen => "Screen",
-        BlendMode::Overlay => "Overlay",
-        BlendMode::SoftLight => "Soft light",
-        BlendMode::HardLight => "Hard light",
-        BlendMode::Lighten => "Lighten",
-        BlendMode::Darken => "Darken",
-        BlendMode::Subtract => "Subtract",
-    }
+    b.name()
 }
 
-/// Blend-mode subcolumn.
+/// True where a divider should precede this mode in the menu — the After
+/// Effects group boundaries (darken / lighten / contrast / comparative /
+/// component), keyed off the first mode of each group.
+fn blend_group_break(b: lumit_core::model::BlendMode) -> bool {
+    use lumit_core::model::BlendMode as M;
+    matches!(b, M::Darken | M::Add | M::Overlay | M::Difference | M::Hue)
+}
+
+/// Blend-mode subcolumn. Lists every After Effects mode ([`BlendMode::ALL`],
+/// K-162/T24) with the AE group dividers.
 pub(crate) fn blend_control(
     ui: &mut egui::Ui,
     comp_id: uuid::Uuid,
@@ -203,18 +203,10 @@ pub(crate) fn blend_control(
         ui,
         egui::RichText::new(blend_name(layer.blend)).small(),
         |ui| {
-            for mode in [
-                BlendMode::Normal,
-                BlendMode::Add,
-                BlendMode::Multiply,
-                BlendMode::Screen,
-                BlendMode::Overlay,
-                BlendMode::SoftLight,
-                BlendMode::HardLight,
-                BlendMode::Lighten,
-                BlendMode::Darken,
-                BlendMode::Subtract,
-            ] {
+            for &mode in BlendMode::ALL {
+                if blend_group_break(mode) {
+                    ui.separator();
+                }
                 if ui
                     .selectable_label(layer.blend == mode, blend_name(mode))
                     .clicked()

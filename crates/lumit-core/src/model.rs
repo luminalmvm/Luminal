@@ -811,24 +811,114 @@ pub struct TextDocument {
     pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
-/// Per-layer composite operator — the linear subset first
-/// (docs/06-RENDER-PIPELINE.md §blend domains; the perceptual set joins with
-/// the ping-pong compositing pass).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+/// Per-layer composite operator (docs/06-RENDER-PIPELINE.md §blend domains).
+/// The full After Effects set (K-162, T24): Normal / Add / Multiply run as
+/// fixed-function linear blends; the perceptual set is computed against the
+/// destination snapshot. Serialised by variant name, so adding modes never
+/// disturbs existing files.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 pub enum BlendMode {
     #[default]
     Normal,
-    Add,
+    // Darken group.
+    Darken,
     Multiply,
+    ColourBurn,
+    LinearBurn,
+    DarkerColour,
+    // Lighten group.
+    Add,
+    Lighten,
     Screen,
+    ColourDodge,
+    LighterColour,
+    // Contrast group.
     Overlay,
     SoftLight,
     HardLight,
-    Lighten,
-    Darken,
+    LinearLight,
+    VividLight,
+    PinLight,
+    HardMix,
+    // Comparative group.
+    Difference,
+    Exclusion,
     /// dst − src per channel, clamped at black — the photographic subtract
     /// (GEN-1, K-151). Computed in linear light like Add's light-addition twin.
     Subtract,
+    Divide,
+    // Component (HSL) group.
+    Hue,
+    Saturation,
+    Colour,
+    Luminosity,
+}
+
+impl BlendMode {
+    /// Every blend mode in After Effects' menu order, grouped
+    /// darken → lighten → contrast → comparative → component (K-162). The
+    /// single source of truth for the layer dropdown and the effect Mode
+    /// param (T21), so the two never drift.
+    pub const ALL: &'static [BlendMode] = &[
+        BlendMode::Normal,
+        BlendMode::Darken,
+        BlendMode::Multiply,
+        BlendMode::ColourBurn,
+        BlendMode::LinearBurn,
+        BlendMode::DarkerColour,
+        BlendMode::Add,
+        BlendMode::Lighten,
+        BlendMode::Screen,
+        BlendMode::ColourDodge,
+        BlendMode::LighterColour,
+        BlendMode::Overlay,
+        BlendMode::SoftLight,
+        BlendMode::HardLight,
+        BlendMode::LinearLight,
+        BlendMode::VividLight,
+        BlendMode::PinLight,
+        BlendMode::HardMix,
+        BlendMode::Difference,
+        BlendMode::Exclusion,
+        BlendMode::Subtract,
+        BlendMode::Divide,
+        BlendMode::Hue,
+        BlendMode::Saturation,
+        BlendMode::Colour,
+        BlendMode::Luminosity,
+    ];
+
+    /// The mode's display name (British English, sentence case — docs/15).
+    pub fn name(self) -> &'static str {
+        match self {
+            BlendMode::Normal => "Normal",
+            BlendMode::Darken => "Darken",
+            BlendMode::Multiply => "Multiply",
+            BlendMode::ColourBurn => "Colour burn",
+            BlendMode::LinearBurn => "Linear burn",
+            BlendMode::DarkerColour => "Darker colour",
+            BlendMode::Add => "Add",
+            BlendMode::Lighten => "Lighten",
+            BlendMode::Screen => "Screen",
+            BlendMode::ColourDodge => "Colour dodge",
+            BlendMode::LighterColour => "Lighter colour",
+            BlendMode::Overlay => "Overlay",
+            BlendMode::SoftLight => "Soft light",
+            BlendMode::HardLight => "Hard light",
+            BlendMode::LinearLight => "Linear light",
+            BlendMode::VividLight => "Vivid light",
+            BlendMode::PinLight => "Pin light",
+            BlendMode::HardMix => "Hard mix",
+            BlendMode::Difference => "Difference",
+            BlendMode::Exclusion => "Exclusion",
+            BlendMode::Subtract => "Subtract",
+            BlendMode::Divide => "Divide",
+            BlendMode::Hue => "Hue",
+            BlendMode::Saturation => "Saturation",
+            BlendMode::Colour => "Colour",
+            BlendMode::Luminosity => "Luminosity",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1046,6 +1136,52 @@ mod tests {
 
     fn secs(s: i64) -> CompTime {
         CompTime(Rational::new(s, 1).unwrap())
+    }
+
+    /// `BlendMode::ALL` must list every variant exactly once (the layer
+    /// dropdown and the effect Mode param both iterate it — a missing mode
+    /// would silently vanish from the UI). Names must be unique and non-empty.
+    #[test]
+    fn blend_mode_all_is_complete_and_named() {
+        use std::collections::HashSet;
+        // Every variant, so the compiler forces this list to grow with the enum.
+        let every = [
+            BlendMode::Normal,
+            BlendMode::Darken,
+            BlendMode::Multiply,
+            BlendMode::ColourBurn,
+            BlendMode::LinearBurn,
+            BlendMode::DarkerColour,
+            BlendMode::Add,
+            BlendMode::Lighten,
+            BlendMode::Screen,
+            BlendMode::ColourDodge,
+            BlendMode::LighterColour,
+            BlendMode::Overlay,
+            BlendMode::SoftLight,
+            BlendMode::HardLight,
+            BlendMode::LinearLight,
+            BlendMode::VividLight,
+            BlendMode::PinLight,
+            BlendMode::HardMix,
+            BlendMode::Difference,
+            BlendMode::Exclusion,
+            BlendMode::Subtract,
+            BlendMode::Divide,
+            BlendMode::Hue,
+            BlendMode::Saturation,
+            BlendMode::Colour,
+            BlendMode::Luminosity,
+        ];
+        let in_all: HashSet<_> = BlendMode::ALL.iter().copied().collect();
+        assert_eq!(in_all.len(), BlendMode::ALL.len(), "ALL has a duplicate");
+        for m in every {
+            assert!(in_all.contains(&m), "{m:?} missing from BlendMode::ALL");
+        }
+        assert_eq!(BlendMode::ALL.len(), every.len());
+        let names: HashSet<_> = BlendMode::ALL.iter().map(|m| m.name()).collect();
+        assert_eq!(names.len(), BlendMode::ALL.len(), "a name is duplicated");
+        assert!(BlendMode::ALL.iter().all(|m| !m.name().is_empty()));
     }
 
     #[test]

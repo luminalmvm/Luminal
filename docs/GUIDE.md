@@ -1594,15 +1594,22 @@ Two mechanisms make this safe, and you'll see them by name in the code:
   it as a matte) — then the switch dims to say "set, but overridden". The undoable
   switch lives in ops like every edit; the cache knows collapse changes pixels, so
   toggling it re-renders.
-- **Blend modes** — the full everyday set: Normal, Add, Subtract, Multiply, Screen,
-  Overlay, Soft light, Hard light, Lighten, Darken. Two families under the hood: Add,
-  Subtract and Multiply are physical light maths and run in linear; Screen, Overlay and
-  the lights are the Photoshop-era formulas people know by eye, so Lumit runs them on
+- **Blend modes** — the full After Effects colour set (T24): Normal; the darken group
+  (Darken, Multiply, Colour burn, Linear burn, Darker colour); the lighten group (Add,
+  Lighten, Screen, Colour dodge, Lighter colour); the contrast group (Overlay, Soft light,
+  Hard light, Linear light, Vivid light, Pin light, Hard mix); the comparative group
+  (Difference, Exclusion, Subtract, Divide); and the component group (Hue, Saturation,
+  Colour, Luminosity). The dropdown groups them with dividers exactly as AE does. Two
+  families under the hood: Add, Subtract and Multiply are physical light maths and run in
+  linear; the rest are the Photoshop-era formulas people know by eye, so Lumit runs them on
   encoded values (running them in linear is tidier maths and the wrong look). Add pours
-  light in; **Subtract** is its mirror — it takes the top layer's light away and stops
-  at black, never going negative (K-151). Lighten and Darken are a simple per-channel
-  max/min where the distinction doesn't matter. Every mode is pinned to its textbook
-  formula by a GPU test.
+  light in; **Subtract** is its mirror — it takes the top layer's light away and stops at
+  black, never going negative (K-151). Lighten and Darken are a simple per-channel max/min
+  where the distinction doesn't matter; **Darker/Lighter colour** compare the whole pixel by
+  brightness instead of each channel. The four component modes borrow one property (the hue,
+  the saturation, the colour, or the brightness) from the top layer and keep the rest from
+  below. Every mode is pinned to its textbook formula by a GPU test. (Dissolve and the
+  stencil/silhouette alpha modes are still to come.)
 - **Colour depth, in one paragraph.** Lumit's frames are "half float" (fp16) in linear
   light. Unlike AE's 16bpc — which is integer maths that clips at 1.0 — half float
   keeps brightness above 1.0 (a glow can genuinely overshoot) and negatives, which is

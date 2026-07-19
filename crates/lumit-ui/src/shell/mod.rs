@@ -23,7 +23,7 @@ mod eyedropper;
 mod gpu;
 mod graph;
 mod hierarchy;
-mod inspector;
+pub(crate) mod inspector;
 mod overlays;
 mod panels;
 mod scopes;
