@@ -309,6 +309,187 @@ pub(crate) fn motion_blur_control(
     }
 }
 
+/// Solo subcolumn (TL2, K-105): a small dot toggle — while any layer is
+/// soloed, only soloed layers render. Drawn like the 3D box (a themed shape,
+/// accent when on) since Iconoir has no solo glyph.
+pub(crate) fn solo_control(
+    ui: &mut egui::Ui,
+    theme: &Theme,
+    comp_id: uuid::Uuid,
+    layer: &lumit_core::model::Layer,
+    pending: &mut Option<lumit_core::Op>,
+) {
+    let on = layer.switches.solo;
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::click());
+    let col = if on {
+        theme.accent
+    } else if resp.hovered() {
+        theme.text_primary
+    } else {
+        theme.text_disabled
+    };
+    ui.painter()
+        .circle_stroke(rect.center(), 4.0, egui::Stroke::new(1.4_f32, col));
+    if on {
+        ui.painter().circle_filled(rect.center(), 2.2, col);
+    }
+    if resp
+        .on_hover_text("Solo: while any layer is soloed, only soloed layers render")
+        .clicked()
+    {
+        *pending = Some(lumit_core::Op::SetLayerSolo {
+            comp: comp_id,
+            layer: layer.id,
+            solo: !on,
+        });
+    }
+}
+
+/// Lock subcolumn (TL2): a locked layer's bar, trims and stack order hold
+/// still in the timeline (its values can still be edited from its rows).
+pub(crate) fn lock_control(
+    ui: &mut egui::Ui,
+    theme: &Theme,
+    comp_id: uuid::Uuid,
+    layer: &lumit_core::model::Layer,
+    pending: &mut Option<lumit_core::Op>,
+) {
+    let on = layer.switches.locked;
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::click());
+    let (icon, col) = if on {
+        (Icon::Lock, theme.accent)
+    } else if resp.hovered() {
+        (Icon::Lock, theme.text_primary)
+    } else {
+        (Icon::Unlock, theme.text_disabled)
+    };
+    crate::icons::paint(ui.painter(), rect, icon, col, 1.3);
+    if resp
+        .on_hover_text("Lock: hold this layer's bar, trims and order still")
+        .clicked()
+    {
+        *pending = Some(lumit_core::Op::SetLayerLocked {
+            comp: comp_id,
+            layer: layer.id,
+            locked: !on,
+        });
+    }
+}
+
+/// Label-colour chip (TL2): a small square of the layer's label colour; a
+/// click steps to the next palette entry (eight, from the theme's own roles).
+pub(crate) fn label_chip_control(
+    ui: &mut egui::Ui,
+    theme: &Theme,
+    comp_id: uuid::Uuid,
+    layer: &lumit_core::model::Layer,
+    pending: &mut Option<lumit_core::Op>,
+) {
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(12.0, 16.0), egui::Sense::click());
+    let chip = egui::Rect::from_center_size(rect.center(), egui::vec2(9.0, 9.0));
+    ui.painter()
+        .rect_filled(chip, 2.0, theme.label_colour(layer.label));
+    if resp.hovered() {
+        ui.painter().rect_stroke(
+            chip,
+            2.0,
+            egui::Stroke::new(1.0_f32, theme.text_primary),
+            egui::StrokeKind::Outside,
+        );
+    }
+    if resp
+        .on_hover_text("Label colour (click to change)")
+        .clicked()
+    {
+        *pending = Some(lumit_core::Op::SetLayerLabel {
+            comp: comp_id,
+            layer: layer.id,
+            label: layer.label.wrapping_add(1) % 8,
+        });
+    }
+}
+
+/// The fx switch subcolumn (TL2, docs/08 §1.5): off bypasses the layer's
+/// whole effect stack.
+pub(crate) fn fx_switch_control(
+    ui: &mut egui::Ui,
+    theme: &Theme,
+    comp_id: uuid::Uuid,
+    layer: &lumit_core::model::Layer,
+    pending: &mut Option<lumit_core::Op>,
+) {
+    let on = layer.switches.fx;
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::click());
+    let col = if on || resp.hovered() {
+        if on {
+            theme.accent
+        } else {
+            theme.text_primary
+        }
+    } else {
+        theme.text_disabled
+    };
+    crate::icons::paint(ui.painter(), rect, Icon::Fx, col, 1.2);
+    if resp
+        .on_hover_text("Effects: off bypasses this layer's whole effect stack")
+        .clicked()
+    {
+        *pending = Some(lumit_core::Op::SetLayerFx {
+            comp: comp_id,
+            layer: layer.id,
+            fx: !on,
+        });
+    }
+}
+
+/// Parent subcolumn (TL2, K-103): the timeline's compact parent pick — this
+/// comp's other layers (cycles hidden) plus None, the same dropdown the
+/// Effect Controls panel carries.
+pub(crate) fn parent_control(
+    ui: &mut egui::Ui,
+    comp: &lumit_core::model::Composition,
+    comp_id: uuid::Uuid,
+    layer: &lumit_core::model::Layer,
+    pending: &mut Option<lumit_core::Op>,
+) {
+    let current = layer
+        .parent
+        .and_then(|pid| comp.layers.iter().find(|l| l.id == pid))
+        .map(|l| trim_title(&l.name))
+        .unwrap_or_else(|| "None".to_string());
+    bare_dropdown(ui, egui::RichText::new(current).small(), |ui| {
+        if ui
+            .selectable_label(layer.parent.is_none(), "None")
+            .clicked()
+        {
+            if layer.parent.is_some() {
+                *pending = Some(lumit_core::Op::SetLayerParent {
+                    comp: comp_id,
+                    layer: layer.id,
+                    parent: None,
+                });
+            }
+            ui.close_menu();
+        }
+        for cand in &comp.layers {
+            if cand.id == layer.id
+                || lumit_core::model::parenting_would_cycle(comp, layer.id, cand.id)
+            {
+                continue;
+            }
+            let sel = layer.parent == Some(cand.id);
+            if ui.selectable_label(sel, trim_title(&cand.name)).clicked() {
+                *pending = Some(lumit_core::Op::SetLayerParent {
+                    comp: comp_id,
+                    layer: layer.id,
+                    parent: Some(cand.id),
+                });
+                ui.close_menu();
+            }
+        }
+    });
+}
+
 /// Collapse-transformations subcolumn (Precomp layers only, docs/06 §1.4).
 /// Accent when active; dimmed when the switch is set but a mask, blend,
 /// opacity or matte use forces an intermediate anyway (the spec's required

@@ -203,6 +203,23 @@ pub struct LayerColours {
 }
 
 impl Theme {
+    /// The layer-label palette (TL2): eight distinguishable chips drawn from the
+    /// theme's own colour roles, so every scheme supplies its own set and no
+    /// new hex enters the codebase. Index 0 is the quiet default.
+    pub fn label_colour(&self, i: u8) -> Color32 {
+        let set = [
+            self.text_muted,
+            self.accent,
+            self.success,
+            self.warning,
+            self.error,
+            self.cache_disk,
+            self.accent_hover,
+            self.hairline_strong,
+        ];
+        set[(i as usize) % set.len()]
+    }
+
     pub const fn dark() -> Self {
         Self {
             mode: ThemeMode::Dark,

@@ -238,6 +238,7 @@ mod tests {
             transform: TransformGroup::default(),
             matte: None,
             parent: None,
+            label: 0,
             effects: Vec::new(),
             blend: BlendMode::Normal,
             masks,

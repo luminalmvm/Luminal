@@ -518,7 +518,7 @@ pub(crate) fn timeline_panel(ui: &mut egui::Ui, theme: &Theme, app: &mut AppStat
             // view-only (the render is unaffected).
             let layer_search = app.timeline_layer_search.trim().to_lowercase();
             let hide_invisible = app.timeline_hide_invisible;
-            for layer in &comp.layers {
+            for (layer_no, layer) in comp.layers.iter().enumerate() {
                 if !layer_search.is_empty()
                     && !layer.name.to_lowercase().contains(&layer_search)
                 {
@@ -695,19 +695,29 @@ pub(crate) fn timeline_panel(ui: &mut egui::Ui, theme: &Theme, app: &mut AppStat
                     )
                 };
                 let is_footage = matches!(layer.kind, lumit_core::model::LayerKind::Footage { .. });
-                let eye_r = slot(row_rect.left() + 18.0, row_rect.left() + 36.0);
-                // Volume sits right beside the eye (Mack); the far-right slot it
-                // vacated still carries a Precomp's collapse switch.
-                let vol_r = slot(row_rect.left() + 38.0, row_rect.left() + 56.0);
-                let mute_r = slot(edge - 34.0, edge);
-                let td_r = slot(edge - 60.0, edge - 38.0);
-                // Flow option toggle (K-088), footage layers only.
-                let flow_r = slot(edge - 86.0, edge - 64.0);
-                let blend_r = slot(edge - 150.0, edge - 90.0);
-                let matte_r = slot(edge - 204.0, edge - 154.0);
-                // Layer type is encoded by the lane bar's colour (Mack) — no glyph
-                // or colour tab in the outline.
-                let title_r = slot(row_rect.left() + 58.0, edge - 208.0);
+                // TL2 — the AE column groups, left → right:
+                //   1  visibility · audio · solo · lock
+                //   2  label chip · number · name (with the twirl)
+                //   3  flow/collapse · fx · motion blur · 3D
+                //   4  matte · blend
+                //   5  parent
+                let eye_r = slot(row_rect.left() + 18.0, row_rect.left() + 34.0);
+                let vol_r = slot(row_rect.left() + 36.0, row_rect.left() + 52.0);
+                let solo_r = slot(row_rect.left() + 54.0, row_rect.left() + 70.0);
+                let lock_r = slot(row_rect.left() + 72.0, row_rect.left() + 88.0);
+                let chip_r = slot(row_rect.left() + 92.0, row_rect.left() + 104.0);
+                let title_r = slot(row_rect.left() + 106.0, edge - 300.0);
+                // Group 3: flow (footage) and collapse (precomp) share a slot —
+                // the two kinds never overlap.
+                let flow_r = slot(edge - 296.0, edge - 278.0);
+                let fxs_r = slot(edge - 276.0, edge - 258.0);
+                let mb_r = slot(edge - 256.0, edge - 238.0);
+                let td_r = slot(edge - 236.0, edge - 218.0);
+                // Group 4.
+                let matte_r = slot(edge - 212.0, edge - 162.0);
+                let blend_r = slot(edge - 158.0, edge - 108.0);
+                // Group 5.
+                let parent_r = slot(edge - 102.0, edge - 2.0);
                 let place =
                     |ui: &mut egui::Ui, r: egui::Rect, add: &mut dyn FnMut(&mut egui::Ui)| {
                         let mut child = ui.new_child(
@@ -775,6 +785,13 @@ pub(crate) fn timeline_panel(ui: &mut egui::Ui, theme: &Theme, app: &mut AppStat
                             app.renaming_layer = Some((layer.id, buf));
                         }
                     } else {
+                        // Layer number (TL2): the stack index, 1-based like AE,
+                        // painted before the name.
+                        child.label(
+                            egui::RichText::new(format!("{}", layer_no + 1))
+                                .small()
+                                .color(theme.text_muted),
+                        );
                         let title_resp = child.add(
                             egui::Button::new(
                                 egui::RichText::new(trim_title(&layer.name))
@@ -790,7 +807,7 @@ pub(crate) fn timeline_panel(ui: &mut egui::Ui, theme: &Theme, app: &mut AppStat
                         } else if title_resp.clicked() {
                             select_this = true;
                         }
-                        if title_resp.dragged() {
+                        if title_resp.dragged() && !layer.switches.locked {
                             if let Some(p) = title_resp.interact_pointer_pos() {
                                 app.layer_reorder = Some((layer.id, p.y));
                             }
@@ -824,14 +841,38 @@ pub(crate) fn timeline_panel(ui: &mut egui::Ui, theme: &Theme, app: &mut AppStat
                         });
                     }
                 }
+                // Group 1 extras (TL2): solo and lock next to the eye/audio.
+                place(ui, solo_r, &mut |ui| {
+                    solo_control(ui, theme, comp_id, layer, &mut pending)
+                });
+                place(ui, lock_r, &mut |ui| {
+                    lock_control(ui, theme, comp_id, layer, &mut pending)
+                });
+                // Group 2: the label-colour chip (the number paints inside the
+                // title cell).
+                place(ui, chip_r, &mut |ui| {
+                    label_chip_control(ui, theme, comp_id, layer, &mut pending)
+                });
+                // Group 4.
                 place(ui, matte_r, &mut |ui| {
                     matte_control(ui, theme, comp, comp_id, layer, &mut pending)
                 });
                 place(ui, blend_r, &mut |ui| {
                     blend_control(ui, comp_id, layer, &mut pending)
                 });
+                // Group 5.
+                place(ui, parent_r, &mut |ui| {
+                    parent_control(ui, comp, comp_id, layer, &mut pending)
+                });
+                // Group 3: the switch cluster.
                 place(ui, td_r, &mut |ui| {
                     three_d_control(ui, theme, comp_id, layer, &mut pending)
+                });
+                place(ui, fxs_r, &mut |ui| {
+                    fx_switch_control(ui, theme, comp_id, layer, &mut pending)
+                });
+                place(ui, mb_r, &mut |ui| {
+                    motion_blur_control(ui, theme, comp_id, layer, &mut pending)
                 });
                 let is_precomp = matches!(layer.kind, lumit_core::model::LayerKind::Precomp { .. });
                 if is_footage {
@@ -842,21 +883,14 @@ pub(crate) fn timeline_panel(ui: &mut egui::Ui, theme: &Theme, app: &mut AppStat
                         flow_control(ui, theme, comp_id, layer, &mut pending)
                     });
                 } else if is_precomp {
-                    // Precomp layers have no audio; their far-right slot carries
-                    // the collapse switch (docs/06 §1.4) instead.
+                    // A precomp's collapse switch takes the flow slot (footage
+                    // only), so the two never collide.
                     let clt = app.preview_frame as f64 / comp.frame_rate.fps().max(1.0)
                         - layer.start_offset.0.to_f64();
-                    place(ui, mute_r, &mut |ui| {
+                    place(ui, flow_r, &mut |ui| {
                         collapse_control(ui, theme, &doc, comp, comp_id, layer, clt, &mut pending)
                     });
                 }
-                // Per-layer motion blur (K-120): the far-right slot for every
-                // layer, except a Precomp — whose far-right slot holds its
-                // collapse switch — where it takes the (unused) flow slot instead.
-                let mb_slot = if is_precomp { flow_r } else { mute_r };
-                place(ui, mb_slot, &mut |ui| {
-                    motion_blur_control(ui, theme, comp_id, layer, &mut pending)
-                });
                 if select_this {
                     app.selected_layer = Some(layer.id);
                 }
@@ -1142,8 +1176,9 @@ pub(crate) fn timeline_panel(ui: &mut egui::Ui, theme: &Theme, app: &mut AppStat
                     // pointer interaction, so an off-screen bar can't steal outline clicks.
                     let bar_visible = bar.right() > track_left + 0.5 && bar.left() < panel_right;
                     // Edge handles: drag to trim in/out (one SetLayerSpan op per release).
+                    // A locked layer's edges hold still (TL2).
                     for out_edge in [false, true] {
-                        if !bar_visible {
+                        if !bar_visible || layer.switches.locked {
                             continue;
                         }
                         let edge_x = if out_edge { bar.right() } else { bar.left() };
@@ -1205,6 +1240,7 @@ pub(crate) fn timeline_panel(ui: &mut egui::Ui, theme: &Theme, app: &mut AppStat
                     // start_offset together so the bar and its content move as one. Sequence
                     // layers keep their bodies for clip selection.
                     if bar_visible
+                        && !layer.switches.locked
                         && !matches!(layer.kind, lumit_core::model::LayerKind::Sequence { .. })
                     {
                         let body = bar.shrink2(egui::vec2(6.0, 0.0));

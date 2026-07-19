@@ -129,6 +129,20 @@ pub enum Op {
         layer: Uuid,
         motion_blur: bool,
     },
+    /// Toggle a layer's lock (TL2): a locked layer's bar, trims and order are
+    /// held still in the timeline.
+    SetLayerLocked {
+        comp: Uuid,
+        layer: Uuid,
+        locked: bool,
+    },
+    /// Set a layer's label colour (TL2): an index into the theme's label
+    /// palette, shown as the chip beside the layer number.
+    SetLayerLabel {
+        comp: Uuid,
+        layer: Uuid,
+        label: u8,
+    },
     /// Set a composition's motion-blur shutter (K-120): the master enable plus
     /// the shutter angle/phase and sample count.
     SetCompMotionBlur {
@@ -498,6 +512,38 @@ pub fn apply(doc: &mut Document, op: &Op) -> Result<Op, OpError> {
                 comp: *comp,
                 layer: *layer,
                 solo: previous,
+            })
+        }
+        Op::SetLayerLocked {
+            comp,
+            layer,
+            locked,
+        } => {
+            let c = doc.comp_mut(*comp).ok_or(OpError::UnknownComp)?;
+            let l = c
+                .layers
+                .iter_mut()
+                .find(|l| l.id == *layer)
+                .ok_or(OpError::UnknownLayer)?;
+            let previous = std::mem::replace(&mut l.switches.locked, *locked);
+            Ok(Op::SetLayerLocked {
+                comp: *comp,
+                layer: *layer,
+                locked: previous,
+            })
+        }
+        Op::SetLayerLabel { comp, layer, label } => {
+            let c = doc.comp_mut(*comp).ok_or(OpError::UnknownComp)?;
+            let l = c
+                .layers
+                .iter_mut()
+                .find(|l| l.id == *layer)
+                .ok_or(OpError::UnknownLayer)?;
+            let previous = std::mem::replace(&mut l.label, *label);
+            Ok(Op::SetLayerLabel {
+                comp: *comp,
+                layer: *layer,
+                label: previous,
             })
         }
         Op::SetLayerMotionBlur {

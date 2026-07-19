@@ -946,6 +946,11 @@ pub struct Layer {
     /// as `matte`). Cycles are also rejected at edit time (`SetLayerParent`).
     #[serde(default)]
     pub parent: Option<Uuid>,
+    /// Label colour (TL2): an index into the theme's label palette, shown as
+    /// the chip beside the layer number in the outline. 0 by default; purely
+    /// organisational — never rendered into the picture.
+    #[serde(default)]
+    pub label: u8,
     #[serde(default)]
     pub blend: BlendMode,
     /// Masks gate the layer's alpha before effects/transform
@@ -1475,6 +1480,7 @@ mod tests {
             },
             matte: None,
             parent: None,
+            label: 0,
             blend: BlendMode::Normal,
             masks: Vec::new(),
             effects: Vec::new(),

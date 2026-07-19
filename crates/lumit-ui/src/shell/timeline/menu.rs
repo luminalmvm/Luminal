@@ -227,14 +227,18 @@ pub(crate) fn column_header_icons(
     // left+47, names from left+58, then the right-anchored switch cluster
     // measured back from `edge`. Matte and blend sit over their dropdowns; the
     // 3D column wears a cube glyph.
-    icon(panel_left + 27.0, Icon::Eye);
-    icon(panel_left + 47.0, Icon::Audio);
-    label(panel_left + 58.0, "Layer", egui::Align2::LEFT_CENTER);
-    label(edge - 179.0, "Matte", egui::Align2::CENTER_CENTER);
-    label(edge - 120.0, "Blend", egui::Align2::CENTER_CENTER);
-    icon(edge - 75.0, Icon::Flow);
-    icon(edge - 49.0, Icon::Cube3d);
-    // The motion-blur column (owner): the same speed-lines glyph the per-layer
-    // switch and the comp master wear, over the far-right slot.
-    icon(edge - 17.0, Icon::MotionBlur);
+    // TL2 headers mirror the row slots' five groups: 1 eye/audio/solo/lock ·
+    // 2 label+name · 3 flow/fx/MB/3D · 4 matte/blend · 5 parent.
+    icon(panel_left + 26.0, Icon::Eye);
+    icon(panel_left + 44.0, Icon::Audio);
+    label(panel_left + 62.0, "S", egui::Align2::CENTER_CENTER);
+    icon(panel_left + 80.0, Icon::Lock);
+    label(panel_left + 106.0, "Layer", egui::Align2::LEFT_CENTER);
+    icon(edge - 287.0, Icon::Flow);
+    icon(edge - 267.0, Icon::Fx);
+    icon(edge - 247.0, Icon::MotionBlur);
+    icon(edge - 227.0, Icon::Cube3d);
+    label(edge - 187.0, "Matte", egui::Align2::CENTER_CENTER);
+    label(edge - 133.0, "Blend", egui::Align2::CENTER_CENTER);
+    label(edge - 52.0, "Parent", egui::Align2::CENTER_CENTER);
 }

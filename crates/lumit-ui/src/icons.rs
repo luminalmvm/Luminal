@@ -106,11 +106,13 @@ pub enum Icon {
     /// Motion blur (the comp master and the per-layer switch): an arrow with
     /// speed lines — the closest Iconoir glyph to a motion smear (owner).
     MotionBlur,
+    /// The per-layer fx switch (TL2): bypasses the layer's whole effect stack.
+    Fx,
 }
 
 impl Icon {
     /// Every variant, for exhaustive iteration (tests, palettes).
-    pub const ALL: [Icon; 42] = [
+    pub const ALL: [Icon; 43] = [
         Icon::Pointer,
         Icon::Move,
         Icon::Rectangle,
@@ -153,6 +155,7 @@ impl Icon {
         Icon::Eyedropper,
         Icon::Reset,
         Icon::MotionBlur,
+        Icon::Fx,
     ];
 
     /// The Iconoir icon this variant renders.
@@ -200,6 +203,7 @@ impl Icon {
             Icon::Eyedropper => "color-picker",
             Icon::Reset => "refresh-double",
             Icon::MotionBlur => "fast-arrow-right",
+            Icon::Fx => "fx",
         }
     }
 
