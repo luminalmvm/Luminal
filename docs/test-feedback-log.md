@@ -105,8 +105,9 @@ changes update `docs/08` and ship their oracle test; new concepts update `GUIDE.
 - [x] **FX-19** (K-140) Renamed **Fast motion blur**; blocky seams fixed by scaling each streak
   by a smooth forward/backward-consistency confidence (no hard gate); added a **View** enum
   (Rendered / Motion vectors / Confidence).
-- [ ] **FX-20** Transform: default anchor X/Y (and position) to the layer's centre, varying
-  by the layer it's applied to — not 0,0.
+- [x] **FX-20** (K-150) New layers centre their anchor on their own content (footage=natural
+  size, solid=solid size, precomp/sequence/adjustment=comp) with position at comp centre. Text
+  kept at 0,0 (size unknown until glyph layout; AE point-text convention).
 - [ ] **FX-21** Matte effect: extra controls per Screenshot_136 (Keylight-style keyer —
   screen colour/gain/balance, despill, screen matte clip/rollback/shrink/softness/despot,
   inside/outside masks, fg/edge colour correction, source crops). Scope TBD with owner.
@@ -114,8 +115,10 @@ changes update `docs/08` and ship their oracle test; new concepts update `GUIDE.
 
 ## Additions / general bugs
 
-- [ ] **GEN-1** Blend modes need Darken / Subtract options.
-- [ ] **GEN-2** Add a **Vibrancy** effect to complement Saturation.
+- [x] **GEN-1** (K-151) Subtract added at every site (Darken already existed): linear-light
+  `max(dst-src,0)`, premultiplied snapshot path.
+- [x] **GEN-2** (K-152) Vibrancy effect added (Colour): lifts low-saturation pixels more than
+  vivid ones; one Amount dial, 0 = identity.
 - [x] **GEN-3** (K-153) Layers now sit freely across comp bounds (start < 0, end > comp end);
   render/audio intersect with [0, comp_end); long imports keep full media duration. LIMIT: the
   timeline doesn't yet pan to negative time, so a pre-0 overhang draws clipped under the lane's
