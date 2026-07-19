@@ -1703,3 +1703,18 @@ point-text convention. Only *new* layers default this way — saved projects loa
 transforms unchanged (the transform is serialised in full). Added 2026-07-19 at Mack's
 request. Built in an isolated worktree; not pushed — another agent may also claim K-150,
 renumber on merge if so.
+
+**K-151 · DECIDED · Blend modes gain Darken and Subtract (GEN-1).** The layer blend-mode set
+adds **Darken** (`min(dst, src)` per channel) and **Subtract** (`dst − src` per channel,
+clamped at black). Darken is domain-invariant (per-channel min commutes with the monotone
+transfer function) and runs in linear alongside Lighten. Subtract runs in **linear light** —
+it is Add's darkening twin, the physical removal of light — not in the encoded/perceptual
+domain, and clamps at zero so it never produces negative light. Both take the compositor's
+snapshot path (like Screen and the per-channel min/max modes), so layer opacity and mattes
+mix by coverage correctly; the premultiplied-alpha maths is the shared
+`rgb = mix(dst, blended, a)`, `a_out = a + dst_a·(1−a)` every snapshot blend uses. Darken was
+already present in the enum, the UI dropdown and both GPU mappings when this work began; GEN-1
+adds Subtract to match. CPU/GPU parity holds (the compositor's inline oracle tests pin each
+mode's formula). Spec: [06-RENDER-PIPELINE.md](06-RENDER-PIPELINE.md) §3.5. Added 2026-07-19 at
+Mack's request. Built in an isolated worktree; not pushed — another agent may also claim
+K-151, renumber on merge if so.
