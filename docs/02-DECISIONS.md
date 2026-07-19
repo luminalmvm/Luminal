@@ -1866,3 +1866,23 @@ Top / Bottom crop amounts). None is required for "properly key footage" — the 
 (screen matte + clips + despill + views) is — so they are ordered after it and tracked here.
 When they land, each keeps the K-031 preview==export and §1.6 oracle guarantees. Numbered
 K-155, alongside K-154; renumber on merge if another agent also claims it.
+
+**K-159 · DECIDED · The Timeline outline and lane/graph areas scroll together in the layers
+view but independently in the graph view (UI-8).** In the ordinary **layers view** the layer
+outline (the left column of property/layer rows) and the lane area to its right share **one**
+vertical scroll: a single wheel or scrollbar moves both, synced, so a row's outline controls
+and its bar never drift apart. In the **graph view** the lane area becomes the curve editor,
+which pans and zooms its own value axis on the wheel (K-079); the outline is therefore given
+its **own** vertical scroll, its scrollbar pinned to the **right edge of the outline column**
+(not at the far right, over the curve). The two are then fully decoupled — a wheel over the
+curve never scrolls the layer list, and the list scrolls on its own bar or on a wheel over the
+outline column. Mechanically this is the one lane `ScrollArea` capped to the outline's width in
+graph mode and spanning the whole panel in the layers view: an egui scroll area only reacts to
+the wheel over its own rectangle, so once it stops at the outline's right edge the curve's wheel
+never reaches it, and the earlier stop-gap (freeing the curve's wheel by zeroing the shared
+scroll's `smooth_scroll_delta`) is removed. The wheel's destination is decided by a small pure
+router, `timeline_wheel_route`, unit-tested per mode. In the speed lens — which has no vertical
+pan — a plain wheel over the curve simply does nothing, consistent with the decoupling (the list
+still has its own bar). Refines K-079 (which established that the curve and the layer list scroll
+on separate wheels) without reversing it; no other decision changes. Built in an isolated
+worktree; not pushed.
