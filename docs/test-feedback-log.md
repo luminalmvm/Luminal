@@ -29,10 +29,10 @@ changes update `docs/08` and ship their oracle test; new concepts update `GUIDE.
 - [x] **UI-2** Clicking an effect property's *name* in the layer area should highlight the
   layer; currently doesn't. — done: effect-row click now sets `selected_layer` in both the
   Timeline layer area and the docked effects panel.
-- [ ] **UI-3** Project tab: search bar across the top of the whole panel (files/layers).
-- [ ] **UI-4** Project panel selected-layer info box: give it fixed padding so switching
-  layers doesn't shift the info placement; clicking footage shows a small thumbnail
-  preview *in that box*, not in the viewfinder.
+- [x] **UI-3** Project search bar (K-… §3.1): subtree-aware name filter across the top; folders open to reveal matches.
+- [x] **UI-4** (K-157) Project info box now fixed-height (no jump between selections) with a
+  64×48 footage thumbnail drawn from the Viewer's decoded frame. (Brief lag showing the new
+  clip while it decodes — same as the Viewer.)
 - [x] **UI-5** Lane keyframe selection: Shift and Ctrl both toggle now — click gesture and the
   drag-marquee (a Shift/Ctrl box deselects covered keys instead of only adding).
 - [ ] **UI-6** Layer area: selecting a property *name* (Transform, an effect, …) should
@@ -44,9 +44,9 @@ changes update `docs/08` and ship their oracle test; new concepts update `GUIDE.
 - [x] **UI-9** Dropper cursor now shows whenever the tool is armed (painted on a foreground
   layer at the pointer, OS cursor hidden), not just over the image; magnifier stays
   viewfinder-only. (Please eyeball the cursor across panels.)
-- [ ] **UI-10** "Save stack as preset" should save only the effects/keyframes the user has
-  highlighted: all non-keyframed values as set, plus exactly the selected keyframes from
-  the selected effects — nothing unselected.
+- [x] **UI-10** (K-156) Preset save now respects the selection: nothing selected → whole stack;
+  else only the selected effects (in order), with params trimmed to just their selected keys
+  (params with no selected keys keep their value/animation as set).
 - [ ] **UI-11** Flow input rate: make it a textbox the user types into (not a dropdown),
   and keyframeable like any other property.
 - [x] **UI-12** Per-layer motion-blur toggle now drawn: it was only ever in the right-click
@@ -132,6 +132,9 @@ changes update `docs/08` and ship their oracle test; new concepts update `GUIDE.
 - [x] **GEN-5** Default the lane-timeline grid to **time**, not beats. — done.
 
 ## Later-reported bugs (this session)
+
+- [x] **Effects & Presets scrollbar was mid-panel** (clipping names) — set the ScrollArea to
+  not auto-shrink, so the scrollbar hugs the far-right edge and names render full-width.
 
 - [x] **Scrub during playback didn't fully stop.** Clicking the timeline (or the viewer
   scrub) to move the playhead during playback halted the frame advance but left the audio
