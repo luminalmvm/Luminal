@@ -797,13 +797,16 @@ are deferred. Marker-triggerable intensity spikes come with the §1.4 wiring alr
 ### 3.14 Vignette
 
 **Parameters:** Amount (0–1, default 0.5), Radius (0–1, default 0.75), Softness (hard min 0,
-unbounded above — slider 0–2, default 0.5), Roundness (0–1, default 1.0), Mix.
+unbounded above — slider 0–2, default 0.5), Roundness (0–1, default 1.0), Ramp (hard min 0.05,
+slider 0.2–4, default 1.0), Mix.
 
 **Algorithm sketch.** Darkens toward black away from the frame centre: a normalised distance
 metric (blended by Roundness between a true circle and an ellipse matching the frame's
-aspect) feeds a smoothstep between Radius and Radius + Softness, scaled by Amount and
-multiplied into the premultiplied colour; alpha is untouched. `cheap` cost, `exact` ROI — a
-pointwise per-pixel darken, no neighbour sampling despite the spatial falloff.
+aspect) feeds a smoothstep between Radius and Radius + Softness, raised to the Ramp gamma
+(1.0 leaves the smoothstep unchanged; below 1 pushes the darkening outward, above 1 draws it
+inward toward the corners), scaled by Amount and multiplied into the premultiplied colour;
+alpha is untouched. `cheap` cost, `exact` ROI — a pointwise per-pixel darken, no neighbour
+sampling despite the spatial falloff.
 
 **Status (v1, shipped):** §3.10's one-line mention names Amount, Size, Softness, Roundness
 without ranges or a parameter shape — pinned here as Amount / Radius / Softness / Roundness,

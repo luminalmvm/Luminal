@@ -78,6 +78,8 @@ pub struct VignetteOp {
     pub softness: f32,
     /// 0..1: 1 = circular, 0 = follows the frame's aspect.
     pub roundness: f32,
+    /// Gamma on the falloff (T16): 1 = plain smoothstep.
+    pub ramp: f32,
     /// 0..1, blended against the unprocessed input.
     pub mix: f32,
 }
@@ -89,8 +91,8 @@ struct VignetteParams {
     radius: f32,
     softness: f32,
     roundness: f32,
+    ramp: f32,
     mix_amt: f32,
-    _pad0: f32,
     _pad1: f32,
     _pad2: f32,
 }
@@ -270,8 +272,8 @@ impl FxEngine {
                 radius: op.radius,
                 softness: op.softness,
                 roundness: op.roundness,
+                ramp: op.ramp,
                 mix_amt: op.mix,
-                _pad0: 0.0,
                 _pad1: 0.0,
                 _pad2: 0.0,
             }),

@@ -373,6 +373,7 @@ pub fn run_ops(
                 radius,
                 softness,
                 roundness,
+                ramp,
                 mix,
             } => {
                 tex = fx.vignette(
@@ -385,6 +386,7 @@ pub fn run_ops(
                         radius: *radius,
                         softness: *softness,
                         roundness: *roundness,
+                        ramp: *ramp,
                         mix: *mix,
                     },
                 );

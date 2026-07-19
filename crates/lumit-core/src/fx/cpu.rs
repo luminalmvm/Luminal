@@ -74,8 +74,11 @@ pub fn apply(rgba: &mut [f32], w: u32, h: u32, fx: &Resolved) {
             radius,
             softness,
             roundness,
+            ramp,
             mix,
-        } => vignette(rgba, w, h, *amount, *radius, *softness, *roundness, *mix),
+        } => vignette(
+            rgba, w, h, *amount, *radius, *softness, *roundness, *ramp, *mix,
+        ),
         Resolved::Exposure { factor, mix } => exposure(rgba, *factor, *mix),
         Resolved::HueShift { m, mix } => hue_shift(rgba, *m, *mix),
         Resolved::Contrast { k, mix } => contrast(rgba, *k, *mix),
@@ -714,6 +717,7 @@ pub fn vignette(
     radius: f32,
     softness: f32,
     roundness: f32,
+    ramp: f32,
     mix: f32,
 ) {
     if amount == 0.0 {
@@ -736,7 +740,8 @@ pub fn vignette(
             let ny = (y as f32 + 0.5 - cy) / ry;
             let dist = (nx * nx + ny * ny).sqrt();
             let t = ((dist - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);
-            let s = t * t * (3.0 - 2.0 * t);
+            // Gamma on the smoothstep falloff (T16): 1 leaves it unchanged.
+            let s = (t * t * (3.0 - 2.0 * t)).powf(ramp);
             let vig = (s * amount).clamp(0.0, 1.0);
             let keep = 1.0 - vig;
             for c in 0..3 {

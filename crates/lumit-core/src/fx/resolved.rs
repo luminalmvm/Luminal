@@ -321,6 +321,8 @@ pub enum Resolved {
         softness: f32,
         /// 0..1: 1 = circular, 0 = follows the frame's aspect.
         roundness: f32,
+        /// Gamma on the falloff (T16): 1 = plain smoothstep, ≠ 1 curves it.
+        ramp: f32,
         /// 0..1.
         mix: f32,
     },
@@ -929,12 +931,14 @@ fn resolve_one(
             // feather in the normalised metric, no upper clamp.
             let softness = (e.float_at("softness", lt).unwrap_or(0.5) as f32).max(0.0);
             let roundness = (e.float_at("roundness", lt).unwrap_or(1.0) as f32).clamp(0.0, 1.0);
+            let ramp = (e.float_at("ramp", lt).unwrap_or(1.0) as f32).max(0.05);
             let mix = (e.float_at("mix", lt).unwrap_or(100.0) as f32 / 100.0).clamp(0.0, 1.0);
             Some(Resolved::Vignette {
                 amount,
                 radius,
                 softness,
                 roundness,
+                ramp,
                 mix,
             })
         }

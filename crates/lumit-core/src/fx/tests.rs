@@ -2471,6 +2471,7 @@ fn vignette_instantiates_and_resolves() {
             radius: 0.75,
             softness: 0.5,
             roundness: 1.0,
+            ramp: 1.0,
             mix: 1.0,
         }]
     );
@@ -2500,6 +2501,7 @@ fn vignette_instantiates_and_resolves() {
             radius: 0.75,
             softness: 1.5,
             roundness: 1.0,
+            ramp: 1.0,
             mix: 1.0,
         }]
     );
@@ -2517,16 +2519,16 @@ fn cpu_vignette_darkens_the_corners_and_is_neutral_at_zero_amount() {
     // Amount 0 and mix 0 are both the exact identity (the early return
     // and the general blend formula's own 1·x + 0·y identity).
     let mut a0 = img.clone();
-    cpu::vignette(&mut a0, w, h, 0.0, 0.75, 0.5, 1.0, 1.0);
+    cpu::vignette(&mut a0, w, h, 0.0, 0.75, 0.5, 1.0, 1.0, 1.0);
     assert_eq!(a0, img);
     let mut m0 = img.clone();
-    cpu::vignette(&mut m0, w, h, 0.8, 0.2, 0.1, 1.0, 0.0);
+    cpu::vignette(&mut m0, w, h, 0.8, 0.2, 0.1, 1.0, 1.0, 0.0);
     assert_eq!(m0, img);
 
     // A tight, hard-edged, fully-strength vignette: the centre stays
     // lit, the corner goes dark, alpha is never touched.
     let mut v = img.clone();
-    cpu::vignette(&mut v, w, h, 1.0, 0.2, 0.05, 1.0, 1.0);
+    cpu::vignette(&mut v, w, h, 1.0, 0.2, 0.05, 1.0, 1.0, 1.0);
     let centre = at(10, 10);
     let corner = at(0, 0);
     assert!(v[centre] > 0.95, "centre stays lit: {}", v[centre]);
@@ -2538,7 +2540,7 @@ fn cpu_vignette_darkens_the_corners_and_is_neutral_at_zero_amount() {
     // is only partly darkened where the hard-edged case above was near
     // black, and every value stays finite and in gamut — no artefacts.
     let mut wide = img.clone();
-    cpu::vignette(&mut wide, w, h, 1.0, 0.2, 1.5, 1.0, 1.0);
+    cpu::vignette(&mut wide, w, h, 1.0, 0.2, 1.5, 1.0, 1.0, 1.0);
     assert!(
         wide[corner] > v[corner],
         "wider feather darkens the corner less: {} vs {}",
@@ -2566,9 +2568,9 @@ fn cpu_vignette_roundness_changes_the_shape_on_a_non_square_frame() {
     let edge_right_mid = at(w - 1, h / 2);
 
     let mut circular = img.clone();
-    cpu::vignette(&mut circular, w, h, 1.0, 0.9, 0.2, 1.0, 1.0);
+    cpu::vignette(&mut circular, w, h, 1.0, 0.9, 0.2, 1.0, 1.0, 1.0);
     let mut elliptical = img.clone();
-    cpu::vignette(&mut elliptical, w, h, 1.0, 0.9, 0.2, 0.0, 1.0);
+    cpu::vignette(&mut elliptical, w, h, 1.0, 0.9, 0.2, 0.0, 1.0, 1.0);
 
     assert!(
         circular[edge_right_mid] < 1e-5,

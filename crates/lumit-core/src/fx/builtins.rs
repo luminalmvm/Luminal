@@ -850,6 +850,18 @@ pub const BUILTINS: &[EffectSchema] = &[
                     hard: (Some(0.0), Some(1.0)),
                 },
             },
+            ParamSchema {
+                id: "ramp",
+                label: "Ramp",
+                // Gamma on the black↔clear falloff (T16): 1 = the plain
+                // smoothstep, > 1 rolls the dark in later then faster, < 1
+                // earlier and gentler — a curve/levels on the darkening amount.
+                kind: ParamKind::Float {
+                    default: 1.0,
+                    slider: (0.2, 4.0),
+                    hard: (Some(0.05), None),
+                },
+            },
             MIX_PARAM,
         ],
     },

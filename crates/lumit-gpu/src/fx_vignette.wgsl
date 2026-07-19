@@ -16,8 +16,8 @@ struct Params {
     radius: f32,     // 0..1: the clear centre's reach
     softness: f32,   // 0..1: feather width beyond radius
     roundness: f32,  // 0..1: 1 = circular, 0 = follows the frame's aspect
+    ramp: f32,       // gamma on the falloff (1 = plain smoothstep)
     mix_amt: f32,    // 0..1, blended against the unprocessed input
-    _pad0: f32,
     _pad1: f32,
     _pad2: f32,
 };
@@ -52,7 +52,8 @@ fn vignette(@builtin(global_invocation_id) gid: vec3<u32>) {
     let edge0 = p.radius;
     let edge1 = p.radius + max(p.softness, 1e-6);
     let t = clamp((dist - edge0) / (edge1 - edge0), 0.0, 1.0);
-    let s = t * t * (3.0 - 2.0 * t);
+    // Gamma on the smoothstep falloff (T16); 1 leaves it unchanged.
+    let s = pow(t * t * (3.0 - 2.0 * t), p.ramp);
     let vig = clamp(s * p.amount, 0.0, 1.0);
     let keep = 1.0 - vig;
     let darkened = o.rgb * keep;
