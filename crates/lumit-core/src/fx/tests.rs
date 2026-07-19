@@ -1227,11 +1227,26 @@ fn rgb_split_instantiates_and_resolves() {
     let e = instantiate("rgb_split").unwrap();
     assert_eq!(e.float_at("amount", 0.0), Some(0.4));
     assert_eq!(e.float_at("angle", 0.0), Some(0.0));
-    assert!(matches!(e.param("radial"), Some(EffectValue::Bool(false))));
-    // The per-channel scale defaults reproduce the classic split (FX-9).
+    // Radial is gone (T17): RGB split is linear-only, chromatic aberration
+    // owns the radial shape.
+    assert!(e.param("radial").is_none());
+    // The per-tap scale defaults reproduce the classic split (FX-9).
     assert_eq!(e.float_at("red_amount", 0.0), Some(100.0));
     assert_eq!(e.float_at("green_amount", 0.0), Some(0.0));
     assert_eq!(e.float_at("blue_amount", 0.0), Some(100.0));
+    // The three tap tints default to red / green / blue (T17).
+    assert_eq!(
+        e.colour_at("channel_colour_1", 0.0),
+        Some([1.0, 0.0, 0.0, 1.0])
+    );
+    assert_eq!(
+        e.colour_at("channel_colour_2", 0.0),
+        Some([0.0, 1.0, 0.0, 1.0])
+    );
+    assert_eq!(
+        e.colour_at("channel_colour_3", 0.0),
+        Some([0.0, 0.0, 1.0, 1.0])
+    );
     // 0.4% of a 1000px diagonal = 4px.
     let r = resolve_stack(&[e], 0.0, 1000.0, 1.0, &MarkerContext::NONE);
     assert_eq!(
@@ -1239,8 +1254,8 @@ fn rgb_split_instantiates_and_resolves() {
         vec![Resolved::RgbSplit {
             amount_px: 4.0,
             angle_deg: 0.0,
-            radial: false,
             scale: [1.0, 0.0, 1.0],
+            tints: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
             mix: 1.0
         }]
     );
@@ -1271,14 +1286,14 @@ fn rgb_split_per_channel_amounts_scale_each_channel() {
         vec![Resolved::RgbSplit {
             amount_px: 4.0,
             angle_deg: 0.0,
-            radial: false,
             scale: [1.5, -0.5, 0.0],
+            tints: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
             mix: 1.0
         }]
     );
 
-    // A legacy instance missing the per-channel params still resolves to the
-    // classic 1 / 0 / 1 defaults.
+    // A legacy instance missing the per-tap params still resolves to the
+    // classic 1 / 0 / 1 scales and red / green / blue tints.
     e.params
         .retain(|p| !matches!(p.id.as_str(), "red_amount" | "green_amount" | "blue_amount"));
     let r = resolve_stack(
@@ -1293,8 +1308,8 @@ fn rgb_split_per_channel_amounts_scale_each_channel() {
         vec![Resolved::RgbSplit {
             amount_px: 4.0,
             angle_deg: 0.0,
-            radial: false,
             scale: [1.0, 0.0, 1.0],
+            tints: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
             mix: 1.0
         }]
     );
@@ -1312,21 +1327,24 @@ fn cpu_rgb_split_shifts_channels_and_keeps_alpha() {
     let mid = at(8, 4);
     img[mid..mid + 3].copy_from_slice(&[1.0, 1.0, 1.0]);
 
-    // The classic split's per-channel scales (FX-9): R and B full, G anchored.
+    // The classic split's per-tap scales (FX-9): taps 0/2 full, tap 1 anchored.
     let classic = [1.0f32, 0.0, 1.0];
+    // The classic red / green / blue tints (T17): each primary keeps only its
+    // own channel of its tap, reproducing the channel-separated split.
+    let classic_tints = [[1.0f32, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
 
     // Amount 0 and mix 0 are both the exact identity.
     let mut a0 = img.clone();
-    cpu::rgb_split(&mut a0, w, h, 0.0, 0.0, false, classic, 1.0);
+    cpu::rgb_split(&mut a0, w, h, 0.0, 0.0, classic, classic_tints, 1.0);
     assert_eq!(a0, img);
     let mut m0 = img.clone();
-    cpu::rgb_split(&mut m0, w, h, 3.0, 45.0, false, classic, 0.0);
+    cpu::rgb_split(&mut m0, w, h, 3.0, 45.0, classic, classic_tints, 0.0);
     assert_eq!(m0, img);
 
     // Angle 0°, 2px: red lands 2px right of the impulse, blue 2px left,
     // green and alpha exactly where they were.
     let mut s = img.clone();
-    cpu::rgb_split(&mut s, w, h, 2.0, 0.0, false, classic, 1.0);
+    cpu::rgb_split(&mut s, w, h, 2.0, 0.0, classic, classic_tints, 1.0);
     assert_eq!(s[at(10, 4)], 1.0, "red shifted +x");
     assert_eq!(s[at(8, 4)], 0.0, "red left the impulse");
     assert_eq!(s[at(6, 4) + 2], 1.0, "blue shifted -x");
@@ -1336,11 +1354,11 @@ fn cpu_rgb_split_shifts_channels_and_keeps_alpha() {
         "alpha follows green: untouched"
     );
 
-    // Per-channel scales (FX-9): halving red's scale halves its displacement,
-    // so red now lands 1px (not 2px) right of the impulse; zeroing blue's
+    // Per-tap scales (FX-9): halving tap 0's scale halves its displacement,
+    // so red now lands 1px (not 2px) right of the impulse; zeroing tap 2's
     // scale keeps blue on the impulse.
     let mut pc = img.clone();
-    cpu::rgb_split(&mut pc, w, h, 2.0, 0.0, false, [0.5, 0.0, 0.0], 1.0);
+    cpu::rgb_split(&mut pc, w, h, 2.0, 0.0, [0.5, 0.0, 0.0], classic_tints, 1.0);
     assert_eq!(pc[at(9, 4)], 1.0, "red at half scale shifts +1x");
     assert_eq!(pc[at(10, 4)], 0.0, "red no longer reaches +2x");
     assert_eq!(
@@ -1349,13 +1367,15 @@ fn cpu_rgb_split_shifts_channels_and_keeps_alpha() {
         "blue at scale 0 stays on the impulse"
     );
 
-    // Radial: the exact centre pixel is unmoved even at a huge amount.
-    let mut c = img.clone();
-    // Centre the impulse for the radial test (odd dimensions: the middle
-    // pixel's centre is the frame centre).
-    cpu::rgb_split(&mut c, w, h, 20.0, 0.0, true, classic, 1.0);
-    assert_eq!(c[mid], 1.0, "frame-centre red is unmoved");
-    assert_eq!(c[mid + 2], 1.0, "frame-centre blue is unmoved");
+    // Tints (T17): a white tint on tap 0 keeps the full colour of its sample,
+    // so the shifted tap 0 now carries green and blue too — not just red.
+    let white_tap0 = [[1.0f32, 1.0, 1.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]];
+    let mut ti = img.clone();
+    cpu::rgb_split(&mut ti, w, h, 2.0, 0.0, classic, white_tap0, 1.0);
+    assert_eq!(ti[at(10, 4)], 1.0, "tap 0 red at +2x");
+    assert_eq!(ti[at(10, 4) + 1], 1.0, "tap 0 green at +2x (white tint)");
+    assert_eq!(ti[at(10, 4) + 2], 1.0, "tap 0 blue at +2x (white tint)");
+    assert_eq!(ti[at(8, 4)], 0.0, "nothing left on the impulse");
 }
 
 #[test]
@@ -1370,8 +1390,8 @@ fn rgb_split_wavelength_bool_selects_the_variant() {
     let classic = Resolved::RgbSplit {
         amount_px: 4.0,
         angle_deg: 0.0,
-        radial: false,
         scale: [1.0, 0.0, 1.0],
+        tints: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
         mix: 1.0,
     };
     let r = resolve_stack(

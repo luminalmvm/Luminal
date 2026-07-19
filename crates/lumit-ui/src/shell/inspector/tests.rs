@@ -518,13 +518,12 @@ mod channel_picker_tests {
     use lumit_core::fx::ParamKind;
 
     // The three-colour channel picker (P2/K-143) finds its group by the stable
-    // `channel_colour_1/2/3` ids. Chromatic aberration (K-144) is the first
-    // adopter: its schema must declare exactly those three ids as Colour params
-    // with red / green / blue defaults, or the picker silently stops finding
-    // them (and the classic split defaults break).
-    #[test]
-    fn chromatic_aberration_declares_the_channel_picker_group() {
-        let schema = lumit_core::fx::schema("chromatic_aberration").unwrap();
+    // `channel_colour_1/2/3` ids. Chromatic aberration (K-144) and RGB split
+    // (K-161, T17) both adopt it: each schema must declare exactly those three
+    // ids as Colour params with red / green / blue defaults, or the picker
+    // silently stops finding them (and the classic split defaults break).
+    fn assert_declares_channel_picker_group(match_name: &str) {
+        let schema = lumit_core::fx::schema(match_name).unwrap();
         let defaults = [
             [1.0, 0.0, 0.0, 1.0],
             [0.0, 1.0, 0.0, 1.0],
@@ -535,11 +534,23 @@ mod channel_picker_tests {
                 .params
                 .iter()
                 .find(|p| &p.id == id)
-                .unwrap_or_else(|| panic!("missing channel colour param {id}"));
+                .unwrap_or_else(|| panic!("{match_name}: missing channel colour param {id}"));
             match ps.kind {
-                ParamKind::Colour { default, .. } => assert_eq!(&default, want, "{id} default"),
-                _ => panic!("{id} must be a Colour parameter"),
+                ParamKind::Colour { default, .. } => {
+                    assert_eq!(&default, want, "{match_name}: {id} default")
+                }
+                _ => panic!("{match_name}: {id} must be a Colour parameter"),
             }
         }
+    }
+
+    #[test]
+    fn chromatic_aberration_declares_the_channel_picker_group() {
+        assert_declares_channel_picker_group("chromatic_aberration");
+    }
+
+    #[test]
+    fn rgb_split_declares_the_channel_picker_group() {
+        assert_declares_channel_picker_group("rgb_split");
     }
 }

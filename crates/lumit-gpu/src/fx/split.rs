@@ -5,20 +5,22 @@ use crate::GpuContext;
 
 use super::{work_texture, FxEngine};
 
-/// One resolved RGB split (docs/08 §3.6). The linear-mode offset vector is
-/// host-computed (`lumit_core::fx::rgb_split_offset`) so the kernel never
-/// runs its own trigonometry.
+/// One resolved RGB split (docs/08 §3.6, T17): a linear, three-tinted-tap
+/// fringe. The offset vector is host-computed
+/// (`lumit_core::fx::rgb_split_offset`) so the kernel never runs its own
+/// trigonometry; the always-radial variant is chromatic aberration.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RgbSplitOp {
-    /// Linear-mode channel offset, raster pixels.
+    /// Channel offset, raster pixels.
     pub dx: f32,
     pub dy: f32,
-    /// Radial-mode peak offset (reached at the corner distance), raster px.
-    pub amount_px: f32,
-    pub radial: bool,
-    /// Per-channel displacement scale `[r, g, b]` (FX-9): R and G shift along
-    /// −offset·scale, B along +offset·scale; `[1, 0, 1]` is the classic split.
+    /// Per-tap displacement scale `[t0, t1, t2]` (FX-9): taps 0/1 shift along
+    /// −offset·scale, tap 2 along +offset·scale; `[1, 0, 1]` is the classic split.
     pub scale: [f32; 3],
+    /// The three taps' tints `[[r, g, b]; 3]` (T17): each tap is sampled in
+    /// full colour and multiplied by its tint, then summed. Defaults red /
+    /// green / blue reproduce the classic channel-separated split.
+    pub tints: [[f32; 3]; 3],
     /// 0..1, blended against the unprocessed input.
     pub mix: f32,
 }
@@ -26,14 +28,16 @@ pub struct RgbSplitOp {
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct RgbSplitParams {
+    /// Row-major vec4 tints (w unused), one per tap.
+    tints: [[f32; 4]; 3],
     dx: f32,
     dy: f32,
-    amount: f32,
-    radial: u32,
     scale_r: f32,
     scale_g: f32,
     scale_b: f32,
     mix_amt: f32,
+    _pad0: f32,
+    _pad1: f32,
 }
 
 /// One resolved spectral split — the RGB split's Wavelength mode (docs/08
@@ -122,14 +126,19 @@ impl FxEngine {
             w,
             h,
             bytemuck::bytes_of(&RgbSplitParams {
+                tints: [
+                    [op.tints[0][0], op.tints[0][1], op.tints[0][2], 0.0],
+                    [op.tints[1][0], op.tints[1][1], op.tints[1][2], 0.0],
+                    [op.tints[2][0], op.tints[2][1], op.tints[2][2], 0.0],
+                ],
                 dx: op.dx,
                 dy: op.dy,
-                amount: op.amount_px,
-                radial: u32::from(op.radial),
                 scale_r: op.scale[0],
                 scale_g: op.scale[1],
                 scale_b: op.scale[2],
                 mix_amt: op.mix,
+                _pad0: 0.0,
+                _pad1: 0.0,
             }),
         );
         out

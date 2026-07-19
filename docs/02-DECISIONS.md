@@ -1965,3 +1965,25 @@ and preview still equals export (K-031). This supersedes the "dropdown offers Na
 rates" detail of K-095 (which stays otherwise intact — the conform semantics are unchanged).
 Built in an isolated worktree; not pushed — renumber on merge if another agent also claims
 K-160.
+
+**K-161 · DECIDED · RGB split becomes a linear tinted-tap fringe; Radial mode is dropped;
+it gains the shared three-colour picker (T17).** From the owner (testing T17): §3.6 RGB split
+loses its **Radial** mode entirely — the always-radial shape is already owned by §3.15
+Chromatic aberration (K-143/K-144), so the mode was redundant. In its place RGB split gains the
+same reusable three-colour picker chromatic aberration carries (`channel_colour_1/2/3`, default
+red / green / blue), tinting its three offset taps. The classic behaviour is preserved
+bit-for-bit: each tap is now sampled in **full colour** and multiplied by its tint before the
+three are summed, and with the default primary tints (`[1,0,0]`/`[0,1,0]`/`[0,0,1]`) that
+reduces exactly to the historical channel-separated split (`split.r = tap0.r`, `split.g =
+tap1.g`, `split.b = tap2.b`). The per-tap **Red / Green / Blue** displacement scales (FX-9,
+K-143) stay, now labelled as scaling their like-numbered tint. `Resolved::RgbSplit` drops
+`radial` and gains `tints: [[f32;3];3]`; the GPU `RgbSplitOp`/kernel lose the radial branch and
+`amount_px`, gaining the three vec4 tints. Wavelength mode still resolves to `SpectralSplit`,
+now always `radial: false`. Pre-release, no migration: instances saved with a `radial` param
+simply ignore it, and instances without the tint params fall back to the primaries. This
+supersedes the "Mode (Linear / Radial)" and radial Centre/Falloff detail of K-090's §3.6 (the
+Wavelength quality tier and per-tap amounts are otherwise unchanged). The A1 report — that the
+picker colours do nothing in **Wavelength** mode — is not addressed here for the spectral path:
+`SpectralSplit` still uses the physically-based `SPECTRAL_BASIS`, so the picker governs the
+classic mode only; whether Wavelength should also be driven by the picker colours is left open
+(see §3.6 Open questions). Built on `main`.

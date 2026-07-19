@@ -233,38 +233,38 @@ fn wgsl_rgb_split_matches_the_cpu_oracle() {
     let fx = FxEngine::new(&ctx);
     let (w, h) = (32u32, 24u32);
     let img = corpus(w, h);
-    // Includes the classic 1 / 0 / 1 scales and asymmetric per-channel scales
-    // (FX-9), one negative, to exercise the per-channel displacement path.
-    for (amount, angle, radial, scale, mix) in [
-        (3.0f32, 0.0f32, false, [1.0f32, 0.0, 1.0], 1.0f32),
-        (2.5, 33.0, false, [1.0, 0.0, 1.0], 0.6),
-        (4.0, 0.0, true, [1.5, 0.25, 0.5], 1.0),
-        (3.0, 20.0, false, [1.2, -0.4, 0.8], 1.0),
-        (0.0, 90.0, false, [1.0, 0.0, 1.0], 1.0),
+    // Classic red / green / blue tints and one cross-tint case (T17), plus the
+    // classic 1 / 0 / 1 scales and asymmetric per-tap scales (FX-9), one
+    // negative, to exercise the tinted-tap displacement path.
+    let classic_tints = [[1.0f32, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+    let cross_tints = [[1.0f32, 1.0, 0.0], [0.2, 0.5, 0.0], [0.0, 0.3, 0.9]];
+    for (amount, angle, scale, tints, mix) in [
+        (3.0f32, 0.0f32, [1.0f32, 0.0, 1.0], classic_tints, 1.0f32),
+        (2.5, 33.0, [1.0, 0.0, 1.0], classic_tints, 0.6),
+        (4.0, 0.0, [1.5, 0.25, 0.5], cross_tints, 1.0),
+        (3.0, 20.0, [1.2, -0.4, 0.8], classic_tints, 1.0),
+        (0.0, 90.0, [1.0, 0.0, 1.0], classic_tints, 1.0),
     ] {
         let mut cpu = img.clone();
-        lumit_core::fx::cpu::rgb_split(&mut cpu, w, h, amount, angle, radial, scale, mix);
+        lumit_core::fx::cpu::rgb_split(&mut cpu, w, h, amount, angle, scale, tints, mix);
 
         let (dx, dy) = lumit_core::fx::rgb_split_offset(amount, angle);
         let tex = upload_linear_f32(&ctx, &img, w, h);
         let op = RgbSplitOp {
             dx,
             dy,
-            amount_px: amount,
-            radial,
             scale,
+            tints,
             mix,
         };
         let out = fx.rgb_split(&ctx, &tex, w, h, &op);
         let gpu = readback_linear_f32(&ctx, &out, w, h).unwrap();
 
         let worst = worst_f16_ulp(&cpu, &gpu);
-        eprintln!(
-            "rgb split a={amount} ang={angle} radial={radial} scale={scale:?}: worst {worst} ulp"
-        );
+        eprintln!("rgb split a={amount} ang={angle} scale={scale:?}: worst {worst} ulp");
         assert!(
             worst <= 2,
-            "amount {amount} angle {angle} radial {radial} scale {scale:?} mix {mix}: \
+            "amount {amount} angle {angle} scale {scale:?} mix {mix}: \
                  worst {worst} fp16 ULP"
         );
 

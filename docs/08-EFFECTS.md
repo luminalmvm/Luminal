@@ -468,26 +468,36 @@ Parameters mirror the transform group exactly (same names, units, animatability)
 additional Skew pair arrives post-v1. Cost `trivial`, ROI `exact` under pure translation
 and `full-frame` otherwise, `{0}` temporal.
 
-### 3.6 RGB split — chromatic aberration
+### 3.6 RGB split
 
-**Quality (K-090):** a `Wavelength` Bool (default off) switches from the three-channel
+**Quality (K-090):** a `Wavelength` Bool (default off) switches from the three-tap
 split to a wavelength-weighted dispersion (more samples across the visible spectrum,
 recombined in linear) for the higher-quality look; parameters are shared between modes.
 
-**Parameters:** Amount (0–10 % diag, default 0.4), Mode (Linear / Radial), Angle (degrees,
-linear mode), Centre (radial mode), Falloff (radial: 0–4, aberration grows toward edges),
-Blur split channels (0–100%).
+**Parameters:** Amount (0–10 % diag, default 0.4), Angle (degrees), Red / Green / Blue per-tap
+amounts (%), Colour 1 / 2 / 3 (the three tap tints), Wavelength (Bool), Samples (Wavelength
+mode), Mix. **Linear only (K-161, T17):** RGB split has no Radial mode — the always-radial
+fringe is §3.15 Chromatic aberration's job.
 
-**Algorithm sketch.** Sample R and B at offset positions (G stays put): linear mode
-offsets along the angle; radial mode offsets along the vector from centre, scaled by
-distance^falloff. Operates premultiplied; alpha follows the green channel to avoid fringed
-mattes. Trivially animatable Amount is the scene's impact-frame staple.
+**Algorithm sketch.** Three tinted taps along the Angle offset: taps 1 and 2 sample behind the
+offset, tap 3 ahead, each read in **full colour**, multiplied by its tint, and summed. With the
+default red / green / blue tints each tap keeps only its own channel, giving the classic
+R-behind / B-ahead / G-anchored split bit-for-bit; any other colours cross-tint the fringe.
+Operates premultiplied; alpha stays put to avoid fringed mattes. Trivially animatable Amount is
+the scene's impact-frame staple.
 
-**Per-channel amounts (FX-9, K-143):** three per-cent scales — **Red**, **Green**, **Blue**
-(defaults 100 / 0 / 100, open both sides, K-135) — multiply the overall Amount per channel,
-so R and B can fringe by different amounts and G can be nudged off its anchor. R and G
-displace along −offset, B along +offset, so the 100 / 0 / 100 defaults reproduce the classic
-split bit-for-bit. They apply to the classic (non-Wavelength) mode only.
+**Per-tap amounts (FX-9, K-143):** three per-cent scales — **Red**, **Green**, **Blue**
+(defaults 100 / 0 / 100, open both sides, K-135) — multiply the overall Amount per tap, so the
+taps can fringe by different amounts and the middle tap be nudged off its anchor. Taps 1 and 2
+displace along −offset, tap 3 along +offset, so the 100 / 0 / 100 defaults (with the default
+tints) reproduce the classic split bit-for-bit. They apply to the classic (non-Wavelength) mode
+only.
+
+**Tap tints (K-161, T17):** the same reusable three-colour picker §3.15 chromatic aberration
+carries (`channel_colour_1/2/3`, default red / green / blue) tints the three taps. The classic
+primaries reduce to the historical channel-separated split; other colours produce coloured
+fringes (a cyan/magenta split, a warm/cool split, and so on). Classic mode only — the Wavelength
+path is unaffected (see Open questions).
 
 **Wavelength samples (FX-9, K-144):** the Wavelength mode carries a **Samples** control (the
 tap count, `3..=64`, default 16). More taps fill the same `±offset` span more densely, so a
@@ -496,10 +506,10 @@ large offset disperses as a smooth rainbow instead of a few discrete stacked cop
 `SPECTRAL_BASIS` anchors host-side and shared by the CPU reference and the WGSL kernel, so a
 uniform image still passes through unchanged and preview equals export (K-031).
 
-**§3.15 Chromatic aberration** is a separate, single-purpose sibling shipped alongside this
-effect: same R-outward/B-inward radial shape as this effect's own Radial mode. It adds the
-reusable three-colour channel picker and this effect's own Wavelength/Samples dispersion
-(K-144) — see §3.15.
+**§3.15 Chromatic aberration** is the always-radial sibling shipped alongside this effect: the
+same three-tinted-tap idea, but growing radially from the frame centre rather than along an
+angle. It carries the same three-colour channel picker and the same Wavelength/Samples
+dispersion (K-144) — see §3.15.
 
 ### 3.7 Flash — beat-aware strobe
 
@@ -662,7 +672,8 @@ in the project (K-040).
 Three separate effects, formerly shipped as one "Glitch" effect with enableable sections
 (K-104). **Status (K-107):** split into one-thing effects per the §1's one-effect-one-job
 rule (K-090 — the same rule that split the v1 Grade into Colour balance and Saturation, and
-split Chromatic aberration off RGB split's own Radial mode). Stacking **Block glitch** →
+gave the radial fringe its own Chromatic aberration effect, later leaving RGB split
+linear-only, K-161). Stacking **Block glitch** →
 **Scanlines**, each at Mix 100%, reproduces the old combined Glitch's look bit-for-bit — the
 two sections never interacted beyond running in the same pass. Existing saved `glitch`
 instances do not migrate (pre-v1, single user, no alias); each of the three below is added
@@ -846,7 +857,8 @@ Premultiplied throughout, edges clamp. `cheap` cost, `full-frame` ROI.
 three-colour channel picker** — three colour swatches (defaults red / green / blue), each
 opening the colour picker. The widget is shared: any effect whose schema declares three
 Colour parameters `channel_colour_1/2/3` gets it automatically (see `channel_picker` in the
-inspector), so a future three-tinted-channel effect adopts it without new UI code.
+inspector) — §3.6 RGB split now does too (K-161), and any future three-tinted-channel effect
+adopts it without new UI code.
 
 **Wavelength (K-144):** a `Wavelength` Bool (default off) reuses §3.6 RGB split's own spectral
 machinery — turning on resolves the effect to a radial spectral split with a **Samples**
@@ -854,11 +866,10 @@ control (3–64, default 16), the same many-tap dispersion RGB split's Wavelengt
 a smooth rainbow fringe rather than the three tinted taps. The channel colours apply to the
 non-Wavelength mode only.
 
-**Status (v1, shipped):** a dedicated, always-radial sibling of §3.6 RGB split's own Radial
-mode, not a replacement for it — RGB split's Radial mode already covers this exact shape as
-one of its three modes (alongside Linear and the Wavelength quality tier), sharing its Amount
-currency (% diag) with Linear mode's Angle-driven offset. This effect exists as a
-single-purpose, one-click version: drop it on and it already looks right (§1.2), the same
+**Status (v1, shipped):** the always-radial sibling of §3.6 RGB split (K-161, T17). RGB split
+is linear-only — three tinted taps along an Angle — and this effect is the same three-tinted-tap
+idea grown radially from the frame centre instead. It exists as a single-purpose, one-click
+version: drop it on and it already looks right (§1.2), the same
 shape rule that split the old Grade into Colour balance and Saturation (K-090). Because it has
 no Angle to share a currency with, Amount is authored in raw px@comp (§2.3) instead of % diag —
 scaled by the preview factor exactly like Block glitch's Block size (§3.12) — and its ROI is
@@ -1394,3 +1405,13 @@ mask parameters, "composite on original", effect-only precomps).
 5. **fp16 oracle tolerances.** The per-cost-class tolerance defaults in §1.6 are
    placeholders until the first three effects are implemented on both NVIDIA and AMD and
    real cross-vendor deltas are measured.
+6. **Should the three-colour picker drive Wavelength mode too? (A1, §3.6 / §3.15).** In the
+   classic split the `channel_colour_1/2/3` picker tints the three taps (K-161); in Wavelength
+   mode the fringe comes from the physically-based `SPECTRAL_BASIS`, so the picker does nothing
+   there — which the owner flagged as surprising. Three options: (a) leave Wavelength physical
+   and the picker classic-only (current); (b) tint each spectral tap by the picker-colour ramp
+   sampled at its offset fraction (colours modulate the rainbow, default red/green/blue shifts
+   the physical look); (c) replace the spectral basis with a smooth colour1→colour2→colour3
+   gradient across the offset span (Wavelength becomes a smooth version of the classic split,
+   fully picker-driven, abandoning the physical basis). (b)/(c) change the default Wavelength
+   look and need their own oracle updates — decide before wiring, then log the choice here.

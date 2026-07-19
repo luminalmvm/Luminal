@@ -180,8 +180,8 @@ parallel pass left several not-quite-right). No migration burden (pre-release).
 - [x] T13 Effect dropdowns use a real ComboBox popup, not menu_button (two adjacent menu buttons acted like a menu bar and switched on hover). Also gives an AE-like framed combo. (Eyeball the new look.)
 - [ ] T14 New x/y param type: combine Centre X/Y into one row (two float boxes + a viewfinder pixel picker like the dropper). Apply to all x/y-position params.
 - [x] T15 Sharpen gained a Radius param (neighbour distance in px; 1 = 3×3, larger = coarser). Full 4-site + oracle.
-- [ ] T16 Vignette: add a ramp/curve control shaping the black↔nothing alpha falloff.
-- [ ] T17 RGB split: remove the Radial option (that's chromatic aberration); add the 3-colour picker from chromatic aberration.
+- [x] T16 Vignette: added a Ramp param (gamma on the smoothstep falloff; default 1.0, 0.2–4, hard min 0.05). Full 4-site + oracle (non-identity ramp case).
+- [x] T17 RGB split: removed the Radial option (K-161); added the shared 3-colour picker. Now a linear tinted-tap fringe — default red/green/blue tints reproduce the classic split bit-for-bit. Full 4-site + oracle.
 - [ ] T18 Shake: add its own motion-blur twirl (toggle + amount), computed from inter-frame movement, applying only to this effect.
 - [ ] T19 Datamosh: reimplement referencing https://github.com/tiberiuiancu/datamoshing; adjust params as needed.
 - [ ] T20 Flash still broken — likely because beat detection isn't working (beats grid shows nothing) with the audio.
@@ -192,7 +192,7 @@ parallel pass left several not-quite-right). No migration burden (pre-release).
 - [ ] T25 The top audio-preview bar doesn't move when moving an audio layer; make the bar optional (right-click to hide).
 
 ## Also (A)
-- [ ] A1 Chromatic aberration: colours don't change in wavelength mode — fix (and in the updated RGB split).
+- [~] A1 Classic mode now honours the picker in both chromatic aberration and (new) RGB split (K-161/T17). Wavelength mode still uses the physical SPECTRAL_BASIS, so the picker does nothing there — left as an open question in docs/08 §3.6 (three options: leave physical / tint the spectral taps by the picker ramp / replace the basis with a colour1→2→3 gradient). Needs owner's pick before wiring — flagged at check-in.
 - [ ] A2 Fast motion blur: still blocky sometimes; want better sampling / a quality selector, and optionally a depth-map or motion-vector-map input to help. (3 reference shots: base, confidence, motion vectors.)
 - [ ] A3 Project tab: shift/ctrl-click to multi-select items (drag several into a comp at once).
 - [ ] A4 Lane view: dragging the selection box (marquee) over a Time keyframe still doesn't select it.

@@ -173,7 +173,7 @@ pub const BUILTINS: &[EffectSchema] = &[
                 // % of comp width. resolve_stack only carries diag_px (no
                 // separate width/height), so this resolves to a *fraction* of
                 // the raster and the CPU/GPU function scales it by its own w —
-                // exactly how RGB split's radial mode derives the frame centre.
+                // exactly how chromatic aberration derives the frame centre.
                 kind: ParamKind::Float {
                     default: 50.0,
                     slider: (0.0, 100.0),
@@ -368,21 +368,16 @@ pub const BUILTINS: &[EffectSchema] = &[
                     hard: (Some(-3600.0), Some(3600.0)),
                 },
             },
-            ParamSchema {
-                id: "radial",
-                label: "Radial",
-                // Off: one shared shift. On: offsets grow from the centre,
-                // like lens fringing.
-                kind: ParamKind::Bool { default: false },
-            },
-            // Per-channel displacement scales (FX-9): each channel's shift is
-            // the overall Amount times its own per-cent scale, so R and B can
-            // fringe by different amounts (or G can be nudged off its anchor).
-            // R and G displace along −offset, B along +offset — so the defaults
-            // 100 / 0 / 100 % reproduce the classic split (R one way, B the
-            // other, G unmoved) bit-for-bit. Open both sides (K-135): a
-            // negative scale flips a channel's direction, and there is no
-            // natural ceiling on how far a channel may fringe.
+            // Per-tap displacement scales (FX-9): each of the three taps shifts
+            // by the overall Amount times its own per-cent scale, so the taps
+            // can fringe by different amounts (or the middle tap be nudged off
+            // its anchor). Taps 1 and 2 displace along −offset, tap 3 along
+            // +offset — so the defaults 100 / 0 / 100 %, paired with the default
+            // red / green / blue tints below, reproduce the classic split (R one
+            // way, B the other, G unmoved) bit-for-bit. Open both sides (K-135):
+            // a negative scale flips a tap's direction, and there is no natural
+            // ceiling on how far a tap may fringe. Labelled Red / Green / Blue
+            // for the classic case; each really scales its like-numbered tint.
             ParamSchema {
                 id: "red_amount",
                 label: "Red",
@@ -408,6 +403,37 @@ pub const BUILTINS: &[EffectSchema] = &[
                     default: 100.0,
                     slider: (-200.0, 200.0),
                     hard: (None, None),
+                },
+            },
+            // The three tap tints (T17): the same reusable three-colour picker
+            // chromatic aberration carries (K-143), tinting the three offset
+            // taps. Defaults red / green / blue reproduce the classic
+            // channel-separated split bit-for-bit (each primary tint keeps only
+            // its own channel of its tap); any other colours cross-tint the
+            // fringe. Named `channel_colour_1/2/3` so the picker widget groups
+            // them into one swatch row.
+            ParamSchema {
+                id: "channel_colour_1",
+                label: "Colour 1",
+                kind: ParamKind::Colour {
+                    default: [1.0, 0.0, 0.0, 1.0],
+                    range: (0.0, 1.0),
+                },
+            },
+            ParamSchema {
+                id: "channel_colour_2",
+                label: "Colour 2",
+                kind: ParamKind::Colour {
+                    default: [0.0, 1.0, 0.0, 1.0],
+                    range: (0.0, 1.0),
+                },
+            },
+            ParamSchema {
+                id: "channel_colour_3",
+                label: "Colour 3",
+                kind: ParamKind::Colour {
+                    default: [0.0, 0.0, 1.0, 1.0],
+                    range: (0.0, 1.0),
                 },
             },
             ParamSchema {
@@ -439,18 +465,17 @@ pub const BUILTINS: &[EffectSchema] = &[
             MIX_PARAM,
         ],
     },
-    // Chromatic aberration (docs/08 §3.15): a dedicated, always-radial
-    // sibling of RGB split's own Radial mode (§3.6) — R pulled outward, B
+    // Chromatic aberration (docs/08 §3.15): the always-radial sibling of
+    // RGB split's linear tinted-tap fringe (§3.6, T17) — R pulled outward, B
     // pulled inward, G and alpha unshifted, growing from the frame centre.
-    // Where RGB split's Amount is % diag (so linear and radial modes share
-    // one currency across both angle-driven and centre-driven offsets),
-    // this effect has only the radial shape and one purpose, so Amount is
-    // authored in raw px@comp (§2.3) instead — scaled by the preview factor
-    // exactly like Glitch's Block size — because "how many pixels of
-    // fringe" is the honest unit for a single-purpose corner effect with no
-    // angle to share a currency with. K-143/K-144 add the reusable
-    // three-colour channel picker (the three radial taps' tints, default
-    // r/g/b) and RGB split's own Wavelength/Samples spectral machinery.
+    // Where RGB split's Amount is % diag (a currency it shares with its
+    // Angle-driven linear offset), this effect has only the radial shape and
+    // one purpose, so Amount is authored in raw px@comp (§2.3) instead —
+    // scaled by the preview factor exactly like Glitch's Block size — because
+    // "how many pixels of fringe" is the honest unit for a single-purpose
+    // corner effect with no angle to share a currency with. K-143/K-144 add
+    // the reusable three-colour channel picker (the three radial taps' tints,
+    // default r/g/b) and the shared Wavelength/Samples spectral machinery.
     EffectSchema {
         groups: &[],
         match_name: "chromatic_aberration",

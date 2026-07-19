@@ -39,10 +39,10 @@ pub fn apply(rgba: &mut [f32], w: u32, h: u32, fx: &Resolved) {
         Resolved::RgbSplit {
             amount_px,
             angle_deg,
-            radial,
             scale,
+            tints,
             mix,
-        } => rgb_split(rgba, w, h, *amount_px, *angle_deg, *radial, *scale, *mix),
+        } => rgb_split(rgba, w, h, *amount_px, *angle_deg, *scale, *tints, *mix),
         Resolved::SpectralSplit {
             amount_px,
             angle_deg,
@@ -1116,46 +1116,46 @@ pub fn rgb_split(
     h: u32,
     amount_px: f32,
     angle_deg: f32,
-    radial: bool,
     scale: [f32; 3],
+    tints: [[f32; 3]; 3],
     mix: f32,
 ) {
     let original = rgba.to_vec();
     let (dx, dy) = super::rgb_split_offset(amount_px, angle_deg);
-    let (fw, fh) = (w as f32, h as f32);
-    let diag = (fw * fw + fh * fh).sqrt();
-    let k = amount_px / (0.5 * diag);
     for y in 0..h {
         for x in 0..w {
             let i = ((y * w + x) * 4) as usize;
             let pos = (x as f32 + 0.5, y as f32 + 0.5);
-            let (ox, oy) = if radial {
-                ((pos.0 - fw * 0.5) * k, (pos.1 - fh * 0.5) * k)
-            } else {
-                (dx, dy)
-            };
-            let r = bilinear(
+            // Three tinted taps (T17): taps 0/1 along −offset, tap 2 along
+            // +offset, each sampled in full colour then multiplied by its
+            // tint and summed. Defaults 100/0/100 % with red/green/blue tints
+            // reproduce the classic channel-separated split bit-for-bit.
+            let s0 = bilinear(
                 &original,
                 w,
                 h,
-                pos.0 - ox * scale[0],
-                pos.1 - oy * scale[0],
-            )[0];
-            let g = bilinear(
+                pos.0 - dx * scale[0],
+                pos.1 - dy * scale[0],
+            );
+            let s1 = bilinear(
                 &original,
                 w,
                 h,
-                pos.0 - ox * scale[1],
-                pos.1 - oy * scale[1],
-            )[1];
-            let b = bilinear(
+                pos.0 - dx * scale[1],
+                pos.1 - dy * scale[1],
+            );
+            let s2 = bilinear(
                 &original,
                 w,
                 h,
-                pos.0 + ox * scale[2],
-                pos.1 + oy * scale[2],
-            )[2];
-            let split = [r, g, b, original[i + 3]];
+                pos.0 + dx * scale[2],
+                pos.1 + dy * scale[2],
+            );
+            let mut split = [0.0f32; 4];
+            for c in 0..3 {
+                split[c] = tints[0][c] * s0[c] + tints[1][c] * s1[c] + tints[2][c] * s2[c];
+            }
+            split[3] = original[i + 3];
             for c in 0..4 {
                 rgba[i + c] = original[i + c] * (1.0 - mix) + split[c] * mix;
             }

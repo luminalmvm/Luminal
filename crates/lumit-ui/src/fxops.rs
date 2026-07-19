@@ -223,8 +223,8 @@ pub fn run_ops(
             Resolved::RgbSplit {
                 amount_px,
                 angle_deg,
-                radial,
                 scale,
+                tints,
                 mix,
             } => {
                 let (dx, dy) = lumit_core::fx::rgb_split_offset(*amount_px, *angle_deg);
@@ -236,9 +236,8 @@ pub fn run_ops(
                     &lumit_gpu::fx::RgbSplitOp {
                         dx,
                         dy,
-                        amount_px: *amount_px,
-                        radial: *radial,
                         scale: *scale,
+                        tints: *tints,
                         mix: *mix,
                     },
                 );

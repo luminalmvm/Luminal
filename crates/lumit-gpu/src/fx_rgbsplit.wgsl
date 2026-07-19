@@ -1,19 +1,21 @@
-// Chromatic aberration (docs/08-EFFECTS.md §3.6). Mirrors
+// RGB split (docs/08-EFFECTS.md §3.6, T17). Mirrors
 // lumit_core::fx::cpu::rgb_split op-for-op (§1.6: the CPU is the oracle):
-// R samples behind the offset, B ahead, G and alpha stay put. The linear
-// offset vector arrives host-computed in the uniform (WGSL cos/sin are not
-// correctly rounded, so the kernel never computes its own); radial mode
-// derives each pixel's offset from the frame centre with IEEE-exact ops.
+// three tinted taps — taps 0/1 sample behind the offset, tap 2 ahead — each
+// read in full colour, multiplied by its tint, and summed. The offset vector
+// arrives host-computed in the uniform (WGSL cos/sin are not correctly
+// rounded, so the kernel never computes its own). The always-radial variant
+// is chromatic aberration.
 
 struct Params {
-    dx: f32,        // linear-mode offset, raster px (host-computed)
+    tints: array<vec4<f32>, 3>,  // per-tap tint (w unused)
+    dx: f32,        // offset, raster px (host-computed)
     dy: f32,
-    amount: f32,    // radial-mode peak offset, raster px
-    radial: u32,    // 1 = offsets grow from the frame centre
-    scale_r: f32,   // per-channel displacement scale (FX-9)
+    scale_r: f32,   // per-tap displacement scale (FX-9)
     scale_g: f32,
     scale_b: f32,
     mix_amt: f32,   // 0..1, blended against the unprocessed input
+    _pad0: f32,
+    _pad1: f32,
 };
 
 @group(0) @binding(0) var src: texture_2d<f32>;
@@ -53,20 +55,16 @@ fn rgb_split(@builtin(global_invocation_id) gid: vec3<u32>) {
         return;
     }
     let pos = vec2<f32>(xy) + vec2<f32>(0.5);
-    var off = vec2<f32>(p.dx, p.dy);
-    if (p.radial == 1u) {
-        let fsize = vec2<f32>(size);
-        let diag = sqrt(fsize.x * fsize.x + fsize.y * fsize.y);
-        let k = p.amount / (0.5 * diag);
-        off = vec2<f32>((pos.x - fsize.x * 0.5) * k, (pos.y - fsize.y * 0.5) * k);
-    }
+    let off = vec2<f32>(p.dx, p.dy);
     let o = textureLoad(src, xy, 0);
-    // Per-channel displacement (FX-9): R and G along −offset·scale, B along
-    // +offset·scale. Sampling G at scale 0 lands on its own pixel, matching
-    // the CPU oracle's `bilinear` read. Alpha follows the green channel (§3.6).
-    let r = bilinear(pos.x - off.x * p.scale_r, pos.y - off.y * p.scale_r, size).r;
-    let g = bilinear(pos.x - off.x * p.scale_g, pos.y - off.y * p.scale_g, size).g;
-    let b = bilinear(pos.x + off.x * p.scale_b, pos.y + off.y * p.scale_b, size).b;
-    let split = vec4<f32>(r, g, b, o.a);
+    // Three tinted taps (T17): taps 0/1 along −offset·scale, tap 2 along
+    // +offset·scale, each read in full colour then multiplied by its tint and
+    // summed. Sampling at scale 0 lands on the pixel's own centre, matching
+    // the CPU oracle's `bilinear` read. Alpha stays put (§3.6).
+    let s0 = bilinear(pos.x - off.x * p.scale_r, pos.y - off.y * p.scale_r, size);
+    let s1 = bilinear(pos.x - off.x * p.scale_g, pos.y - off.y * p.scale_g, size);
+    let s2 = bilinear(pos.x + off.x * p.scale_b, pos.y + off.y * p.scale_b, size);
+    let rgb = p.tints[0].rgb * s0.rgb + p.tints[1].rgb * s1.rgb + p.tints[2].rgb * s2.rgb;
+    let split = vec4<f32>(rgb, o.a);
     textureStore(dst, xy, mix(o, split, p.mix_amt));
 }
