@@ -126,11 +126,34 @@ pub(crate) enum PanelAction {
 /// AE-style Project panel (docs/07-UI-SPEC.md §4): selected-item info at the
 /// top, the folder tree below, everything drag-and-drop (rows drag onto
 /// folders to file them; onto the Timeline or Viewer to make layers).
-pub(crate) fn project_panel(ui: &mut egui::Ui, theme: &Theme, app: &mut AppState) {
+pub(crate) fn project_panel(
+    ui: &mut egui::Ui,
+    theme: &Theme,
+    app: &mut AppState,
+    thumb: Option<(egui::TextureId, egui::Vec2)>,
+) {
     let doc = app.store.snapshot();
     let mut actions: Vec<PanelAction> = Vec::new();
 
-    project_header(ui, theme, app, &doc, &mut actions);
+    // A live search across the top of the panel (UI-3, spec §3.1): filters the
+    // tree by name, case-insensitive substring. Empty shows everything. Kept in
+    // per-panel ui memory, like the Effects & Presets browser's field.
+    let search_id = ui.id().with("project-panel-search");
+    let mut query = ui
+        .data_mut(|d| d.get_temp::<String>(search_id))
+        .unwrap_or_default();
+    ui.add_space(4.0);
+    let resp = ui.add(
+        egui::TextEdit::singleline(&mut query)
+            .hint_text("Search project")
+            .desired_width(f32::INFINITY),
+    );
+    if resp.changed() {
+        ui.data_mut(|d| d.insert_temp(search_id, query.clone()));
+    }
+    let needle = query.trim().to_lowercase();
+
+    project_header(ui, theme, app, &doc, &mut actions, thumb);
     ui.separator();
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 2.0;
@@ -196,7 +219,34 @@ pub(crate) fn project_panel(ui: &mut egui::Ui, theme: &Theme, app: &mut AppState
         .show(ui, |ui| {
             let mut visited = Vec::new();
             for id in doc.root_items() {
-                item_rows(ui, theme, app, &doc, id, 0, &mut actions, &mut visited);
+                item_rows(
+                    ui,
+                    theme,
+                    app,
+                    &doc,
+                    id,
+                    0,
+                    &mut actions,
+                    &mut visited,
+                    &needle,
+                );
+            }
+            // A search that hides everything gets a calm note rather than a bare
+            // panel, so it never looks broken (UI-3).
+            if !needle.is_empty() {
+                let mut v = Vec::new();
+                let any = doc
+                    .root_items()
+                    .into_iter()
+                    .any(|id| subtree_matches(&doc, id, &needle, &mut v));
+                if !any {
+                    ui.add_space(6.0);
+                    ui.label(
+                        egui::RichText::new("No items match your search")
+                            .small()
+                            .color(theme.text_muted),
+                    );
+                }
             }
             // Trailing space so there is always a root drop area.
             ui.allocate_space(egui::vec2(ui.available_width(), 40.0));
@@ -247,150 +297,238 @@ pub(crate) fn project_panel(ui: &mut egui::Ui, theme: &Theme, app: &mut AppState
     }
 }
 
-/// The info header: what the selected item is, at a glance (AE's preview
-/// area — the thumbnail joins when the cache can supply one cheaply).
+/// Fixed height of the selected-item info box, so choosing different items never
+/// shifts the tree beneath it (UI-4). Sized to hold the footage thumbnail plus
+/// its two text lines with a little room to breathe.
+const PROJECT_HEADER_HEIGHT: f32 = 58.0;
+
+/// The info header: what the selected item is, at a glance (AE's preview area).
+/// The box keeps a constant height whatever is selected (UI-4), and for footage
+/// it shows a small thumbnail on the left — the Viewer's own decoded frame,
+/// reused, never a fresh decode. `thumb` is that Viewer texture, if any.
 pub(crate) fn project_header(
     ui: &mut egui::Ui,
     theme: &Theme,
     app: &AppState,
     doc: &lumit_core::model::Document,
     actions: &mut Vec<PanelAction>,
+    thumb: Option<(egui::TextureId, egui::Vec2)>,
 ) {
-    ui.add_space(4.0);
+    // Reserve a constant-height box regardless of what is (or isn't) selected,
+    // and draw into it under a clip so nothing ever spills into the tree below
+    // (the info placement staying put between selections — UI-4).
+    let full = ui.available_rect_before_wrap();
+    let (rect, _) = ui.allocate_exact_size(
+        egui::vec2(full.width(), PROJECT_HEADER_HEIGHT),
+        egui::Sense::hover(),
+    );
+    let content = rect.shrink2(egui::vec2(2.0, 5.0));
+    let mut child = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(content)
+            .layout(egui::Layout::top_down(egui::Align::Min)),
+    );
+    child.set_clip_rect(content);
+    let ui = &mut child;
+
     let Some(item) = app.selected_item.and_then(|id| doc.item(id)) else {
         ui.label(
             egui::RichText::new("Nothing selected")
                 .small()
                 .color(theme.text_disabled),
         );
-        ui.add_space(2.0);
         return;
     };
-    ui.horizontal(|ui| {
-        ui.label(
-            egui::RichText::new(item.name())
-                .strong()
-                .color(theme.text_primary),
-        );
-        let kind = match item {
-            ProjectItem::Footage(_) => "footage",
-            ProjectItem::Folder(_) => "folder",
-            ProjectItem::Composition(_) => "comp",
-            ProjectItem::Solid(_) => "solid",
+
+    // A footage thumbnail sits to the left of the readout, but only when the
+    // Viewer's texture really is this item's picture (not a comp's or another
+    // clip's); otherwise a neutral placeholder stands in. Reuses whatever the
+    // app already decoded — it never starts a decode of its own (UI-4).
+    let is_footage = matches!(item, ProjectItem::Footage(_));
+    let footage_tex =
+        if is_footage && app.preview_comp.is_none() && app.preview_item == Some(item.id()) {
+            thumb
+        } else {
+            None
         };
-        ui.label(
-            egui::RichText::new(kind)
-                .monospace()
-                .small()
-                .color(theme.text_muted),
-        );
-    });
-    match item {
-        ProjectItem::Composition(c) => {
-            ui.horizontal(|ui| {
-                ui.label(
-                    egui::RichText::new(format!(
-                        "{}×{} · {:.2} fps · {:.1} s · {} layer{}",
-                        c.width,
-                        c.height,
-                        c.frame_rate.fps(),
-                        c.duration.0.to_f64(),
-                        c.layers.len(),
-                        if c.layers.len() == 1 { "" } else { "s" }
-                    ))
-                    .monospace()
-                    .small()
-                    .color(theme.text_muted),
-                );
-                if ui.small_button("Settings…").clicked() {
-                    actions.push(PanelAction::CompSettings(c.id));
-                }
-            });
+
+    ui.horizontal(|ui| {
+        if is_footage {
+            footage_thumbnail(ui, theme, footage_tex);
+            ui.add_space(8.0);
         }
-        ProjectItem::Solid(s) => {
+        ui.vertical(|ui| {
             ui.horizontal(|ui| {
-                let px = crate::pixels::solid_rgba(s.colour);
-                let (rect, _) =
-                    ui.allocate_exact_size(egui::vec2(14.0, 14.0), egui::Sense::hover());
-                ui.painter()
-                    .rect_filled(rect, 2.0, crate::theme::document_colour(px));
                 ui.label(
-                    egui::RichText::new(format!("{}×{}", s.width, s.height))
+                    egui::RichText::new(item.name())
+                        .strong()
+                        .color(theme.text_primary),
+                );
+                let kind = match item {
+                    ProjectItem::Footage(_) => "footage",
+                    ProjectItem::Folder(_) => "folder",
+                    ProjectItem::Composition(_) => "comp",
+                    ProjectItem::Solid(_) => "solid",
+                };
+                ui.label(
+                    egui::RichText::new(kind)
                         .monospace()
                         .small()
                         .color(theme.text_muted),
                 );
             });
-        }
-        ProjectItem::Folder(f) => {
-            ui.label(
-                egui::RichText::new(format!(
-                    "{} item{}",
-                    f.children.len(),
-                    if f.children.len() == 1 { "" } else { "s" }
-                ))
-                .monospace()
-                .small()
-                .color(theme.text_muted),
-            );
-        }
-        ProjectItem::Footage(_) => {
-            #[cfg(feature = "media")]
-            {
-                use crate::app_state::media::MediaStatus;
-                match app.media.map.get(&item.id()) {
-                    Some(MediaStatus::Probing) => {
+            match item {
+                ProjectItem::Composition(c) => {
+                    ui.horizontal(|ui| {
                         ui.label(
-                            egui::RichText::new("probing…")
-                                .small()
-                                .color(theme.text_disabled),
+                            egui::RichText::new(format!(
+                                "{}×{} · {:.2} fps · {:.1} s · {} layer{}",
+                                c.width,
+                                c.height,
+                                c.frame_rate.fps(),
+                                c.duration.0.to_f64(),
+                                c.layers.len(),
+                                if c.layers.len() == 1 { "" } else { "s" }
+                            ))
+                            .monospace()
+                            .small()
+                            .color(theme.text_muted),
                         );
-                    }
-                    Some(MediaStatus::Ready { probe, frames, vfr }) => {
-                        let mut line = String::new();
-                        if let Some(v) = &probe.video {
-                            line.push_str(&format!(
-                                "{}×{} · {:.2} fps · {} frames",
-                                v.width,
-                                v.height,
-                                v.fps(),
-                                frames
-                            ));
-                        } else if let Some(a) = &probe.audio {
-                            line.push_str(&format!("{} Hz · {} ch", a.sample_rate, a.channels));
+                        if ui.small_button("Settings…").clicked() {
+                            actions.push(PanelAction::CompSettings(c.id));
                         }
-                        line.push_str(&format!(" · {:.1} s", probe.duration_seconds));
-                        ui.horizontal(|ui| {
-                            ui.label(
-                                egui::RichText::new(line)
-                                    .monospace()
-                                    .small()
-                                    .color(theme.text_muted),
-                            );
-                            if *vfr {
+                    });
+                }
+                ProjectItem::Solid(s) => {
+                    ui.horizontal(|ui| {
+                        let px = crate::pixels::solid_rgba(s.colour);
+                        let (rect, _) =
+                            ui.allocate_exact_size(egui::vec2(14.0, 14.0), egui::Sense::hover());
+                        ui.painter()
+                            .rect_filled(rect, 2.0, crate::theme::document_colour(px));
+                        ui.label(
+                            egui::RichText::new(format!("{}×{}", s.width, s.height))
+                                .monospace()
+                                .small()
+                                .color(theme.text_muted),
+                        );
+                    });
+                }
+                ProjectItem::Folder(f) => {
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "{} item{}",
+                            f.children.len(),
+                            if f.children.len() == 1 { "" } else { "s" }
+                        ))
+                        .monospace()
+                        .small()
+                        .color(theme.text_muted),
+                    );
+                }
+                ProjectItem::Footage(_) => {
+                    #[cfg(feature = "media")]
+                    {
+                        use crate::app_state::media::MediaStatus;
+                        match app.media.map.get(&item.id()) {
+                            Some(MediaStatus::Probing) => {
                                 ui.label(
-                                    egui::RichText::new("VFR")
-                                        .monospace()
+                                    egui::RichText::new("probing…")
+                                        .small()
+                                        .color(theme.text_disabled),
+                                );
+                            }
+                            Some(MediaStatus::Ready { probe, frames, vfr }) => {
+                                let mut line = String::new();
+                                if let Some(v) = &probe.video {
+                                    line.push_str(&format!(
+                                        "{}×{} · {:.2} fps · {} frames",
+                                        v.width,
+                                        v.height,
+                                        v.fps(),
+                                        frames
+                                    ));
+                                } else if let Some(a) = &probe.audio {
+                                    line.push_str(&format!(
+                                        "{} Hz · {} ch",
+                                        a.sample_rate, a.channels
+                                    ));
+                                }
+                                line.push_str(&format!(" · {:.1} s", probe.duration_seconds));
+                                ui.horizontal(|ui| {
+                                    ui.label(
+                                        egui::RichText::new(line)
+                                            .monospace()
+                                            .small()
+                                            .color(theme.text_muted),
+                                    );
+                                    if *vfr {
+                                        ui.label(
+                                            egui::RichText::new("VFR")
+                                                .monospace()
+                                                .small()
+                                                .color(theme.warning),
+                                        )
+                                        .on_hover_text(
+                                            "Variable frame rate: conformed to the median rate",
+                                        );
+                                    }
+                                });
+                            }
+                            Some(MediaStatus::Failed(e)) => {
+                                ui.label(
+                                    egui::RichText::new(format!("unreadable: {e}"))
                                         .small()
                                         .color(theme.warning),
-                                )
-                                .on_hover_text("Variable frame rate: conformed to the median rate");
+                                );
                             }
-                        });
+                            None => {}
+                        }
                     }
-                    Some(MediaStatus::Failed(e)) => {
-                        ui.label(
-                            egui::RichText::new(format!("unreadable: {e}"))
-                                .small()
-                                .color(theme.warning),
-                        );
-                    }
-                    None => {}
                 }
             }
+        });
+    });
+}
+
+/// The footage thumbnail box in the info header (UI-4): a decoded frame shown
+/// aspect-fitted, or — with no frame to hand — a neutral placeholder carrying
+/// the footage glyph. Reuses the Viewer's preview texture; never decodes.
+fn footage_thumbnail(ui: &mut egui::Ui, theme: &Theme, tex: Option<(egui::TextureId, egui::Vec2)>) {
+    let (box_rect, _) = ui.allocate_exact_size(egui::vec2(64.0, 48.0), egui::Sense::hover());
+    let radius = egui::CornerRadius::same(theme.tokens.control_radius);
+    ui.painter().rect_filled(box_rect, radius, theme.surface_3);
+    match tex.filter(|(_, s)| s.x > 0.0 && s.y > 0.0) {
+        Some((id, size)) => {
+            // Contain the frame within the box, preserving its aspect ratio.
+            let scale = (box_rect.width() / size.x).min(box_rect.height() / size.y);
+            let fit = egui::Rect::from_center_size(
+                box_rect.center(),
+                egui::vec2(size.x * scale, size.y * scale),
+            );
+            ui.painter().image(
+                id,
+                fit,
+                egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                egui::Color32::WHITE,
+            );
+        }
+        None => {
+            crate::icons::paint(
+                ui.painter(),
+                box_rect.shrink(16.0),
+                Icon::Footage,
+                theme.text_disabled,
+                1.4,
+            );
         }
     }
-    ui.add_space(2.0);
+    ui.painter().rect_stroke(
+        box_rect,
+        radius,
+        egui::Stroke::new(1.0_f32, theme.hairline),
+        egui::StrokeKind::Inside,
+    );
 }
 
 /// A row that is one widget yet both a click target and a drag source. egui's
@@ -512,8 +650,41 @@ pub(crate) fn layer_type_style(
     }
 }
 
+/// Whether `id`'s subtree carries a name matching `needle` (already lowercased
+/// and non-empty). A folder matches when its own name matches or any descendant
+/// does, so the path down to a hit stays visible under the search (UI-3). Cheap:
+/// the project tree is small, and `visited` guards malformed cycles.
+pub(crate) fn subtree_matches(
+    doc: &lumit_core::model::Document,
+    id: uuid::Uuid,
+    needle: &str,
+    visited: &mut Vec<uuid::Uuid>,
+) -> bool {
+    if visited.contains(&id) {
+        return false;
+    }
+    let Some(item) = doc.item(id) else {
+        return false;
+    };
+    if item.name().to_lowercase().contains(needle) {
+        return true;
+    }
+    if let Some(f) = doc.folder(id) {
+        visited.push(id);
+        let hit = f
+            .children
+            .clone()
+            .into_iter()
+            .any(|c| subtree_matches(doc, c, needle, visited));
+        visited.pop();
+        return hit;
+    }
+    false
+}
+
 /// One tree row (folders recurse). Rows are drag sources; folder rows are
-/// drop targets.
+/// drop targets. `needle` is the active search (UI-3): empty shows everything,
+/// otherwise only subtrees with a name match are drawn.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn item_rows(
     ui: &mut egui::Ui,
@@ -524,6 +695,7 @@ pub(crate) fn item_rows(
     depth: usize,
     actions: &mut Vec<PanelAction>,
     visited: &mut Vec<uuid::Uuid>,
+    needle: &str,
 ) {
     if visited.contains(&id) {
         return; // defensive: malformed folder cycles never hang the panel
@@ -531,6 +703,15 @@ pub(crate) fn item_rows(
     let Some(item) = doc.item(id) else {
         return; // stale child id (deleted item): just don't draw it
     };
+    // Search filter (UI-3): a non-matching subtree is skipped entirely.
+    let searching = !needle.is_empty();
+    let name_match = item.name().to_lowercase().contains(needle);
+    if searching {
+        let mut v = Vec::new();
+        if !subtree_matches(doc, id, needle, &mut v) {
+            return;
+        }
+    }
     let is_folder = matches!(item, ProjectItem::Folder(_));
     // Type glyph + tint carried on the left of the row (replaces the old text
     // tag): comps take the accent, the rest a muted tint (docs/15-DESIGN.md §5).
@@ -542,7 +723,10 @@ pub(crate) fn item_rows(
     };
     let selected = app.selected_item == Some(id);
     let open_id = ui.id().with(("folder-open", id));
-    let mut open = is_folder && ui.data(|d| d.get_temp::<bool>(open_id).unwrap_or(true));
+    // While searching, folders force open so matches beneath them are visible;
+    // the stored open state is left untouched for when the search clears (UI-3).
+    let mut open =
+        is_folder && (searching || ui.data(|d| d.get_temp::<bool>(open_id).unwrap_or(true)));
 
     let row = ui
         .horizontal(|ui| {
@@ -620,8 +804,21 @@ pub(crate) fn item_rows(
         if open {
             if let Some(f) = doc.folder(id) {
                 visited.push(id);
+                // A folder whose own name matched reveals its whole contents;
+                // otherwise keep filtering, so only the path to a hit shows.
+                let child_needle = if name_match { "" } else { needle };
                 for child in f.children.clone() {
-                    item_rows(ui, theme, app, doc, child, depth + 1, actions, visited);
+                    item_rows(
+                        ui,
+                        theme,
+                        app,
+                        doc,
+                        child,
+                        depth + 1,
+                        actions,
+                        visited,
+                        child_needle,
+                    );
                 }
                 visited.pop();
             }
@@ -870,6 +1067,11 @@ pub(crate) fn effects_panel(ui: &mut egui::Ui, theme: &Theme, app: &mut AppState
 
     let mut any_effect = false;
     egui::ScrollArea::vertical()
+        // Fill the panel's full width so the scrollbar hugs the far-right edge
+        // rather than shrinking to the content and sitting mid-panel, which
+        // clipped effect/preset names (owner-reported). Matches the Project
+        // panel's tree scroll.
+        .auto_shrink([false, false])
         .id_salt("effects-panel-scroll")
         .show(ui, |ui| {
             // Presets first — the user's own looks sit above the built-ins.

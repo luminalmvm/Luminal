@@ -467,9 +467,11 @@ Shows the **effect stack** of the selected layer (tab per recently viewed layer,
   and **applies on a click**, appending its whole saved stack (fresh instance ids) to the
   selected layer as one undoable `SetLayerEffects` — the same append the Effect Controls
   → Presets "Load preset…" commits. "Save stack as preset…" defaults its file dialogue to
-  this folder (created lazily), so saving and browsing share one home. A missing or empty
-  folder shows a hint, never a failure. Drag-a-preset-onto-a-layer and preset thumbnails are
-  later steps.
+  this folder (created lazily), so saving and browsing share one home, and it saves **exactly
+  the current selection** (K-156): the highlighted effects with their values as set, and — when
+  specific keyframes are picked out on the lanes — only those keys. With nothing highlighted it
+  falls back to the whole stack. A missing or empty folder shows a hint, never a failure.
+  Drag-a-preset-onto-a-layer and preset thumbnails are later steps.
 - **Favourites**: star any effect or preset; a Favourites group pins to the top of the tree.
 - Hovering an entry SHOULD show a one-line description; presets show a thumbnail where the
   preset carries one.

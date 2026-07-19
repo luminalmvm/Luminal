@@ -647,6 +647,11 @@ Two mechanisms make this safe, and you'll see them by name in the code:
   preset by hand does. "Save stack as preset…" now points its save box at that same folder to
   begin with, so anything you save shows up in the list straight away; you can still save it
   elsewhere if you want. An empty folder just shows a gentle hint rather than an error.
+  **A preset now saves whatever you have highlighted, not always the whole stack (UI-10,
+  K-156).** Highlight one or more effects and it saves just those, with their settings as they
+  stand; pick out specific keyframes on the lanes and it saves only those keys (the rest of the
+  animation, and any effect you did not touch, is left out). Highlight nothing and it still saves
+  the whole stack, as before — so the old behaviour is one click away when you want it.
   **Dragging an effect's value
   updates the Viewer live** — as you drag a Glow radius or a Blur amount, the picture re-runs
   the effect with the value under your cursor every frame, committing once when you let go (so
@@ -1452,10 +1457,17 @@ Two mechanisms make this safe, and you'll see them by name in the code:
   from which — and clicking any row jumps you to that layer. It only shows the structure, it
   never changes it. It is the simple tree version of the fuller node-graph flowchart that
   comes later.
-- The **Project panel** — AE-shaped (K-068): the selected item's details up top, the
-  folder tree below, and drag-and-drop everywhere. Drag footage onto the Timeline or
-  Viewer to make a layer; with no comp open yet, the composition dialogue appears
-  already filled in from that footage. Solids are proper assets now — one "White solid"
+- The **Project panel** — AE-shaped (K-068): a **search box** across the top, the selected
+  item's details just under it, the folder tree below, and drag-and-drop everywhere. The
+  search box filters the tree live by name as you type (case-insensitive; a folder stays
+  visible when anything inside it matches, so you always see the path down to a hit), and
+  clearing it shows everything again (UI-3). The details box now keeps a **fixed height**
+  whatever you select, so the tree beneath it no longer jumps around as you click between
+  items; and when the selected item is footage it shows a small **thumbnail** of the frame on
+  the left — reusing the very frame the Viewer already decoded rather than decoding a fresh
+  one, with a plain placeholder shown until a frame is to hand (UI-4, K-157). Drag footage
+  onto the Timeline or Viewer to make a layer; with no comp open yet, the composition dialogue
+  appears already filled in from that footage. Solids are proper assets now — one "White solid"
   in the project can back fifty layers, and the first one you make creates a Solids
   folder that future solids follow even if you rename it or tuck it inside another
   folder (Lumit remembers the folder itself, not its name). Compositions do the same
