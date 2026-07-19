@@ -1866,3 +1866,31 @@ Top / Bottom crop amounts). None is required for "properly key footage" — the 
 (screen matte + clips + despill + views) is — so they are ordered after it and tracked here.
 When they land, each keeps the K-031 preview==export and §1.6 oracle guarantees. Numbered
 K-155, alongside K-154; renumber on merge if another agent also claims it.
+
+**K-156 · DECIDED · "Save stack as preset" saves the current selection, not always the whole
+stack (docs/07-UI-SPEC.md §7, UI-10).** The Effect Controls → Presets "Save stack as preset…"
+now writes exactly what the user has highlighted, decided by the existing selection model — the
+effect-row selection (`selected_prop`/`selected_props`) and the lane keyframe selection
+(`lane_selection`), both restricted to the layer being saved. The rule (pure, tested in
+`preset::selection_subset`): with **nothing highlighted** it saves the whole stack, so the old
+behaviour is the fallback; otherwise it saves **every effect the selection touches** — a
+highlighted parameter row, or a highlighted key — in stack order, and within each of those
+effects any Float parameter that has highlighted keys is **trimmed to just those keys**. A
+parameter with no highlighted keys keeps its value exactly as set, including any full animation
+the user did not single a key out of; a stale selection (a key edited away, an effect removed)
+simply matches nothing and is skipped rather than emptying a parameter. Key times match exactly
+on their stored rational, which is what the lane selection carries. The `.lumfx` format is
+unchanged (a preset is still a list of `EffectInstance`s); pre-release, no migration is needed.
+
+**K-157 · DECIDED · The Project panel's selected-item info box is fixed-height and shows a
+footage thumbnail reused from the Viewer (docs/07-UI-SPEC.md §3.1, UI-4).** The info box keeps a
+constant height (`PROJECT_HEADER_HEIGHT`) whatever is selected — drawn into a reserved,
+clipped rect — so choosing different items never shifts the tree beneath it. For footage it
+shows a small thumbnail on the left: the **Viewer's own decoded frame**, passed through to the
+panel and drawn aspect-fitted, guarded so it is used only when that texture really is the
+selected item's picture (`preview_comp` unset and `preview_item` equal to the item). No new
+decode path is added (a dedicated proxy/thumbnail cache and hover-scrub, spec §3.1, stay a later
+step); when no frame is to hand — still probing, a pop-out with no texture, or a non-media build
+— a neutral placeholder carrying the footage glyph stands in. Paired with the panel-wide search
+field (UI-3), which filters the tree live by name (case-insensitive substring, subtree-aware so
+the path to a hit stays visible) per the existing spec §3.1 and needs no separate decision.

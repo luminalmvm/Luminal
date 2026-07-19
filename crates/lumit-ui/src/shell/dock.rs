@@ -62,8 +62,10 @@ pub(crate) fn dock_simplification_options() -> egui_tiles::SimplificationOptions
 }
 
 /// Render one panel's body. Shared by the docked panes and the pop-out windows
-/// so a panel looks the same wherever it lives. Only the Viewer needs the live
-/// preview texture; it never pops out, so floating windows pass `None`.
+/// so a panel looks the same wherever it lives. The Viewer shows the live
+/// preview texture; the Project panel reuses it as a footage thumbnail (UI-4).
+/// A pop-out that has no texture to hand simply passes `None` and degrades to a
+/// placeholder.
 pub(crate) fn render_panel(
     ui: &mut egui::Ui,
     theme: &Theme,
@@ -73,7 +75,9 @@ pub(crate) fn render_panel(
 ) {
     match panel {
         Panel::Viewer => viewer_panel(ui, theme, app, preview_display),
-        Panel::Project => project_panel(ui, theme, app),
+        // The Project panel reuses the Viewer's decoded frame as a footage
+        // thumbnail in its info box (UI-4) — no decode of its own.
+        Panel::Project => project_panel(ui, theme, app, preview_display),
         Panel::Timeline => timeline_panel(ui, theme, app),
         Panel::EffectControls => effect_controls_panel(ui, theme, app),
         Panel::EffectsAndPresets => effects_panel(ui, theme, app),

@@ -159,8 +159,37 @@ pub(crate) fn effects_rows(
                 }
             },
         );
-        // Preset save/load (docs/07-UI-SPEC §7, K-065): save the whole stack
-        // to a `.lumfx` file, or load one and append it to this layer.
+        // The current selection restricted to this layer (UI-10, K-156): which
+        // effects have a highlighted parameter row, and which keyframes are
+        // picked out on the lanes. `selection_subset` turns these into exactly
+        // what "Save stack as preset…" writes — the whole stack when nothing is
+        // highlighted, otherwise only the selection. Built once here so the save
+        // closure below can borrow them.
+        use crate::app_state::PropRow;
+        let mut sel_effects: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
+        for ps in app
+            .selected_props
+            .iter()
+            .chain(app.selected_prop.iter())
+            .filter(|ps| ps.layer == layer.id)
+        {
+            if let PropRow::Effect { effect, .. } = ps.row {
+                sel_effects.insert(effect);
+            }
+        }
+        let mut sel_keys: std::collections::BTreeMap<
+            (usize, usize),
+            std::collections::BTreeSet<lumit_core::Rational>,
+        > = std::collections::BTreeMap::new();
+        for k in app.lane_selection.iter().filter(|k| k.layer == layer.id) {
+            if let PropRow::Effect { effect, param } = k.row {
+                sel_keys.entry((effect, param)).or_default().insert(k.time);
+            }
+        }
+
+        // Preset save/load (docs/07-UI-SPEC §7, K-065): save the selected
+        // effects/keyframes (or the whole stack when nothing is highlighted,
+        // UI-10) to a `.lumfx` file, or load one and append it to this layer.
         c.menu_button(
             egui::RichText::new("Presets")
                 .small()
@@ -185,7 +214,15 @@ pub(crate) fn effects_rows(
                                 .and_then(|s| s.to_str())
                                 .unwrap_or("preset")
                                 .to_owned();
-                            if let Ok(json) = crate::preset::to_json(&name, &layer.effects) {
+                            // Only what the user highlighted (UI-10): the
+                            // selected effects and, where keys are picked out,
+                            // just those keys. No selection → the whole stack.
+                            let subset = crate::preset::selection_subset(
+                                &layer.effects,
+                                &sel_effects,
+                                &sel_keys,
+                            );
+                            if let Ok(json) = crate::preset::to_json(&name, &subset) {
                                 // Best-effort: a failed write leaves the
                                 // document untouched (never an edit).
                                 let _ = std::fs::write(&path, json);
