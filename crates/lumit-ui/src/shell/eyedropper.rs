@@ -506,7 +506,11 @@ fn draw_magnifier(
 
     // Everything inside the viewfinder paints through a painter clipped to just
     // inside the border, so the preview can never cross it (owner UI-15).
-    let inner = painter.with_clip_rect(panel.shrink(1.0));
+    // Clip a touch further inside the rounded border (T11): a 1 px rectangular
+    // clip still let content into the corner triangles the arc cuts off. Inset by
+    // half the corner radius (min 2 px) — stays within the grid's own `pad`
+    // margin, so the pixels aren't cropped, but the corners stop spilling.
+    let inner = painter.with_clip_rect(panel.shrink((round * 0.5).max(2.0)));
 
     let grid_min = panel.min + egui::vec2(pad, pad);
     // Round the grid's four outer corner cells to match the panel's corner (owner
@@ -577,14 +581,15 @@ fn draw_magnifier(
     );
 
     // The bottom info bar: a strip under the grid carrying the swatch and the
-    // region size. It takes the card-corner token, which egui clamps to a pill at
-    // the Round radius (a rounded strip spanning the bottom) and leaves a square
-    // bar under Sharp — no hardcoded shape flag (owner UI-15).
+    // region size. Under Round it is a full pill (radius = half its height, so
+    // the rounding is unmistakable, T11); under Sharp (radius token 0) it stays a
+    // square bar — no hardcoded shape flag (owner UI-15).
     let bar = egui::Rect::from_min_max(
         egui::pos2(grid_min.x, grid_min.y + grid + pad * 0.5),
         egui::pos2(grid_min.x + grid, panel.bottom() - pad * 0.5),
     );
-    inner.rect_filled(bar, round, theme.surface_2);
+    let bar_round = if round > 0.0 { bar.height() * 0.5 } else { 0.0 };
+    inner.rect_filled(bar, bar_round, theme.surface_2);
 
     // Caption: a swatch of the value that would be committed, then the size. It
     // starts far enough in to clear the pill's rounded left end.
