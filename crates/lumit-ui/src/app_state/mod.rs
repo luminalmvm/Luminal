@@ -282,9 +282,10 @@ pub struct CompDialog {
 /// The lane guide-line mode — what the faint vertical lines mark.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum TimelineGrid {
-    /// Detected beats and markers (the montage default).
+    /// Detected beats and markers (suits montage and music-led work).
     Beats,
     /// The time grid: seconds, subdividing to frames as the zoom allows.
+    /// The default.
     Time,
     /// No guide lines.
     Off,
@@ -884,7 +885,7 @@ impl Default for AppState {
             graph_last_fit: None,
             graph_retime: false,
             vegas_default_lens: false,
-            timeline_grid: TimelineGrid::Beats,
+            timeline_grid: TimelineGrid::Time,
             graph_retime_edit: None,
             preview_comp: None,
             comp_playback: None,

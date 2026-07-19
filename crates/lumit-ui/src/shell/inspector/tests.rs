@@ -120,15 +120,17 @@ mod lane_key_tests {
     }
 
     #[test]
-    fn shift_click_extends_without_removing() {
+    fn shift_click_toggles_membership_like_ctrl() {
+        // UI-5: Shift now toggles too, so it can deselect (it used to only add).
         let mut s = vec![sel(1.0)];
         let shift = egui::Modifiers {
             shift: true,
             ..Default::default()
         };
-        lane_select_click(&mut s, sel(2.0), shift);
-        lane_select_click(&mut s, sel(2.0), shift); // already in — no duplicate
+        lane_select_click(&mut s, sel(2.0), shift); // add
         assert_eq!(s, vec![sel(1.0), sel(2.0)]);
+        lane_select_click(&mut s, sel(2.0), shift); // already in — removes it
+        assert_eq!(s, vec![sel(1.0)]);
     }
 
     fn psel(prop: TransformProp) -> crate::app_state::PropSel {

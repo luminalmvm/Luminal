@@ -1670,6 +1670,9 @@ pub(crate) fn timeline_panel(ui: &mut egui::Ui, theme: &Theme, app: &mut AppStat
         // Clicking an effect row is a single-select: reset the multi-row set.
         app.selected_prop = Some(sel);
         app.selected_props = vec![sel];
+        // UI-2: focus the row's layer too, so an effect-param click highlights
+        // the layer just like a transform-row click does.
+        app.selected_layer = Some(sel.layer);
     }
     // A Shift-click on a property name ranges from the anchor over the rows drawn
     // between (note 2.6b), resolved here now the whole draw order is known.

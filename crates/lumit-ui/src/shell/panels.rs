@@ -1221,6 +1221,8 @@ pub(crate) fn effect_controls_panel(ui: &mut egui::Ui, theme: &Theme, app: &mut 
     if let Some(sel) = select {
         app.selected_prop = Some(sel);
         app.selected_props = vec![sel];
+        // UI-2: focus the row's layer too.
+        app.selected_layer = Some(sel.layer);
     }
     if let Some(op) = pending {
         app.commit(op);

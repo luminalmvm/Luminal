@@ -112,21 +112,19 @@ fn draw_lane_glyph(
 }
 
 /// Apply a modifier-aware click to the lane keyframe selection (note 2.6): a
-/// plain click replaces it with just this key, Ctrl/Cmd-click toggles this
-/// key's membership, and Shift-click adds it — the usual list-select gestures.
+/// plain click replaces it with just this key; Ctrl/Cmd-click and Shift-click
+/// both toggle this key's membership (note UI-5 — Shift used to only add, so it
+/// could never deselect). The two modifiers behave identically here so either
+/// hand reaches the same gesture.
 pub(crate) fn lane_select_click(
     selection: &mut Vec<crate::app_state::LaneKeySel>,
     sel: crate::app_state::LaneKeySel,
     mods: egui::Modifiers,
 ) {
-    if mods.command || mods.ctrl {
+    if mods.command || mods.ctrl || mods.shift {
         if let Some(i) = selection.iter().position(|s| *s == sel) {
             selection.remove(i);
         } else {
-            selection.push(sel);
-        }
-    } else if mods.shift {
-        if !selection.contains(&sel) {
             selection.push(sel);
         }
     } else {

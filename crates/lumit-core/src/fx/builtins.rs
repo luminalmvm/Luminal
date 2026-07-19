@@ -1286,11 +1286,6 @@ pub const BUILTINS: &[EffectSchema] = &[
                 },
             },
             ParamSchema {
-                id: "seed",
-                label: "Seed",
-                kind: ParamKind::Seed,
-            },
-            ParamSchema {
                 id: "block_size",
                 label: "Block size",
                 // px@comp (§2.3): a deliberately pixel-scale look.
@@ -1340,6 +1335,14 @@ pub const BUILTINS: &[EffectSchema] = &[
                     slider: (0.0, 100.0),
                     hard: (Some(0.0), Some(100.0)),
                 },
+            },
+            // Seed sits second-last, immediately before Mix (owner convention
+            // for seeded effects: the "which roll of the dice" dial lives at the
+            // bottom of the stack of look controls).
+            ParamSchema {
+                id: "seed",
+                label: "Seed",
+                kind: ParamKind::Seed,
             },
             MIX_PARAM,
         ],
