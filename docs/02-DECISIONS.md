@@ -2006,3 +2006,21 @@ oracle before. Deliberately deferred to post-v1: Dissolve / Dancing dissolve (ne
 seed), the legacy "Classic" variants, and the alpha operators (Stencil / Silhouette / Alpha add
 / Luminescent premul, which modify alpha compositing, not colour). Extends docs/06 §3.5's own
 list without reversing it. Built on `main`.
+
+**K-163 · DECIDED · The Wavelength dispersion is driven by the three-colour picker, not a fixed
+physical basis (A1).** From the owner (testing A1, resolving the §3.6 open question in favour of
+"replace the basis"): the RGB split / chromatic aberration Wavelength mode no longer disperses
+through the fixed physical `SPECTRAL_BASIS` (the 9-anchor CIE-derived table). Instead each
+spectral tap is tinted by the effect's own three-colour picker sampled as a gradient — Colour 1
+at the −offset end, Colour 2 at centre, Colour 3 at the +offset end (`tint_gradient`) — so the
+picker now controls the fringe hues in Wavelength mode exactly as it does the three discrete taps
+in the classic mode. The default red / green / blue reproduces the same red-at-−1 / blue-at-+1
+direction the physical basis had, so the default dispersion still runs red→green→blue; other
+colours re-tint it. Colour columns are normalised across the taps (guarded against a zero column)
+so a uniform image passes through unchanged — the dispersion tints the fringe, never the
+exposure. `Resolved::SpectralSplit` gains `tints: [[f32;3];3]`; `spectral_taps` /
+`spectral_basis_uniform` take the tints; the basis is still built host-side and shared by the CPU
+oracle and WGSL kernel (the kernel is unchanged, so preview == export holds, K-031). The physical
+`SPECTRAL_BASIS` const and its column-sum test are retired. Pre-release, no migration. This
+resolves the §3.6 open question and supersedes the "physically-based dispersion" detail of
+K-090/K-144 (the smooth-many-tap machinery is otherwise unchanged). Built on `main`.

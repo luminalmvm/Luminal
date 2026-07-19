@@ -48,8 +48,11 @@ pub fn apply(rgba: &mut [f32], w: u32, h: u32, fx: &Resolved) {
             angle_deg,
             radial,
             samples,
+            tints,
             mix,
-        } => spectral_split(rgba, w, h, *amount_px, *angle_deg, *radial, *samples, *mix),
+        } => spectral_split(
+            rgba, w, h, *amount_px, *angle_deg, *radial, *samples, *tints, *mix,
+        ),
         Resolved::ChromaticAberration {
             amount_px,
             tints,
@@ -1189,17 +1192,18 @@ pub fn rgb_split(
 }
 
 /// The RGB split's Wavelength mode (docs/08 §3.6, K-090; chromatic
-/// aberration's own Wavelength mode, K-144): instead of three channels at
-/// three offsets, `samples` spectral taps spread across `±offset`, each
-/// weighted by its wavelength's linear-RGB basis colour and summed — real
-/// dispersion's rainbow fringe rather than the classic hard R/G/B rim. The
-/// taps (each carrying its weight and its offset fraction in the `w` lane)
-/// come from [`super::spectral_taps`], shared with the GPU path, and their
-/// colour columns are normalised so a uniform image passes through
-/// unchanged. More taps fill the same span more densely, so a large offset
-/// disperses smoothly rather than showing a few discrete copies. Offsets
-/// (linear or radial) and edge handling match the classic mode exactly;
-/// alpha stays put, so mattes never fringe.
+/// aberration's own Wavelength mode, K-144; picker-driven since A1/K-163):
+/// instead of three hard-tinted taps, `samples` spectral taps spread across
+/// `±offset`, each tinted by the three-colour picker sampled as a gradient
+/// (`tints[0]` → `tints[1]` → `tints[2]` across the span) and summed — a smooth
+/// coloured fringe rather than the classic hard three-tap rim. The taps (each
+/// carrying its tint weight and its offset fraction in the `w` lane) come from
+/// [`super::spectral_taps`], shared with the GPU path, and their colour columns
+/// are normalised so a uniform image passes through unchanged (the dispersion
+/// tints the fringe, never the exposure). More taps fill the same span more
+/// densely, so a large offset disperses smoothly rather than showing a few
+/// discrete copies. Offsets (linear or radial) and edge handling match the
+/// classic mode exactly; alpha stays put, so mattes never fringe.
 #[allow(clippy::too_many_arguments)]
 pub fn spectral_split(
     rgba: &mut [f32],
@@ -1209,10 +1213,11 @@ pub fn spectral_split(
     angle_deg: f32,
     radial: bool,
     samples: i32,
+    tints: [[f32; 3]; 3],
     mix: f32,
 ) {
     let original = rgba.to_vec();
-    let taps = super::spectral_taps(samples);
+    let taps = super::spectral_taps(samples, tints);
     let (dx, dy) = super::rgb_split_offset(amount_px, angle_deg);
     let (fw, fh) = (w as f32, h as f32);
     let diag = (fw * fw + fh * fh).sqrt();

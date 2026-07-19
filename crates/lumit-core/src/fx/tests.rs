@@ -1455,6 +1455,7 @@ fn rgb_split_wavelength_bool_selects_the_variant() {
             angle_deg: 0.0,
             radial: false,
             samples: 16,
+            tints: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
             mix: 1.0
         }]
     );
@@ -1552,9 +1553,51 @@ fn chromatic_aberration_wavelength_reuses_the_spectral_split() {
             angle_deg: 0.0,
             radial: true,
             samples: 32,
+            tints: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
             mix: 1.0
         }]
     );
+}
+
+#[test]
+fn wavelength_mode_honours_the_channel_picker() {
+    // A1/K-163: the three-colour picker now drives the Wavelength dispersion,
+    // so a custom set of colours arrives in the resolved SpectralSplit.
+    let mut e = instantiate("rgb_split").unwrap();
+    for p in &mut e.params {
+        match p.id.as_str() {
+            "wavelength" => p.value = EffectValue::Bool(true),
+            "channel_colour_1" => {
+                p.value = EffectValue::Colour([
+                    Property::fixed(1.0),
+                    Property::fixed(1.0),
+                    Property::fixed(0.0),
+                    Property::fixed(1.0),
+                ])
+            }
+            "channel_colour_3" => {
+                p.value = EffectValue::Colour([
+                    Property::fixed(0.0),
+                    Property::fixed(1.0),
+                    Property::fixed(1.0),
+                    Property::fixed(1.0),
+                ])
+            }
+            _ => {}
+        }
+    }
+    let r = resolve_stack(
+        std::slice::from_ref(&e),
+        0.0,
+        1000.0,
+        1.0,
+        &MarkerContext::NONE,
+    );
+    let Resolved::SpectralSplit { tints, .. } = r[0] else {
+        panic!("expected a spectral split");
+    };
+    assert_eq!(tints[0], [1.0, 1.0, 0.0], "colour 1 → yellow end");
+    assert_eq!(tints[2], [0.0, 1.0, 1.0], "colour 3 → cyan end");
 }
 
 #[test]
@@ -1658,23 +1701,13 @@ fn cpu_chromatic_aberration_shifts_channels_radially_and_keeps_alpha() {
 }
 
 #[test]
-fn spectral_basis_columns_sum_to_one() {
-    // The normalisation that makes a uniform image pass through
-    // unchanged: each channel's nine weights sum to 1 (within f32
-    // rounding of the summation itself).
-    for c in 0..3 {
-        let sum: f32 = SPECTRAL_BASIS.iter().map(|w| w[c]).sum();
-        assert!((sum - 1.0).abs() < 1e-6, "channel {c} sums to {sum}");
-    }
-}
-
-#[test]
 fn spectral_taps_span_the_offset_and_normalise() {
-    // The variable-sample tap builder (FX-9/K-144): for any count the taps
-    // span −1..+1 evenly, each colour column sums to 1 (uniform preservation),
-    // and the count is clamped to 2..=SPECTRAL_MAX_SAMPLES.
+    // The variable-sample tap builder (FX-9/K-144, picker-driven A1/K-163): for
+    // any count the taps span −1..+1 evenly, each colour column sums to 1
+    // (uniform preservation), and the count is clamped to 3..=SPECTRAL_MAX_SAMPLES.
+    let rgb = [[1.0f32, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
     for n in [3, 9, 16, 64] {
-        let taps = spectral_taps(n);
+        let taps = spectral_taps(n, rgb);
         assert_eq!(taps.len(), n as usize, "n={n} taps");
         assert!((taps[0][3] - -1.0).abs() < 1e-6, "first tap is the red end");
         assert!(
@@ -1691,8 +1724,25 @@ fn spectral_taps_span_the_offset_and_normalise() {
         }
     }
     // Clamping: below 3 and above the max both land in range.
-    assert_eq!(spectral_taps(0).len(), 3);
-    assert_eq!(spectral_taps(1000).len(), SPECTRAL_MAX_SAMPLES as usize);
+    assert_eq!(spectral_taps(0, rgb).len(), 3);
+    assert_eq!(
+        spectral_taps(1000, rgb).len(),
+        SPECTRAL_MAX_SAMPLES as usize
+    );
+
+    // A degenerate all-one-colour picker keeps that colour and zeroes the
+    // others (the guarded column-normalisation never divides by zero).
+    let all_red = [[1.0f32, 0.0, 0.0]; 3];
+    let taps = spectral_taps(9, all_red);
+    let rsum: f32 = taps.iter().map(|t| t[0]).sum();
+    assert!(
+        (rsum - 1.0).abs() < 1e-5,
+        "red column still normalises to 1"
+    );
+    assert!(
+        taps.iter().all(|t| t[1] == 0.0 && t[2] == 0.0),
+        "no green/blue when the picker has none"
+    );
 }
 
 #[test]
@@ -1700,16 +1750,19 @@ fn cpu_spectral_split_disperses_and_preserves_uniform() {
     let (w, h) = (17u32, 9u32);
     let at = |x: u32, y: u32| ((y * w + x) * 4) as usize;
 
-    // A uniform image is unchanged (the basis is normalised, and clamp
-    // addressing keeps edges uniform too).
+    // The default red/green/blue picker gradient (A1/K-163): red at the −1 end,
+    // green astride, blue at the +1 end — the same directional arrangement the
+    // old physical basis had, so these assertions are unchanged.
+    let rgb = [[1.0f32, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+
+    // A uniform image is unchanged (the gradient columns are normalised, and
+    // clamp addressing keeps edges uniform too).
     let mut uniform = vec![0.0f32; (w * h * 4) as usize];
     for px in uniform.chunks_exact_mut(4) {
         px.copy_from_slice(&[0.5, 0.25, 0.125, 1.0]);
     }
-    // Nine taps line the resampled basis up with the original anchors, so the
-    // impulse below lands exactly on a tap.
     let before = uniform.clone();
-    cpu::spectral_split(&mut uniform, w, h, 3.0, 25.0, false, 9, 1.0);
+    cpu::spectral_split(&mut uniform, w, h, 3.0, 25.0, false, 9, rgb, 1.0);
     for (i, (a, b)) in uniform.iter().zip(&before).enumerate() {
         assert!((a - b).abs() < 1e-6, "texel {i}: {a} vs {b}");
     }
@@ -1726,11 +1779,11 @@ fn cpu_spectral_split_disperses_and_preserves_uniform() {
 
     // Mix 0 is the exact identity.
     let mut m0 = img.clone();
-    cpu::spectral_split(&mut m0, w, h, 3.0, 45.0, false, 9, 0.0);
+    cpu::spectral_split(&mut m0, w, h, 3.0, 45.0, false, 9, rgb, 0.0);
     assert_eq!(m0, img);
 
     let mut s = img.clone();
-    cpu::spectral_split(&mut s, w, h, 2.0, 0.0, false, 9, 1.0);
+    cpu::spectral_split(&mut s, w, h, 2.0, 0.0, false, 9, rgb, 1.0);
     assert!(s[at(10, 4)] > 0.1, "red end lands +2x of the impulse");
     assert!(s[at(6, 4) + 2] > 0.3, "blue end lands -2x of the impulse");
     assert!(s[mid + 1] > 0.3, "green stays astride the impulse");

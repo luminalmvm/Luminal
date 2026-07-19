@@ -192,7 +192,7 @@ parallel pass left several not-quite-right). No migration burden (pre-release).
 - [ ] T25 The top audio-preview bar doesn't move when moving an audio layer; make the bar optional (right-click to hide).
 
 ## Also (A)
-- [~] A1 Classic mode now honours the picker in both chromatic aberration and (new) RGB split (K-161/T17). Wavelength mode still uses the physical SPECTRAL_BASIS, so the picker does nothing there — left as an open question in docs/08 §3.6 (three options: leave physical / tint the spectral taps by the picker ramp / replace the basis with a colour1→2→3 gradient). Needs owner's pick before wiring — flagged at check-in.
+- [x] A1 Picker now drives BOTH modes in chromatic aberration and RGB split. Classic mode: tinted taps (K-161/T17). Wavelength mode: the physical SPECTRAL_BASIS is retired and replaced by a colour1→colour2→colour3 gradient (owner chose "replace the basis", K-163) — default red/green/blue still gives red→green→blue dispersion; other colours re-tint it. Full 4-site + oracle (custom-colour case added).
 - [ ] A2 Fast motion blur: still blocky sometimes; want better sampling / a quality selector, and optionally a depth-map or motion-vector-map input to help. (3 reference shots: base, confidence, motion vectors.)
 - [ ] A3 Project tab: shift/ctrl-click to multi-select items (drag several into a comp at once).
 - [ ] A4 Lane view: dragging the selection box (marquee) over a Time keyframe still doesn't select it.

@@ -445,13 +445,14 @@ pub const BUILTINS: &[EffectSchema] = &[
             ParamSchema {
                 id: "wavelength",
                 label: "Wavelength",
-                // K-090 quality tier: off = the classic three-channel
-                // split (byte-identical to before this Bool existed); on =
-                // wavelength-based dispersion — `samples` spectral taps along
-                // the same offset, weighted by the resampled SPECTRAL_BASIS
-                // and recombined in linear, for the higher-quality rainbow
-                // fringe. All other parameters are shared between modes; the
-                // per-channel scales above apply to the classic mode only.
+                // K-090 quality tier: off = the classic three-tap split
+                // (byte-identical to before this Bool existed); on = a smooth
+                // dispersion — `samples` spectral taps along the same offset,
+                // each tinted by the three-colour picker sampled as a gradient
+                // (A1/K-163: Colour 1 → Colour 2 → Colour 3 across the span) and
+                // recombined in linear, for the higher-quality smooth fringe. The
+                // per-tap scales above apply to the classic mode only; the tints
+                // drive both modes.
                 kind: ParamKind::Bool { default: false },
             },
             ParamSchema {

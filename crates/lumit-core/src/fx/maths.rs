@@ -261,17 +261,24 @@ pub fn rgb_split_offset(amount_px: f32, angle_deg: f32) -> (f32, f32) {
 /// f32 ULP) so a uniform image passes through unchanged. The CPU reference
 /// reads this table directly and the WGSL kernel receives it in its
 /// uniform, so both paths consume bit-identical numbers.
-pub const SPECTRAL_BASIS: [[f32; 3]; 9] = [
-    [0.112_422_91, 0.0, 0.0],           // 650 nm
-    [0.294_590_23, 0.0, 0.0],           // 625 nm
-    [0.365_333_56, 0.036_021_75, 0.0],  // 600 nm
-    [0.201_592_3, 0.192_775_3, 0.0],    // 575 nm
-    [0.0, 0.311_754_2, 0.0],            // 550 nm
-    [0.0, 0.300_619_63, 0.0],           // 525 nm
-    [0.0, 0.134_424_22, 0.068_714_05],  // 500 nm
-    [0.0, 0.024_404_911, 0.339_951_04], // 475 nm
-    [0.026_061_023, 0.0, 0.591_334_94], // 450 nm — the violet re-red bump
-];
+/// The three picker colours sampled as a smooth gradient at offset fraction
+/// `t ∈ [-1, +1]` (A1/K-163): `tints[0]` at −1, `tints[1]` at 0, `tints[2]`
+/// at +1, linearly interpolated between the stops. This gradient replaces the
+/// old fixed physical spectral basis, so the three-colour picker now drives the
+/// Wavelength dispersion (the owner's choice): the default red / green / blue
+/// tints give a red→green→blue fringe.
+pub fn tint_gradient(tints: [[f32; 3]; 3], t: f64) -> [f64; 3] {
+    let (a, b, f) = if t <= 0.0 {
+        (tints[0], tints[1], t + 1.0) // [-1, 0] → f in [0, 1]
+    } else {
+        (tints[1], tints[2], t) // [0, 1]
+    };
+    [
+        f64::from(a[0]) * (1.0 - f) + f64::from(b[0]) * f,
+        f64::from(a[1]) * (1.0 - f) + f64::from(b[1]) * f,
+        f64::from(a[2]) * (1.0 - f) + f64::from(b[2]) * f,
+    ]
+}
 
 /// The largest number of spectral samples the Wavelength dispersion supports
 /// (docs/08 §3.6, K-090/K-144): the GPU uniform carries a fixed-size basis
@@ -281,36 +288,26 @@ pub const SPECTRAL_BASIS: [[f32; 3]; 9] = [
 pub const SPECTRAL_MAX_SAMPLES: i32 = 64;
 
 /// Build `samples` spectral taps for the Wavelength dispersion (docs/08 §3.6,
-/// K-090; the "more samples" refinement, K-144). Each entry is
-/// `[r_weight, g_weight, b_weight, fraction]`: the RGB weight to multiply the
-/// tap's sample by, and the offset **fraction** in `[-1, +1]` (−1 = the red
-/// end, +1 = the blue end — the same direction the classic three-channel split
-/// disperses). The nine [`SPECTRAL_BASIS`] anchors are resampled by linear
-/// interpolation to `samples` evenly spaced taps, then each colour column is
-/// normalised to sum 1 across the taps, so a uniform image still passes through
-/// unchanged. More taps simply fill the same `±offset` span more densely, so a
-/// large offset disperses smoothly instead of showing a few discrete copies.
-/// Computed host-side in f64 then cast, so the CPU reference and the WGSL
-/// kernel (which reads the fraction straight from each tap's `w`) consume
-/// bit-identical `f32` numbers. `samples` is clamped to `3..=SPECTRAL_MAX_SAMPLES`
-/// — with only two taps the red and blue ends carry no green weight, so the
-/// dispersion needs at least the middle tap to keep the green channel alive.
-pub fn spectral_taps(samples: i32) -> Vec<[f32; 4]> {
+/// K-090; the "more samples" refinement K-144; picker-driven since A1/K-163).
+/// Each entry is `[r_weight, g_weight, b_weight, fraction]`: the RGB weight to
+/// multiply the tap's sample by, and the offset **fraction** in `[-1, +1]`
+/// (−1 = the `tints[0]` end, +1 = the `tints[2]` end). The colour column at each
+/// tap is the three-colour picker sampled as a gradient ([`tint_gradient`]),
+/// then each colour column is normalised to sum 1 across the taps, so a uniform
+/// image still passes through unchanged (the dispersion tints the fringe, never
+/// the exposure). More taps simply fill the same `±offset` span more densely, so
+/// a large offset disperses smoothly instead of showing a few discrete copies.
+/// Computed host-side in f64 then cast, so the CPU reference and the WGSL kernel
+/// (which reads the fraction straight from each tap's `w`) consume bit-identical
+/// `f32` numbers. `samples` is clamped to `3..=SPECTRAL_MAX_SAMPLES` so the
+/// middle stop (`tints[1]`) is always represented.
+pub fn spectral_taps(samples: i32, tints: [[f32; 3]; 3]) -> Vec<[f32; 4]> {
     let n = samples.clamp(3, SPECTRAL_MAX_SAMPLES) as usize;
-    // Interpolate the nine anchors (at fractions −1, −0.75, …, +1) at each of
-    // the `n` evenly spaced tap fractions.
     let mut taps: Vec<[f64; 4]> = Vec::with_capacity(n);
     for i in 0..n {
         let t = -1.0 + 2.0 * i as f64 / (n - 1) as f64;
-        // Anchor-index space: fraction −1 → 0, +1 → 8 (nine anchors, step 0.25).
-        let a = ((t + 1.0) * 4.0).clamp(0.0, 8.0);
-        let lo = a.floor() as usize;
-        let hi = (lo + 1).min(8);
-        let f = a - lo as f64;
-        let w = |c: usize| {
-            f64::from(SPECTRAL_BASIS[lo][c]) * (1.0 - f) + f64::from(SPECTRAL_BASIS[hi][c]) * f
-        };
-        taps.push([w(0), w(1), w(2), t]);
+        let c = tint_gradient(tints, t);
+        taps.push([c[0], c[1], c[2], t]);
     }
     // Normalise each colour column to sum 1 (uniform-image preservation).
     for c in 0..3 {
@@ -331,8 +328,11 @@ pub fn spectral_taps(samples: i32) -> Vec<[f32; 4]> {
 /// its offset fraction (the `w` lane). Entries beyond `count` are zero. Shares
 /// [`spectral_taps`] with the CPU reference, so both paths consume identical
 /// numbers.
-pub fn spectral_basis_uniform(samples: i32) -> ([[f32; 4]; SPECTRAL_MAX_SAMPLES as usize], u32) {
-    let taps = spectral_taps(samples);
+pub fn spectral_basis_uniform(
+    samples: i32,
+    tints: [[f32; 3]; 3],
+) -> ([[f32; 4]; SPECTRAL_MAX_SAMPLES as usize], u32) {
+    let taps = spectral_taps(samples, tints);
     let mut out = [[0.0f32; 4]; SPECTRAL_MAX_SAMPLES as usize];
     for (dst, src) in out.iter_mut().zip(taps.iter()) {
         *dst = *src;

@@ -468,19 +468,21 @@ Two mechanisms make this safe, and you'll see them by name in the code:
   raises coverage there, so the spill reads as light over transparency instead of
   stopping dead at the matte. At Intensity 0 the effect passes pixels through
   bit-exactly — a test pins that promise.
-- **RGB split gains a Wavelength mode** (K-090's quality-tier pattern: where physical
-  accuracy is optional, it hides behind a Bool next to the fast look). Off — the
-  default, and exactly the effect as it was, byte for byte — the split is three
-  samples: red pulled one way, blue the other, green in place. On, the kernel instead
-  takes *nine* samples spread along the same line, one per slice of the visible
-  spectrum from 650 nm red to 450 nm blue-violet, and weights each by that
-  wavelength's actual colour in linear RGB before summing — how real lens dispersion
-  works, so the fringe is a graded rainbow rather than a hard red/blue rim. The
-  wavelength→colour table lives in `lumit-core` next to the CPU reference and is
-  handed to the GPU kernel through its parameter block, so both paths read literally
-  the same numbers (the same trick as the host-computed sines). The table's columns
-  are normalised so a flat image passes through unchanged, and alpha still refuses to
-  move — mattes never grow coloured rims in either mode.
+- **RGB split gains a Wavelength mode** (K-090's quality-tier pattern: where the smooth
+  look is optional, it hides behind a Bool next to the fast one). Off — the default —
+  the split is three tinted samples: the first colour pulled one way, the third the
+  other, the second in place. On, the kernel instead takes many samples (up to 64)
+  spread along the same line and tints each by your three-colour picker blended into a
+  smooth gradient — the first colour at one end, the second in the middle, the third at
+  the other end (A1/K-163). So the fringe is a smooth graded band you control by colour,
+  and the default red / green / blue gives the familiar red→green→blue dispersion.
+  (Earlier this used a fixed physical spectrum table; the owner chose to let the picker
+  drive it instead, so changing the colours changes the fringe.) The gradient is worked
+  out once in `lumit-core` next to the CPU reference and handed to the GPU kernel through
+  its parameter block, so both paths read literally the same numbers (the same trick as
+  the host-computed sines). Its columns are normalised so a flat image passes through
+  unchanged — the fringe is tinted, not the exposure — and alpha still refuses to move,
+  so mattes never grow coloured rims in either mode.
 - **The Transform effect** (K-090, replacing the dropped smooth-zoom idea) is the layer
   transform group — Anchor, Position, Scale, Rotation, Opacity, same names and units —
   packaged as a stack effect. Why would you want a second transform? *Adjustment
@@ -560,12 +562,12 @@ Two mechanisms make this safe, and you'll see them by name in the code:
   *Two later additions (FX-9):* **per-channel amounts** — three sliders (Red / Green /
   Blue, defaults 100 / 0 / 100 per cent) that scale each channel's own shift, so you can
   fringe red harder than blue, or nudge green too; the defaults are exactly the classic
-  split. And in **Wavelength** mode there is now a **Samples** knob: that mode fakes a
-  rainbow by taking many samples along the shift and tinting each by a spectrum colour, and
-  at big shifts too few samples showed a handful of separate copies — Samples (default 16,
-  up to 64) fills the gap so it reads as a smooth rainbow. The samples are worked out once
-  on the CPU and handed to the GPU, the same trick as the sines, so preview and export
-  agree to the last bit.
+  split. And in **Wavelength** mode there is now a **Samples** knob: that mode makes a smooth
+  graded fringe by taking many samples along the shift and tinting each from your three-colour
+  picker's gradient (A1/K-163), and at big shifts too few samples showed a handful of separate
+  copies — Samples (default 16, up to 64) fills the gap so it reads as a smooth band. The samples
+  are worked out once on the CPU and handed to the GPU, the same trick as the sines, so preview
+  and export agree to the last bit.
 - **The reusable three-colour channel picker.** Some effects split a picture into three
   tinted channels; **Chromatic aberration** (below) is the first. Rather than three separate
   colour rows, those effects show one tidy row of three swatches (defaults red / green /

@@ -247,10 +247,11 @@ pub fn run_ops(
                 angle_deg,
                 radial,
                 samples,
+                tints,
                 mix,
             } => {
                 let (dx, dy) = lumit_core::fx::rgb_split_offset(*amount_px, *angle_deg);
-                let (basis, count) = lumit_core::fx::spectral_basis_uniform(*samples);
+                let (basis, count) = lumit_core::fx::spectral_basis_uniform(*samples, *tints);
                 tex = fx.spectral_split(
                     ctx,
                     &tex,

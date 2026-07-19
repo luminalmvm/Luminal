@@ -291,19 +291,25 @@ fn wgsl_spectral_split_matches_the_cpu_oracle() {
     let img = corpus(w, h);
     // Sweeps the sample count too (FX-9/K-144): 9 (the historical density), a
     // denser 24, and both range ends, so the variable-count kernel matches.
-    for (amount, angle, radial, samples, mix) in [
-        (3.0f32, 0.0f32, false, 9i32, 1.0f32),
-        (2.5, 33.0, false, 24, 0.6),
-        (4.0, 0.0, true, 16, 1.0),
-        (6.0, 10.0, false, 64, 1.0),
-        (5.0, 0.0, true, 3, 1.0),
-        (0.0, 90.0, false, 16, 1.0),
+    // The picker gradient (A1/K-163) is exercised with the default red/green/blue
+    // and one custom yellow→magenta→cyan set.
+    let rgb = [[1.0f32, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+    let custom = [[1.0f32, 1.0, 0.0], [1.0, 0.0, 1.0], [0.0, 1.0, 1.0]];
+    for (amount, angle, radial, samples, tints, mix) in [
+        (3.0f32, 0.0f32, false, 9i32, rgb, 1.0f32),
+        (2.5, 33.0, false, 24, rgb, 0.6),
+        (4.0, 0.0, true, 16, custom, 1.0),
+        (6.0, 10.0, false, 64, rgb, 1.0),
+        (5.0, 0.0, true, 3, custom, 1.0),
+        (0.0, 90.0, false, 16, rgb, 1.0),
     ] {
         let mut cpu = img.clone();
-        lumit_core::fx::cpu::spectral_split(&mut cpu, w, h, amount, angle, radial, samples, mix);
+        lumit_core::fx::cpu::spectral_split(
+            &mut cpu, w, h, amount, angle, radial, samples, tints, mix,
+        );
 
         let (dx, dy) = lumit_core::fx::rgb_split_offset(amount, angle);
-        let (basis, count) = lumit_core::fx::spectral_basis_uniform(samples);
+        let (basis, count) = lumit_core::fx::spectral_basis_uniform(samples, tints);
         let tex = upload_linear_f32(&ctx, &img, w, h);
         let op = SpectralSplitOp {
             dx,

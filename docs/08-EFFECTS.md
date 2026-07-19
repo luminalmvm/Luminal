@@ -470,9 +470,12 @@ and `full-frame` otherwise, `{0}` temporal.
 
 ### 3.6 RGB split
 
-**Quality (K-090):** a `Wavelength` Bool (default off) switches from the three-tap
-split to a wavelength-weighted dispersion (more samples across the visible spectrum,
-recombined in linear) for the higher-quality look; parameters are shared between modes.
+**Quality (K-090; picker-driven A1/K-163):** a `Wavelength` Bool (default off) switches from
+the three-tap split to a smooth dispersion (more samples across the offset span, recombined in
+linear) for the higher-quality look. The three-colour picker drives it: each spectral tap is
+tinted by the picker sampled as a gradient (Colour 1 → Colour 2 → Colour 3), so the default
+red / green / blue gives a red→green→blue fringe and any other colours re-tint it. Parameters
+are shared between modes.
 
 **Parameters:** Amount (0–10 % diag, default 0.4), Angle (degrees), Red / Green / Blue per-tap
 amounts (%), Colour 1 / 2 / 3 (the three tap tints), Wavelength (Bool), Samples (Wavelength
@@ -493,18 +496,20 @@ displace along −offset, tap 3 along +offset, so the 100 / 0 / 100 defaults (wi
 tints) reproduce the classic split bit-for-bit. They apply to the classic (non-Wavelength) mode
 only.
 
-**Tap tints (K-161, T17):** the same reusable three-colour picker §3.15 chromatic aberration
-carries (`channel_colour_1/2/3`, default red / green / blue) tints the three taps. The classic
-primaries reduce to the historical channel-separated split; other colours produce coloured
-fringes (a cyan/magenta split, a warm/cool split, and so on). Classic mode only — the Wavelength
-path is unaffected (see Open questions).
+**Tap tints (K-161, T17; K-163):** the same reusable three-colour picker §3.15 chromatic
+aberration carries (`channel_colour_1/2/3`, default red / green / blue) tints the taps. In the
+classic mode the primaries reduce to the historical channel-separated split; other colours
+produce coloured fringes (a cyan/magenta split, a warm/cool split, and so on). The picker drives
+the **Wavelength** mode too (A1/K-163): it defines the dispersion gradient there.
 
 **Wavelength samples (FX-9, K-144):** the Wavelength mode carries a **Samples** control (the
 tap count, `3..=64`, default 16). More taps fill the same `±offset` span more densely, so a
-large offset disperses as a smooth rainbow instead of a few discrete stacked copies. The taps
-(each a column-normalised RGB weight plus its offset fraction) are resampled from the nine
-`SPECTRAL_BASIS` anchors host-side and shared by the CPU reference and the WGSL kernel, so a
-uniform image still passes through unchanged and preview equals export (K-031).
+large offset disperses as a smooth fringe instead of a few discrete stacked copies. Each tap's
+colour is the three-colour picker sampled as a gradient at its offset fraction (A1/K-163:
+Colour 1 at the −offset end, Colour 2 at centre, Colour 3 at the +offset end); the colour
+columns are normalised across the taps host-side and shared by the CPU reference and the WGSL
+kernel, so a uniform image still passes through unchanged (the fringe is tinted, not the
+exposure) and preview equals export (K-031).
 
 **§3.15 Chromatic aberration** is the always-radial sibling shipped alongside this effect: the
 same three-tinted-tap idea, but growing radially from the frame centre rather than along an
@@ -867,11 +872,13 @@ Colour parameters `channel_colour_1/2/3` gets it automatically (see `channel_pic
 inspector) — §3.6 RGB split now does too (K-161), and any future three-tinted-channel effect
 adopts it without new UI code.
 
-**Wavelength (K-144):** a `Wavelength` Bool (default off) reuses §3.6 RGB split's own spectral
-machinery — turning on resolves the effect to a radial spectral split with a **Samples**
-control (3–64, default 16), the same many-tap dispersion RGB split's Wavelength mode uses, for
-a smooth rainbow fringe rather than the three tinted taps. The channel colours apply to the
-non-Wavelength mode only.
+**Wavelength (K-144; picker-driven A1/K-163):** a `Wavelength` Bool (default off) reuses §3.6
+RGB split's own spectral machinery — turning on resolves the effect to a radial spectral split
+with a **Samples** control (3–64, default 16), the same many-tap dispersion RGB split's
+Wavelength mode uses, for a smooth fringe rather than the three discrete tinted taps. The
+channel colours drive both modes: in Wavelength mode they define the dispersion gradient
+(Colour 1 → Colour 2 → Colour 3 across the offset span), so the default red / green / blue gives
+a red→green→blue fringe.
 
 **Status (v1, shipped):** the always-radial sibling of §3.6 RGB split (K-161, T17). RGB split
 is linear-only — three tinted taps along an Angle — and this effect is the same three-tinted-tap
@@ -1412,21 +1419,13 @@ mask parameters, "composite on original", effect-only precomps).
 5. **fp16 oracle tolerances.** The per-cost-class tolerance defaults in §1.6 are
    placeholders until the first three effects are implemented on both NVIDIA and AMD and
    real cross-vendor deltas are measured.
-6. **Should the three-colour picker drive Wavelength mode too? (A1, §3.6 / §3.15).** In the
-   classic split the `channel_colour_1/2/3` picker tints the three taps (K-161); in Wavelength
-   mode the fringe comes from the physically-based `SPECTRAL_BASIS`, so the picker does nothing
-   there — which the owner flagged as surprising. Three options: (a) leave Wavelength physical
-   and the picker classic-only (current); (b) tint each spectral tap by the picker-colour ramp
-   sampled at its offset fraction (colours modulate the rainbow, default red/green/blue shifts
-   the physical look); (c) replace the spectral basis with a smooth colour1→colour2→colour3
-   gradient across the offset span (Wavelength becomes a smooth version of the classic split,
-   fully picker-driven, abandoning the physical basis). (b)/(c) change the default Wavelength
-   look and need their own oracle updates — decide before wiring, then log the choice here.
-7. **Full blend-mode parity for Echo's Mode? (T21, §3.13).** Echo's Mode offers the two
-   compositing orders (Behind / In front) plus the order-independent light-combine blends, but
-   not the HSL, colour burn/dodge, or contrast-group modes a layer has — those are ill-defined
-   on a premultiplied linear light trail (they were designed for straight-alpha encoded pixels).
-   If a use case wants, say, a "Colour" or "Vivid light" echo, decide the semantics
-   (unpremultiply + encode per tap, matching the compositor, at the cost of the current
-   linear-light look) and log it here. For now the two lists deliberately differ; the shared
-   `BlendMode` catalogue drives the layer dropdown, Echo curates the subset that suits a trail.
+6. **~~Should the three-colour picker drive Wavelength mode too?~~ RESOLVED (A1/K-163).** The
+   owner chose to replace the physical `SPECTRAL_BASIS` with a smooth colour1→colour2→colour3
+   gradient across the offset span, so the picker fully drives the Wavelength fringe (default
+   red/green/blue → a red→green→blue dispersion). Implemented in `spectral_taps`; the old
+   physical basis is retired. Both effects' Wavelength modes are now picker-driven.
+7. **~~Full blend-mode parity for Echo's Mode?~~ RESOLVED (T21).** The owner confirmed it is fine
+   to exclude the HSL / colour burn/dodge / contrast-group modes from Echo — they are ill-defined
+   on a premultiplied linear light trail. Echo keeps its curated set (the two compositing orders
+   plus the order-independent light-combine blends); the shared `BlendMode` catalogue drives the
+   layer dropdown.

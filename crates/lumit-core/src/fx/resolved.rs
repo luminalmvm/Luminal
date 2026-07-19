@@ -252,6 +252,11 @@ pub enum Resolved {
         /// [`super::spectral_taps`] on both the CPU and GPU paths, so the enum
         /// stays `Copy` and both consume identical numbers.
         samples: i32,
+        /// The three-colour picker driving the dispersion gradient (A1/K-163):
+        /// `tints[0]` at the −offset end, `tints[1]` at centre, `tints[2]` at
+        /// +offset. `spectral_taps` builds the per-tap colours from these, so
+        /// the picker now controls the Wavelength fringe (default red/green/blue).
+        tints: [[f32; 3]; 3],
         /// 0..1.
         mix: f32,
     },
@@ -742,17 +747,32 @@ fn resolve_one(
             };
             let mix = (e.float_at("mix", lt).unwrap_or(100.0) as f32 / 100.0).clamp(0.0, 1.0);
             let amount_px = (amount_pct / 100.0 * diag_px).max(0.0);
+            // The three tap tints (T17/K-161): absent on pre-feature projects →
+            // the classic red / green / blue, which reproduce the historical
+            // channel-separated split and, in Wavelength mode (A1/K-163), a
+            // red→green→blue dispersion.
+            let tint = |id: &str, default: [f64; 4]| -> [f32; 3] {
+                let c = e.colour_at(id, lt).unwrap_or(default);
+                [c[0] as f32, c[1] as f32, c[2] as f32]
+            };
+            let tints = [
+                tint("channel_colour_1", [1.0, 0.0, 0.0, 1.0]),
+                tint("channel_colour_2", [0.0, 1.0, 0.0, 1.0]),
+                tint("channel_colour_3", [0.0, 0.0, 1.0, 1.0]),
+            ];
             Some(if wavelength {
                 // Wavelength mode ignores the per-tap scales; its tap count is
                 // the Samples parameter (absent on pre-feature projects → the
                 // default 16, denser than the historical 9). RGB split is now
                 // linear-only (T17), so the spectral sibling is never radial here.
+                // The picker drives the dispersion gradient (A1/K-163).
                 let samples = e.float_at("samples", lt).unwrap_or(16.0).round() as i32;
                 Resolved::SpectralSplit {
                     amount_px,
                     angle_deg,
                     radial: false,
                     samples,
+                    tints,
                     mix,
                 }
             } else {
@@ -760,13 +780,6 @@ fn resolve_one(
                 // pre-feature projects → the classic 1 / 0 / 1 defaults.
                 let scale =
                     |id: &str, default: f64| (e.float_at(id, lt).unwrap_or(default) / 100.0) as f32;
-                // The three tap tints (T17): absent on pre-feature projects →
-                // the classic red / green / blue, reproducing the historical
-                // channel-separated split.
-                let tint = |id: &str, default: [f64; 4]| -> [f32; 3] {
-                    let c = e.colour_at(id, lt).unwrap_or(default);
-                    [c[0] as f32, c[1] as f32, c[2] as f32]
-                };
                 Resolved::RgbSplit {
                     amount_px,
                     angle_deg,
@@ -775,11 +788,7 @@ fn resolve_one(
                         scale("green_amount", 0.0),
                         scale("blue_amount", 100.0),
                     ],
-                    tints: [
-                        tint("channel_colour_1", [1.0, 0.0, 0.0, 1.0]),
-                        tint("channel_colour_2", [0.0, 1.0, 0.0, 1.0]),
-                        tint("channel_colour_3", [0.0, 0.0, 1.0, 1.0]),
-                    ],
+                    tints,
                     mix,
                 }
             })
@@ -791,6 +800,19 @@ fn resolve_one(
             // a radial spectral split; off (and absent on pre-feature
             // projects) keeps the three tinted radial taps.
             let wavelength = matches!(e.param("wavelength"), Some(EffectValue::Bool(true)));
+            // The three channel colours (P2/K-143): absent on pre-feature
+            // projects → the classic red / green / blue, which reproduce the
+            // historical R-outward / B-inward / G-anchor split and, in Wavelength
+            // mode (A1/K-163), a red→green→blue dispersion.
+            let tint = |id: &str, default: [f64; 4]| -> [f32; 3] {
+                let c = e.colour_at(id, lt).unwrap_or(default);
+                [c[0] as f32, c[1] as f32, c[2] as f32]
+            };
+            let tints = [
+                tint("channel_colour_1", [1.0, 0.0, 0.0, 1.0]),
+                tint("channel_colour_2", [0.0, 1.0, 0.0, 1.0]),
+                tint("channel_colour_3", [0.0, 0.0, 1.0, 1.0]),
+            ];
             Some(if wavelength {
                 let samples = e.float_at("samples", lt).unwrap_or(16.0).round() as i32;
                 Resolved::SpectralSplit {
@@ -798,23 +820,13 @@ fn resolve_one(
                     angle_deg: 0.0,
                     radial: true,
                     samples,
+                    tints,
                     mix,
                 }
             } else {
-                // The three channel colours (P2/K-143): absent on pre-feature
-                // projects → the classic red / green / blue, which reproduce
-                // the historical R-outward / B-inward / G-anchor split.
-                let tint = |id: &str, default: [f64; 4]| -> [f32; 3] {
-                    let c = e.colour_at(id, lt).unwrap_or(default);
-                    [c[0] as f32, c[1] as f32, c[2] as f32]
-                };
                 Resolved::ChromaticAberration {
                     amount_px,
-                    tints: [
-                        tint("channel_colour_1", [1.0, 0.0, 0.0, 1.0]),
-                        tint("channel_colour_2", [0.0, 1.0, 0.0, 1.0]),
-                        tint("channel_colour_3", [0.0, 0.0, 1.0, 1.0]),
-                    ],
+                    tints,
                     mix,
                 }
             })
