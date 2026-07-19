@@ -452,24 +452,44 @@ impl Shell {
         page_heading(ui, theme, "Interface");
 
         settings_group(ui, theme, "Display", |ui| {
-            let mut scale = self.interface.ui_scale;
+            // The new scale applies on RELEASE, not per drag frame (owner):
+            // re-scaling mid-drag re-lays-out the slider under the cursor and
+            // the whole screen flickers between scales. The dragged value rides
+            // in temp data until the pointer lets go.
+            let pending_id = ui.id().with("ui-scale-pending");
+            let mut scale = ui
+                .data(|d| d.get_temp::<f32>(pending_id))
+                .unwrap_or(self.interface.ui_scale);
+            let mut slider = None;
             settings_row(
                 ui,
                 theme,
                 "UI scale",
                 Some("How large Lumit's interface draws relative to your display's native scale."),
                 |ui| {
-                    ui.add(
-                        egui::Slider::new(&mut scale, 0.75..=2.0)
-                            .step_by(0.05)
-                            .fixed_decimals(2)
-                            .suffix("×"),
+                    slider = Some(
+                        ui.add(
+                            egui::Slider::new(&mut scale, 0.75..=2.0)
+                                .step_by(0.05)
+                                .fixed_decimals(2)
+                                .suffix("×"),
+                        ),
                     );
                 },
             );
-            if scale != self.interface.ui_scale {
-                self.interface.ui_scale = scale;
-                ctx.set_pixels_per_point(scale);
+            if let Some(resp) = slider {
+                if resp.dragged() {
+                    ui.data_mut(|d| d.insert_temp(pending_id, scale));
+                }
+                // Apply once: on drag release, or on a click-jump on the track.
+                let commit = resp.drag_stopped() || (resp.changed() && !resp.dragged());
+                if commit {
+                    ui.data_mut(|d| d.remove::<f32>(pending_id));
+                    if (scale - self.interface.ui_scale).abs() > 1e-3 {
+                        self.interface.ui_scale = scale;
+                        ctx.set_pixels_per_point(scale);
+                    }
+                }
             }
 
             settings_divider(ui, theme);

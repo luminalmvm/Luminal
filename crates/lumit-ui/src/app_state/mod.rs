@@ -154,6 +154,46 @@ pub(crate) fn merge_paste_keys(
     out
 }
 
+/// Rebuild pasted keys' bezier influences from their recorded ABSOLUTE handle
+/// lengths (T5): for each pasted key (found in the merged list by time within
+/// `tol`), each bezier side's influence becomes `length / destination gap`,
+/// clamped to (0.01, 1] — the handle keeps its real length regardless of how
+/// far the new neighbours sit, shortening only when a neighbour is closer than
+/// the handle reached. Sides without a recorded length (non-bezier, or the key
+/// was an endpoint at copy time) keep their stored influence. Pure, unit-tested.
+pub(crate) fn restore_handle_lengths(
+    keys: &mut [lumit_core::anim::Keyframe],
+    pasted: &[(f64, Option<f64>, Option<f64>)],
+    tol: f64,
+) {
+    use lumit_core::anim::SideInterp;
+    for &(t, in_len, out_len) in pasted {
+        let Some(i) = keys.iter().position(|k| (k.time.to_f64() - t).abs() < tol) else {
+            continue;
+        };
+        if let Some(len) = in_len {
+            if i > 0 {
+                let gap = keys[i].time.to_f64() - keys[i - 1].time.to_f64();
+                if gap > 1e-9 {
+                    if let SideInterp::Bezier { influence, .. } = &mut keys[i].interp_in {
+                        *influence = (len / gap).clamp(0.01, 1.0);
+                    }
+                }
+            }
+        }
+        if let Some(len) = out_len {
+            if i + 1 < keys.len() {
+                let gap = keys[i + 1].time.to_f64() - keys[i].time.to_f64();
+                if gap > 1e-9 {
+                    if let SideInterp::Bezier { influence, .. } = &mut keys[i].interp_out {
+                        *influence = (len / gap).clamp(0.01, 1.0);
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// A change-detection fingerprint of a comp's mixed audio: the ordered set of
 /// contributing sources with their comp-timeline placement, plus the mix length
 /// (the comp duration). Any edit that changes what the comp sounds like — mute,
@@ -312,8 +352,12 @@ pub enum EyedropperMode {
     Depth,
     /// Pick a POSITION (T14): the clicked pixel's comp x/y are written to a pair
     /// of Float parameters — the x goes to [`EyedropperTarget::param`], the y to
-    /// `y_param`. Used by the combined X/Y effect row's viewfinder picker.
-    Position { y_param: usize },
+    /// `y_param`. When `percent_of_comp` is set the pair stores per-cent values
+    /// (the `centre_x/y` convention), so the comp pixel converts to % on commit.
+    Position {
+        y_param: usize,
+        percent_of_comp: bool,
+    },
 }
 
 /// An armed eyedropper: which effect parameter the next Viewer click writes,
@@ -568,6 +612,14 @@ pub struct ClipboardKey {
     /// Time of this key minus the earliest copied key's time (seconds).
     pub offset: f64,
     pub key: lumit_core::anim::Keyframe,
+    /// The ABSOLUTE lengths (seconds) of this key's bezier handles at copy
+    /// time — influence × the source neighbour gap (T5). On paste the
+    /// influences are rebuilt from these against the destination gaps, so a
+    /// handle keeps its real length wherever it lands, clamping to the gap
+    /// when a neighbour sits closer than the handle reached. None when the
+    /// side is not bezier, or the key had no neighbour on that side.
+    pub in_len: Option<f64>,
+    pub out_len: Option<f64>,
 }
 
 pub struct AppState {

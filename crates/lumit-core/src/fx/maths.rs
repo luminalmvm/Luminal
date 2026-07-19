@@ -330,6 +330,26 @@ pub fn rgb_split_offset(amount_px: f32, angle_deg: f32) -> (f32, f32) {
 /// f32 ULP) so a uniform image passes through unchanged. The CPU reference
 /// reads this table directly and the WGSL kernel receives it in its
 /// uniform, so both paths consume bit-identical numbers.
+/// Normalise a three-tap tint set per CHANNEL so the taps sum to 1 in each of
+/// r, g and b (owner T17 retest / K-167): wherever the three taps sample the
+/// same colour (an aligned, locally uniform region), the tinted sum then
+/// reproduces the input exactly — the picker recolours only the misaligned
+/// fringes, never the whole picture. A channel whose three tints are all 0
+/// stays 0 (that channel is deliberately removed; no divide-by-zero). The
+/// default red / green / blue set is already normalised, so the classic split
+/// stays bit-exact.
+pub fn normalise_tint_columns(mut tints: [[f32; 3]; 3]) -> [[f32; 3]; 3] {
+    for c in 0..3 {
+        let sum = tints[0][c] + tints[1][c] + tints[2][c];
+        if sum > 1e-6 {
+            for t in &mut tints {
+                t[c] /= sum;
+            }
+        }
+    }
+    tints
+}
+
 /// The three picker colours sampled as a smooth gradient at offset fraction
 /// `t ∈ [-1, +1]` (A1/K-163): `tints[0]` at −1, `tints[1]` at 0, `tints[2]`
 /// at +1, linearly interpolated between the stops. This gradient replaces the

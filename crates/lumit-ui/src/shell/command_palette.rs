@@ -223,9 +223,19 @@ impl Shell {
                         .comp(comp)
                         .and_then(|c| c.layers.iter().find(|l| l.id == layer_id))
                         .map(|l| l.effects.clone());
-                    if let (Some(mut effects), Some(inst)) =
-                        (current, lumit_core::fx::instantiate(name))
-                    {
+                    let nat = doc
+                        .comp(comp)
+                        .and_then(|c| {
+                            c.layers
+                                .iter()
+                                .find(|l| l.id == layer_id)
+                                .map(|l| crate::shell::inspector::mask_space(l, &self.app, c))
+                        })
+                        .unwrap_or((1920.0, 1080.0));
+                    if let (Some(mut effects), Some(inst)) = (
+                        current,
+                        lumit_core::fx::instantiate_for_raster(name, nat.0, nat.1),
+                    ) {
                         // Select the fresh effect and land on its controls
                         // (owner).
                         let idx = effects.len();

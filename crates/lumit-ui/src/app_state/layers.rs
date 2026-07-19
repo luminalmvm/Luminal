@@ -503,16 +503,24 @@ impl AppState {
             .fold(f64::INFINITY, f64::min);
         self.keyframe_clipboard = collected
             .into_iter()
-            .map(|(layer, row, t, key)| ClipboardKey {
-                layer,
-                row,
-                offset: t - anchor,
-                key,
+            .map(|(layer, row, t, key)| {
+                // Record the bezier handles' ABSOLUTE lengths against the
+                // source neighbours (T5), so paste can rebuild the influences.
+                let (in_len, out_len) = bezier_side_lengths(comp, layer, row, t, tol);
+                ClipboardKey {
+                    layer,
+                    row,
+                    offset: t - anchor,
+                    key,
+                    in_len,
+                    out_len,
+                }
             })
             .collect();
     }
 
     /// The lane-selection half of [`Self::copy_selected_keyframes`]: resolve
+    /// (see also [`bezier_side_lengths`], the T5 handle-length capture).
     /// every selected lane key against the document and push the found
     /// keyframes.
     #[allow(clippy::type_complexity)]
@@ -635,8 +643,9 @@ impl AppState {
 
         // Group the pasted keys per (layer, transform channel) and (layer, effect
         // index, param index), placing each at the playhead plus its offset.
-        let mut tf: Vec<(Uuid, TransformProp, Vec<Keyframe>)> = Vec::new();
-        let mut fx: Vec<(Uuid, usize, usize, Vec<Keyframe>)> = Vec::new();
+        type Lens = Vec<(f64, Option<f64>, Option<f64>)>;
+        let mut tf: Vec<(Uuid, TransformProp, Vec<Keyframe>, Lens)> = Vec::new();
+        let mut fx: Vec<(Uuid, usize, usize, Vec<Keyframe>, Lens)> = Vec::new();
         let mut new_sel: Vec<LaneKeySel> = Vec::new();
         for c in &self.keyframe_clipboard {
             let Some(layer) = comp.layers.iter().find(|l| l.id == c.layer) else {
@@ -651,20 +660,30 @@ impl AppState {
                 row: c.row,
                 time,
             });
+            let len_entry = (time.to_f64(), c.in_len, c.out_len);
             match c.row {
                 PropRow::Transform(prop) => {
-                    match tf.iter_mut().find(|(l, p, _)| *l == c.layer && *p == prop) {
-                        Some((_, _, ks)) => ks.push(key),
-                        None => tf.push((c.layer, prop, vec![key])),
+                    match tf
+                        .iter_mut()
+                        .find(|(l, p, _, _)| *l == c.layer && *p == prop)
+                    {
+                        Some((_, _, ks, ls)) => {
+                            ks.push(key);
+                            ls.push(len_entry);
+                        }
+                        None => tf.push((c.layer, prop, vec![key], vec![len_entry])),
                     }
                 }
                 PropRow::Effect { effect, param } => {
                     match fx
                         .iter_mut()
-                        .find(|(l, e, p, _)| *l == c.layer && *e == effect && *p == param)
+                        .find(|(l, e, p, _, _)| *l == c.layer && *e == effect && *p == param)
                     {
-                        Some((_, _, _, ks)) => ks.push(key),
-                        None => fx.push((c.layer, effect, param, vec![key])),
+                        Some((_, _, _, ks, ls)) => {
+                            ks.push(key);
+                            ls.push(len_entry);
+                        }
+                        None => fx.push((c.layer, effect, param, vec![key], vec![len_entry])),
                     }
                 }
                 // Retime keys are not on the lane clipboard (see copy above).
@@ -673,7 +692,7 @@ impl AppState {
         }
 
         let mut ops: Vec<Op> = Vec::new();
-        for (layer_id, prop, pasted) in &tf {
+        for (layer_id, prop, pasted, lens) in &tf {
             let Some(layer) = comp.layers.iter().find(|l| l.id == *layer_id) else {
                 continue;
             };
@@ -681,11 +700,13 @@ impl AppState {
                 Animation::Keyframed(k) => k.clone(),
                 Animation::Static(_) => Vec::new(),
             };
+            let mut merged = merge_paste_keys(&existing, pasted, tol);
+            restore_handle_lengths(&mut merged, lens, tol);
             ops.push(Op::SetTransformProperty {
                 comp: comp_id,
                 layer: *layer_id,
                 prop: *prop,
-                animation: Animation::Keyframed(merge_paste_keys(&existing, pasted, tol)),
+                animation: Animation::Keyframed(merged),
             });
         }
         // Effect params: one SetLayerEffects per layer, all its params folded in.
@@ -701,15 +722,16 @@ impl AppState {
             };
             let mut effects = layer.effects.clone();
             let mut touched = false;
-            for (_l, e, p, pasted) in fx.iter().filter(|(l, ..)| *l == layer_id) {
+            for (_l, e, p, pasted, lens) in fx.iter().filter(|(l, ..)| *l == layer_id) {
                 if let Some(param) = effects.get_mut(*e).and_then(|inst| inst.params.get_mut(*p)) {
                     if let EffectValue::Float(prop) = &mut param.value {
                         let existing: Vec<Keyframe> = match &prop.animation {
                             Animation::Keyframed(k) => k.clone(),
                             Animation::Static(_) => Vec::new(),
                         };
-                        prop.animation =
-                            Animation::Keyframed(merge_paste_keys(&existing, pasted, tol));
+                        let mut merged = merge_paste_keys(&existing, pasted, tol);
+                        restore_handle_lengths(&mut merged, lens, tol);
+                        prop.animation = Animation::Keyframed(merged);
                         touched = true;
                     }
                 }
@@ -1211,4 +1233,58 @@ impl AppState {
         #[cfg(feature = "media")]
         self.refresh_preview();
     }
+}
+
+/// The ABSOLUTE lengths (seconds) of a key's bezier handles against its SOURCE
+/// neighbours at copy time (T5): `influence × neighbour gap` per side. None for
+/// a non-bezier side, an endpoint (no neighbour), or a channel that no longer
+/// resolves. Pure — paste rebuilds influences from these against the
+/// destination gaps (`restore_handle_lengths`).
+fn bezier_side_lengths(
+    comp: &lumit_core::model::Composition,
+    layer_id: Uuid,
+    row: PropRow,
+    t: f64,
+    tol: f64,
+) -> (Option<f64>, Option<f64>) {
+    use lumit_core::anim::{Animation, SideInterp};
+    use lumit_core::model::EffectValue;
+    let Some(layer) = comp.layers.iter().find(|l| l.id == layer_id) else {
+        return (None, None);
+    };
+    let keys: Vec<lumit_core::anim::Keyframe> = match row {
+        PropRow::Transform(prop) => match &layer.transform.get(prop).animation {
+            Animation::Keyframed(k) => k.clone(),
+            Animation::Static(_) => return (None, None),
+        },
+        PropRow::Effect { effect, param } => {
+            let Some(p) = layer.effects.get(effect).and_then(|e| e.params.get(param)) else {
+                return (None, None);
+            };
+            match &p.value {
+                EffectValue::Float(prop) => match &prop.animation {
+                    Animation::Keyframed(k) => k.clone(),
+                    Animation::Static(_) => return (None, None),
+                },
+                _ => return (None, None),
+            }
+        }
+        PropRow::Retime => return (None, None),
+    };
+    let Some(i) = keys.iter().position(|k| (k.time.to_f64() - t).abs() < tol) else {
+        return (None, None);
+    };
+    let in_len = (i > 0)
+        .then(|| keys[i].time.to_f64() - keys[i - 1].time.to_f64())
+        .and_then(|gap| match keys[i].interp_in {
+            SideInterp::Bezier { influence, .. } => Some(influence * gap),
+            _ => None,
+        });
+    let out_len = (i + 1 < keys.len())
+        .then(|| keys[i + 1].time.to_f64() - keys[i].time.to_f64())
+        .and_then(|gap| match keys[i].interp_out {
+            SideInterp::Bezier { influence, .. } => Some(influence * gap),
+            _ => None,
+        });
+    (in_len, out_len)
 }

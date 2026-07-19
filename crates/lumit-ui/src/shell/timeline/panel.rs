@@ -581,7 +581,10 @@ pub(crate) fn timeline_panel(ui: &mut egui::Ui, theme: &Theme, app: &mut AppStat
                         r
                     };
                     if let Some(payload) = dnd_release_of::<EffectDragPayload>(&drop) {
-                        if let Some(inst) = lumit_core::fx::instantiate(payload.0) {
+                        let (nat_w, nat_h) = mask_space(layer, app, comp);
+                        if let Some(inst) =
+                            lumit_core::fx::instantiate_for_raster(payload.0, nat_w, nat_h)
+                        {
                             // Select the fresh effect and land on its controls
                             // (owner).
                             app.focus_applied_effect(

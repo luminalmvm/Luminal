@@ -183,36 +183,55 @@ pub(crate) fn effect_xy_row(
             .color(ctx.theme.text_muted),
     );
 
+    // Percent-of-raster pairs (the `centre_x/y` convention, owner T14 retest)
+    // display and edit in PIXELS of the layer's own raster: the stored % is
+    // shown as px (50 % of a 1920-wide layer reads 960), and a typed px value
+    // writes back as %. Ordinary px pairs use factor 1.
+    let percent_pair = e.params[xi].id == "centre_x";
+    let (nat_w, nat_h) = if percent_pair {
+        mask_space(layer, app, ctx.comp)
+    } else {
+        (1.0, 1.0)
+    };
+    let (fx_scale, fy_scale) = if percent_pair {
+        (nat_w / 100.0, nat_h / 100.0)
+    } else {
+        (1.0, 1.0)
+    };
+
     // Two value boxes (x, y), each live-previewing and committing its own axis.
-    let mut axis_box = |c: &mut egui::Ui, ai: usize, p: &Property| {
-        let committed = p.value_at(ctx.lt);
+    // `f` converts the stored value to the displayed one (px = stored × f).
+    let mut axis_box = |c: &mut egui::Ui, ai: usize, p: &Property, f: f64| {
+        let f = if f.abs() < 1e-9 { 1.0 } else { f };
+        let committed = p.value_at(ctx.lt) * f;
         let id = egui::Id::new(("fxxy", e.id, ai));
         let mut v = c.data(|d| d.get_temp::<f64>(id)).unwrap_or(committed);
-        let lo = hard.0.unwrap_or(f64::NEG_INFINITY);
-        let hi = hard.1.unwrap_or(f64::INFINITY);
+        let lo = hard.0.map_or(f64::NEG_INFINITY, |b| b * f);
+        let hi = hard.1.map_or(f64::INFINITY, |b| b * f);
         let resp = c.add(
             egui::DragValue::new(&mut v)
-                .speed((slider.1 - slider.0).abs().max(1.0) / 200.0)
+                .speed((slider.1 - slider.0).abs().max(1.0) / 200.0 * f)
                 .range(lo..=hi)
                 .max_decimals(2),
         );
         if resp.dragged() || resp.has_focus() {
             c.data_mut(|d| d.insert_temp(id, v));
-            *fx_edit = Some((layer.id, idx, ai, v));
+            *fx_edit = Some((layer.id, idx, ai, v / f));
         }
         if (resp.drag_stopped() || resp.lost_focus()) && (v - committed).abs() > 1e-9 {
+            let stored = v / f;
             let animation = if p.is_animated() {
-                Animation::Keyframed(upsert_key(p, ctx.lt, v))
+                Animation::Keyframed(upsert_key(p, ctx.lt, stored))
             } else {
-                Animation::Static(v)
+                Animation::Static(stored)
             };
             *pending = Some(write_axis(ai, animation));
             c.data_mut(|d| d.remove::<f64>(id));
         }
     };
     snap_to_value_column(&mut c);
-    axis_box(&mut c, xi, &xf);
-    axis_box(&mut c, yi, &yf);
+    axis_box(&mut c, xi, &xf, fx_scale);
+    axis_box(&mut c, yi, &yf, fy_scale);
 
     // Viewfinder pixel-picker (T14): arm the eyedropper in Position mode so the
     // next Viewer click writes the clicked comp x/y into this pair — the x/y
@@ -235,7 +254,10 @@ pub(crate) fn effect_xy_row(
                 layer: layer.id,
                 effect: idx,
                 param: xi,
-                mode: EyedropperMode::Position { y_param: yi },
+                mode: EyedropperMode::Position {
+                    y_param: yi,
+                    percent_of_comp: percent_pair,
+                },
             },
         );
     }
@@ -369,7 +391,10 @@ pub(crate) fn effects_rows(
                     ui.menu_button(cat.label(), |ui| {
                         for schema in members {
                             if ui.button(schema.label).clicked() {
-                                if let Some(inst) = fx::instantiate(schema.match_name) {
+                                let (nat_w, nat_h) = mask_space(layer, app, ctx.comp);
+                                if let Some(inst) =
+                                    fx::instantiate_for_raster(schema.match_name, nat_w, nat_h)
+                                {
                                     // Select the fresh effect and land on its
                                     // controls (owner).
                                     app.focus_applied_effect(

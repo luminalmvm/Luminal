@@ -56,7 +56,9 @@ pub(crate) fn layer_context_menu(
             ui.menu_button(cat.label(), |ui| {
                 for schema in members {
                     if ui.button(schema.label).clicked() {
-                        if let Some(inst) = fx::instantiate(schema.match_name) {
+                        if let Some(inst) =
+                            fx::instantiate_for_raster(schema.match_name, mask.0, mask.1)
+                        {
                             *applied_effect = Some((layer.effects.len(), inst.params.len()));
                             let mut effects = layer.effects.clone();
                             effects.push(inst);

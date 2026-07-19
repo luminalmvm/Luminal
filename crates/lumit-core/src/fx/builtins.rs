@@ -2549,6 +2549,27 @@ pub fn fresh_seed() -> u32 {
 }
 
 /// A new instance of a built-in, carrying the declared defaults.
+/// [`instantiate`], then centre any raster-anchored defaults on the target
+/// raster (owner T23): the Transform effect's Anchor and Position default to
+/// the raster's centre so a fresh instance rotates and scales about the
+/// middle, not the 0,0 corner — a schema constant cannot know the raster, so
+/// the apply site passes it. Every UI apply path calls this; plain
+/// [`instantiate`] keeps the pure schema defaults (tests, presets).
+pub fn instantiate_for_raster(match_name: &str, w: f64, h: f64) -> Option<EffectInstance> {
+    let mut inst = instantiate(match_name)?;
+    if match_name == "transform" {
+        for p in &mut inst.params {
+            let v = match p.id.as_str() {
+                "anchor_x" | "position_x" => w * 0.5,
+                "anchor_y" | "position_y" => h * 0.5,
+                _ => continue,
+            };
+            p.value = EffectValue::Float(Property::fixed(v));
+        }
+    }
+    Some(inst)
+}
+
 pub fn instantiate(match_name: &str) -> Option<EffectInstance> {
     let s = schema(match_name)?;
     Some(EffectInstance {

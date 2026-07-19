@@ -833,7 +833,9 @@ fn resolve_one(
                         scale("green_amount", 0.0),
                         scale("blue_amount", 100.0),
                     ],
-                    tints,
+                    // Normalised per channel (K-167): aligned regions pass
+                    // through unchanged; the picker tints only the fringes.
+                    tints: super::normalise_tint_columns(tints),
                     mix,
                 }
             })
@@ -871,7 +873,9 @@ fn resolve_one(
             } else {
                 Resolved::ChromaticAberration {
                     amount_px,
-                    tints,
+                    // Normalised per channel (K-167), like RGB split's classic
+                    // mode: only the misaligned fringes take the colours.
+                    tints: super::normalise_tint_columns(tints),
                     mix,
                 }
             })

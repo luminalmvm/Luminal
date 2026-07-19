@@ -531,7 +531,10 @@ pub(crate) fn viewer_footage(
             app.last_display_scale = scale;
             let draw =
                 egui::Rect::from_center_size(image_area.center() + app.view_pan, natural * scale);
-            ui.painter().image(
+            // Clip the picture to the image area (owner T11 retest,
+            // Screenshot_148): a zoomed or panned frame was painted unclipped,
+            // so it bled over the panel's edges and rounded corners.
+            ui.painter().with_clip_rect(image_area).image(
                 id,
                 draw,
                 egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
@@ -564,11 +567,19 @@ pub(crate) fn viewer_footage(
     }
 
     // Viewer bar: resolution picker · scrub · frame readout (07-UI-SPEC §2).
+    // Its bottom corners take the theme's card radius (owner T11 retest,
+    // Screenshot_148 bottom-left): rounded under Round, square under Sharp.
     let bar = egui::Rect::from_min_max(egui::pos2(rect.min.x, rect.max.y - bar_h), rect.max);
+    let bar_round = egui::CornerRadius {
+        sw: theme.tokens.card_radius,
+        se: theme.tokens.card_radius,
+        ..egui::CornerRadius::ZERO
+    };
     ui.scope_builder(egui::UiBuilder::new().max_rect(bar), |ui| {
         egui::Frame::new()
             .fill(theme.surface_1)
             .stroke(egui::Stroke::new(1.0_f32, theme.hairline))
+            .corner_radius(bar_round)
             .inner_margin(egui::Margin::symmetric(8, 4))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {

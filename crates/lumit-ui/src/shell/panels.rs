@@ -1282,7 +1282,11 @@ pub(crate) fn effect_controls_panel(ui: &mut egui::Ui, theme: &Theme, app: &mut 
             egui::Sense::hover(),
         );
         if let Some(payload) = dnd_release_of::<EffectDragPayload>(&drop) {
-            if let Some(inst) = lumit_core::fx::instantiate(payload.0) {
+            let nat = doc
+                .comp(comp_id)
+                .map(|c| mask_space(layer, app, c))
+                .unwrap_or((1920.0, 1080.0));
+            if let Some(inst) = lumit_core::fx::instantiate_for_raster(payload.0, nat.0, nat.1) {
                 // Select the fresh effect (owner) — already on its controls here.
                 app.focus_applied_effect(layer_id, layer.effects.len(), inst.params.len());
                 let mut effects = layer.effects.clone();

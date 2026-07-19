@@ -358,8 +358,22 @@ fn commit_sample(app: &mut AppState, target: EyedropperTarget, sample: Sample) {
     // A position pick (T14) writes TWO Float params: x to `param`, y to the
     // mode's `y_param`. Handled before the single-param match below.
     if let Sample::Position(x, y) = sample {
-        let crate::app_state::EyedropperMode::Position { y_param } = target.mode else {
+        let crate::app_state::EyedropperMode::Position {
+            y_param,
+            percent_of_comp,
+        } = target.mode
+        else {
             return;
+        };
+        // Percent-stored pairs take the click as a fraction of the comp frame
+        // (the raster the picked pixel lives in), not raw pixels.
+        let (x, y) = if percent_of_comp {
+            (
+                x / f64::from(comp.width.max(1)) * 100.0,
+                y / f64::from(comp.height.max(1)) * 100.0,
+            )
+        } else {
+            (x, y)
         };
         if y_param >= params.len() {
             return;

@@ -1615,6 +1615,32 @@ fn chromatic_aberration_wavelength_reuses_the_spectral_split() {
     );
 }
 
+/// K-167: with the classic tints normalised per channel, a UNIFORM image passes
+/// through the classic split unchanged whatever colours the picker holds — the
+/// picker tints only the misaligned fringes, never the whole picture (the
+/// owner's "only affect the parts that aren't aligned").
+#[test]
+fn normalised_tints_leave_a_uniform_image_unchanged() {
+    let raw = [[0.9f32, 0.4, 0.0], [0.2, 0.5, 0.3], [0.1, 0.8, 0.6]];
+    let tints = normalise_tint_columns(raw);
+    for c in 0..3usize {
+        let sum: f32 = tints.iter().map(|t| t[c]).sum();
+        assert!((sum - 1.0).abs() < 1e-6, "channel {c} sums to {sum}");
+    }
+    // A uniform frame through the classic split with those tints: unchanged
+    // within float rounding (every tap samples the same colour).
+    let (w, h) = (8u32, 6u32);
+    let mut img = vec![0.0f32; (w * h * 4) as usize];
+    for px in img.chunks_exact_mut(4) {
+        px.copy_from_slice(&[0.7, 0.3, 0.55, 1.0]);
+    }
+    let before = img.clone();
+    cpu::rgb_split(&mut img, w, h, 2.0, 30.0, [1.0, 0.0, 1.0], tints, 1.0);
+    for (a, b) in img.iter().zip(&before) {
+        assert!((a - b).abs() < 1e-5, "{a} vs {b}");
+    }
+}
+
 #[test]
 fn wavelength_mode_honours_the_channel_picker() {
     // A1/K-163: the three-colour picker now drives the Wavelength dispersion,
@@ -1683,7 +1709,13 @@ fn chromatic_aberration_custom_channel_colours_resolve_as_tints() {
         r,
         vec![Resolved::ChromaticAberration {
             amount_px: 4.0,
-            tints: [[1.0, 0.0, 0.0], [0.5, 0.25, 0.75], [0.0, 0.0, 1.0]],
+            // Normalised per channel (K-167): r column 1 + 0.5 → 2/3, 1/3;
+            // g column 0.25 alone → 1; b column 0.75 + 1 → 3/7, 4/7.
+            tints: [
+                [1.0 / 1.5, 0.0, 0.0],
+                [0.5 / 1.5, 1.0, 0.75 / 1.75],
+                [0.0, 0.0, 1.0 / 1.75]
+            ],
             mix: 1.0
         }]
     );

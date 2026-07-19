@@ -728,6 +728,39 @@ fn copy_uses_the_graph_selection_when_the_lanes_are_empty() {
     );
 }
 
+/// T5: pasted bezier handles keep their ABSOLUTE length. A key copied with a
+/// 0.5 s out-handle (influence 0.25 over a 2 s source gap) pasted where the
+/// next key sits 1 s away gets influence 0.5 — same real length; and where the
+/// next key sits 0.25 s away the influence clamps to 1 (the whole gap).
+#[test]
+fn pasted_bezier_handles_keep_their_length_and_clamp_to_the_gap() {
+    use lumit_core::anim::{Keyframe, SideInterp};
+    let key = |t: f64, out: SideInterp| Keyframe {
+        time: Rational::from_f64_on_grid(t, Rational::FLICK_DEN).unwrap(),
+        value: 0.0,
+        interp_in: SideInterp::Linear,
+        interp_out: out,
+    };
+    let bez = SideInterp::Bezier {
+        speed: 0.0,
+        influence: 0.9, // stale influence; the recorded LENGTH must win
+    };
+    // Destination A: pasted key at 1.0, next at 2.0 (1 s gap).
+    let mut a = vec![key(1.0, bez), key(2.0, SideInterp::Linear)];
+    crate::app_state::restore_handle_lengths(&mut a, &[(1.0, None, Some(0.5))], 0.01);
+    let SideInterp::Bezier { influence, .. } = a[0].interp_out else {
+        panic!("stayed bezier");
+    };
+    assert!((influence - 0.5).abs() < 1e-9, "0.5 s over a 1 s gap");
+    // Destination B: next key only 0.25 s away → clamps to the whole gap.
+    let mut b = vec![key(1.0, bez), key(1.25, SideInterp::Linear)];
+    crate::app_state::restore_handle_lengths(&mut b, &[(1.0, None, Some(0.5))], 0.01);
+    let SideInterp::Bezier { influence, .. } = b[0].interp_out else {
+        panic!("stayed bezier");
+    };
+    assert!((influence - 1.0).abs() < 1e-9, "clamped to the gap");
+}
+
 /// A3: the Project panel's multi-selection model. A plain select is single; a
 /// Ctrl/Shift toggle seeds from the current single selection and then adds or
 /// removes; `project_selection` and `is_item_selected` follow either mode.
