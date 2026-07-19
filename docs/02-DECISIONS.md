@@ -1419,3 +1419,21 @@ no-op (its sampled draws are sized for the nested comp); it takes precedence ove
 an adjustment somehow carries both; sub-frame sample-count reduction under draft/scrub is a
 tracked follow-up (full N always on export). Concurrent-worktree risk: another agent may also
 claim K-134 — renumber on merge if so. Built in an isolated worktree; not pushed.
+
+**K-139 · DECIDED · The accumulation temporal effect is *the* "Motion blur"; it gains "Force on
+all layers" (docs/08 §3.26).** The accumulation re-render effect (K-134) is renamed from
+"Accumulation motion blur" to plain **Motion blur** — the correct, whole-scene kind takes the
+user-facing name — and the optical-flow effect (§3.2) is renamed to **Fast motion blur** so the
+two never collide (the per-layer transform motion-blur *switch*, K-120, is untouched — it is a
+layer switch, not an effect). New bool parameter **Force on all layers** (default off): during
+each sub-frame sample render every layer's own per-layer motion blur (K-120) is forced on, the
+effect's own Shutter angle/phase/Samples standing in for the comp master and each layer's switch,
+so one effect blurs every moving layer without toggling each one and each accumulation sample is
+itself transform-smeared (smoother at low sample counts). Implemented WITHOUT mutating the comp:
+`AccumulationMbParams::forced_layer_mb()` hands a `MotionBlur` to `below_draws_at`, which drops
+it onto the sample render's cloned comp master and every layer switch — the document and the
+live-below composite are untouched, and preview and export drive the identical forced sample
+render (K-031). Boundary: the force reaches the top-level below layers; nested-Precomp inner
+layers keep their own switches (a v1 follow-up). Renaming is label-only — the `accumulation_mb`
+/ `motion_blur` match names and saved projects are unchanged. Concurrent-worktree risk: another
+agent may also claim K-139 — renumber on merge if so. Built in an isolated worktree; not pushed.

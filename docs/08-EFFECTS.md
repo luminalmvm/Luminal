@@ -188,7 +188,7 @@ specified in §3.1's original text but surfaced as layer UI, not an effect. Summ
 
 | # | Effect | Replaces | Cost | Temporal window |
 |---|---|---|---|---|
-| 3.2 | Motion blur (flow) | RSMB | heavy | `{-1, 0, +1}` |
+| 3.2 | Fast motion blur (flow) | RSMB | heavy | `{-1, 0, +1}` |
 | 3.3 | Glow | Deep Glow | moderate | `{0}` |
 | 3.4 | Shake | Sapphire S_Shake | cheap | `{0}` |
 | 3.5 | Transform | AE's Transform effect | trivial | `{0}` |
@@ -214,7 +214,7 @@ specified in §3.1's original text but surfaced as layer UI, not an effect. Summ
 | 3.23 | Invert | stock CC pack invert | cheap | `{0}` |
 | 3.24 | Tint | AE Tint / duotone | cheap | `{0}` |
 | 3.25 | Posterize time | AE Posterize Time | cheap | `{0}` |
-| 3.26 | Accumulation motion blur | RSMB / ReelSmart (accumulation) | heavy | `{0}` |
+| 3.26 | Motion blur (accumulation) | RSMB / ReelSmart (accumulation) | heavy | `{0}` |
 
 ### 3.1 Flow engine — optical-flow retime interpolation (Twixtor-class)
 
@@ -273,9 +273,11 @@ retimed clip does not recompute flow. CUDA MAY accelerate this node where presen
 the WGSL path is the portable baseline and the CPU reference is the oracle for the flow
 field itself (vector-field tolerance, then bit-tolerant synthesis).
 
-### 3.2 Motion blur (flow) — synthesised motion blur (RSMB-class)
+### 3.2 Fast motion blur (flow) — synthesised motion blur (RSMB-class)
 
-Game capture has zero natural motion blur; this effect synthesises it from motion vectors.
+Labelled **Fast motion blur** in the UI (a single-pass per-pixel smear, distinct from the
+whole-scene re-rendering **Motion blur** of §3.26). Game capture has zero natural motion blur;
+this effect synthesises it from motion vectors.
 Applied per layer or, most commonly, on an adjustment layer over the whole montage.
 
 **Algorithm sketch.** Obtain per-pixel motion vectors for the current frame: from the flow
@@ -1056,10 +1058,15 @@ full-frame adjustment being the intended global pass); and a Posterize adjustmen
 collapsed* Precomp degrades to a no-op (its held draws are sized for the nested comp). `cheap`
 cost, `FullFrame` ROI, `{0}` temporal, Category **Temporal**.
 
-### 3.26 Accumulation motion blur — the expensive, correct motion blur
+### 3.26 Motion blur — the expensive, correct motion blur (accumulation)
+
+Labelled **Motion blur** in the UI: the accumulation kind is the correct, whole-scene one, so it
+takes the plain name; the optical-flow effect (§3.2) is *Fast motion blur*. Do not confuse
+either with the per-layer transform motion-blur *switch* (docs/06 §4, K-120), which is a layer
+switch, not an effect.
 
 **Parameters:** Samples N (default 8), Shutter angle (degrees, default 180), Shutter phase
-(degrees, default −90), Mix (per cent, default 100).
+(degrees, default −90), Force on all layers (bool, default off), Mix (per cent, default 100).
 
 **Algorithm sketch.** A **temporal** effect, not a per-pixel one, and the sibling of Posterize
 time (§3.25): it renders the **whole scene below it** several times at in-between moments and
@@ -1082,6 +1089,17 @@ run, never in `run_ops` — and so resolves to **no** per-pixel op. See
 composite beneath the effect's layer is what re-renders, laid back over the live composite by
 the adjustment's coverage (mask × opacity). The owner's global "motion-blur the whole scene"
 pass is simply the effect on a full-frame adjustment layer.
+
+**Force on all layers.** With this on, every layer in each sub-frame sample render also smears
+along **its own transform** — per-layer motion blur (K-120) forced on for the whole below-stack,
+the effect's own Shutter angle/phase/Samples standing in for the comp master and each layer's
+own switch. So one effect blurs every moving layer without toggling each one, and because each
+of the N accumulation samples is itself transform-smeared the result stays smooth at lower
+sample counts. Implemented **without mutating the comp**: the forced shutter and per-layer
+switches ride on the sample render's cloned comp only (`AccumulationMbParams::forced_layer_mb` →
+`below_draws_at`), so the document and the live-below composite are untouched. Off by default.
+Boundary: the force reaches the top-level below layers; the inner layers of a *nested* Precomp
+keep their own switches (a v1 follow-up).
 
 **Preview == export (K-031).** Both paths re-render each sub-frame below-stack through the
 **one** shared `render_below_at` and average with the identical `Compositor::accumulate`, so a

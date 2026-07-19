@@ -1425,6 +1425,11 @@ impl Renderer<'_> {
                         let pixels_ref: HashMap<Uuid, &crate::app_state::preview::CompLayerPixels> =
                             pixels_map.iter().map(|(k, v)| (*k, v)).collect();
                         let realiser = self.realiser();
+                        // Force on all layers (docs/08 §3.26): each sample render
+                        // also smears every layer along its own transform, via the
+                        // same forced shutter the preview's accumulate path uses
+                        // (K-031). None otherwise.
+                        let force_mb = ab.forced_layer_mb();
                         let frames: Vec<Tex> = offsets
                             .iter()
                             .map(|off| {
@@ -1436,6 +1441,7 @@ impl Renderer<'_> {
                                     below_layers,
                                     tau,
                                     t,
+                                    force_mb,
                                     &pixels_ref,
                                     visited,
                                 )
@@ -1484,6 +1490,8 @@ impl Renderer<'_> {
                         // sample_temporally == false holds here, not at `tau`
                         // (docs/impl/temporal-rerender.md §5, K-031).
                         t,
+                        // Posterize never forces per-layer motion blur.
+                        None,
                         &pixels_ref,
                         visited,
                     )

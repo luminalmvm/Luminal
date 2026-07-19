@@ -157,6 +157,13 @@ pub struct AccumulationMbParams {
     pub shutter_phase: f64,
     /// Averaged-over-original blend, 0..1 (1 = full accumulation blur).
     pub mix: f64,
+    /// Force per-layer motion blur (K-120) on every layer during the sub-frame
+    /// sample renders (docs/08 §3.26): the effect's shutter stands in for the
+    /// comp master and every layer's own switch, so one effect blurs every
+    /// moving layer without toggling each one and each sample is itself
+    /// transform-smeared. The comp is never mutated — the forced shutter rides
+    /// on the sample-render's cloned comp only.
+    pub force_all: bool,
 }
 
 impl AccumulationMbParams {
@@ -168,13 +175,28 @@ impl AccumulationMbParams {
     /// offset into a comp-time sample by `t + offset · dt` (dt = one frame in comp
     /// seconds).
     pub fn sample_offsets(&self) -> Vec<f64> {
+        self.shutter().sample_offsets()
+    }
+
+    /// The shutter as a [`crate::model::MotionBlur`] — the shared centred-shutter
+    /// maths the per-layer switch (K-120) uses, always enabled with this effect's
+    /// angle/phase/samples.
+    fn shutter(&self) -> crate::model::MotionBlur {
         crate::model::MotionBlur {
             enabled: true,
             shutter_angle: self.shutter_angle,
             shutter_phase: self.shutter_phase,
             samples: self.samples,
         }
-        .sample_offsets()
+    }
+
+    /// The per-layer motion-blur shutter to force on every layer during the
+    /// sample renders when *Force on all layers* is set (docs/08 §3.26), or None
+    /// otherwise. Some carries this effect's own shutter (angle/phase/samples),
+    /// so the caller drops it onto the sample render's cloned comp master and
+    /// every layer's own switch — never the original comp.
+    pub fn forced_layer_mb(&self) -> Option<crate::model::MotionBlur> {
+        self.force_all.then(|| self.shutter())
     }
 }
 
@@ -206,11 +228,15 @@ pub fn stack_accumulation_mb(
             let shutter_angle = e.float_at("shutter_angle", lt).unwrap_or(180.0);
             let shutter_phase = e.float_at("shutter_phase", lt).unwrap_or(-90.0);
             let mix = (e.float_at("mix", lt).unwrap_or(100.0) / 100.0).clamp(0.0, 1.0);
+            // Static bool (v1); an older project saved before the parameter
+            // existed reads as the default (false).
+            let force_all = e.bool_of("force_all").unwrap_or(false);
             AccumulationMbParams {
                 samples,
                 shutter_angle,
                 shutter_phase,
                 mix,
+                force_all,
             }
         })
 }

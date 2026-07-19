@@ -202,6 +202,23 @@ fn stack_accumulation_mb_detects_resolves_and_offsets() {
     // Eight centred sub-frame offsets across the open shutter (the shared
     // per-layer motion-blur shutter maths).
     assert_eq!(p.sample_offsets().len(), 8);
+    // Force on all layers defaults off, so the sample renders force no per-layer
+    // motion blur (FX-18).
+    assert!(!p.force_all);
+    assert!(p.forced_layer_mb().is_none());
+    // With it on, the forced shutter carries this effect's own angle/phase/
+    // samples and is enabled, so every layer smears in each sample render.
+    let forced = AccumulationMbParams {
+        force_all: true,
+        ..p
+    };
+    let mb = forced
+        .forced_layer_mb()
+        .expect("force_all yields a shutter");
+    assert!(mb.enabled);
+    assert_eq!(mb.shutter_angle, p.shutter_angle);
+    assert_eq!(mb.shutter_phase, p.shutter_phase);
+    assert_eq!(mb.samples, p.samples);
     // A degenerate single sample is no blur — empty offsets, so the caller falls
     // back to the plain frame-time composite.
     let one = AccumulationMbParams { samples: 1, ..p };
