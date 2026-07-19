@@ -212,7 +212,7 @@ parallel pass left several not-quite-right). No migration burden (pre-release).
 ## Effect Controls layout (EC — ref screenshot 144)
 - [x] EC1 Hairline under each property row (drawn in the shared `row_frame`, only across the outline column, so header rows stay undivided). Also gives TL1's row treatment.
 - [x] EC2 The × (remove effect) is now right-aligned on the effect header (right-to-left layout).
-- [ ] EC3 Value boxes right-aligned — REMAINING (the invasive one: every param arm — Float/Bool/Choice/Colour/Seed/File/Layer + the X/Y row + channel picker — needs its value wrapped in a right-aligned sub-layout). Best done with the panel visible.
+- [~] EC3 Value boxes right-aligned for the common param types — Float, Choice, Bool now wrap their value in a `right_to_left` group (label left, value at the row's right edge). Colour/Seed/File/Layer + the X/Y pair row still left-packed (their multi-widget layouts need careful reordering) — eyeball whether the mix reads OK or those need doing too.
 - [x] EC4 Reset icon (new `Icon::Reset` = Iconoir "refresh-double") left of the ×; resets every param on the effect to its schema default via `instantiate`.
 
 ## Timeline layout (TL — ref screenshot 145, AE-style columns)
