@@ -164,12 +164,11 @@ pub fn apply(rgba: &mut [f32], w: u32, h: u32, fx: &Resolved) {
         Resolved::Scanlines {
             intensity,
             period_px,
-            darkness,
             roll_px,
             interlace,
             mix,
         } => scanlines(
-            rgba, w, h, *intensity, *period_px, *darkness, *roll_px, *interlace, *mix,
+            rgba, w, h, *intensity, *period_px, *roll_px, *interlace, *mix,
         ),
         // Echo is temporal: it needs the layer's neighbour frames, which
         // this single-buffer in-place dispatcher does not carry. The real
@@ -674,19 +673,23 @@ pub fn flash(rgba: &mut [f32], strength: f32, colour: [f32; 4], mix: f32) {
     }
 }
 
-/// The §1.6 oracle for Echo (docs/08 §3.13): the CPU twin of `fx_echo.wgsl`,
-/// op-for-op. `current` is the leading (this-frame) linear premultiplied
-/// RGBA; `neighbours` are the layer's decoded source frames keyed by their
-/// frame offset (all the same length as `current`). `weights[i]` is the
-/// tap intensity for the echo at offset `-(i+1)`; a zero weight or a
-/// missing neighbour is skipped. `mode` is 0 = Add, 1 = Behind (the
-/// accumulator over the echo), 2 = Max. Finally the trail is blended
-/// toward `current` by `mix`. Working colour is premultiplied, so a tap
-/// scales all four channels together — the correct premultiplied fade.
+/// The §1.6 oracle for Echo (docs/08 §3.13; blend modes + 16-echo cap since
+/// FX-17/K-149): the CPU twin of `fx_echo.wgsl`, op-for-op. `current` is the
+/// leading (this-frame) linear premultiplied RGBA; `neighbours` are the
+/// layer's decoded source frames keyed by their frame offset (all the same
+/// length as `current`). `weights[i]` is the tap intensity for the echo at
+/// offset `-(i+1)`; a zero weight or a missing neighbour is skipped. `mode`
+/// is the combine blend applied per tap (see [`echo_blend`]): 0 = Add,
+/// 1 = Behind (the accumulator over the echo), 2 = Max, 3 = Screen,
+/// 4 = Normal, 5 = Multiply, 6 = Overlay, 7 = Soft light, 8 = Hard light,
+/// 9 = Darken. Finally the trail is blended toward `current` by `mix`.
+/// Working colour is premultiplied linear, and every mode runs per channel on
+/// all four (the correct premultiplied fade for a light trail — Echo does not
+/// re-encode to the compositor's perceptual domain).
 pub fn echo(
     current: &[f32],
     neighbours: &[(i32, &[f32])],
-    weights: [f32; 8],
+    weights: [f32; 16],
     mode: u32,
     mix: f32,
 ) -> Vec<f32> {
@@ -713,30 +716,109 @@ pub fn echo(
                 buf[base + 2] * weight,
                 buf[base + 3] * weight,
             ];
-            acc = match mode {
-                0 => [acc[0] + n[0], acc[1] + n[1], acc[2] + n[2], acc[3] + n[3]],
-                1 => {
-                    let k = 1.0 - acc[3];
-                    [
-                        acc[0] + n[0] * k,
-                        acc[1] + n[1] * k,
-                        acc[2] + n[2] * k,
-                        acc[3] + n[3] * k,
-                    ]
-                }
-                _ => [
-                    acc[0].max(n[0]),
-                    acc[1].max(n[1]),
-                    acc[2].max(n[2]),
-                    acc[3].max(n[3]),
-                ],
-            };
+            acc = echo_blend(mode, acc, n);
         }
         for c in 0..4 {
             o[c] = current[px_idx * 4 + c] * (1.0 - mix) + acc[c] * mix;
         }
     }
     out
+}
+
+/// One Echo combine mode (docs/08 §3.13, FX-17/K-149): fold the weighted
+/// neighbour tap `n` into the running accumulator `a`, both premultiplied
+/// linear RGBA. Written per channel with the exact arithmetic order the WGSL
+/// `echo_accumulate` twin uses, so the two agree bit-for-bit (§1.6). Modes
+/// 0/1/2 (Add/Behind/Max) are the historical set; 3–9 mirror the comp blend
+/// modes (Screen/Normal/Multiply/Overlay/Soft light/Hard light/Darken), each
+/// applied to all four channels in the working linear space (not the
+/// compositor's perceptual sRGB domain — Echo composites light trails, so it
+/// stays linear and premultiplied, and this keeps CPU/GPU parity exact).
+fn echo_blend(mode: u32, a: [f32; 4], n: [f32; 4]) -> [f32; 4] {
+    let mut o = [0.0f32; 4];
+    match mode {
+        0 => {
+            // Add: echoes sum light behind the leading frame.
+            for c in 0..4 {
+                o[c] = a[c] + n[c];
+            }
+        }
+        1 => {
+            // Behind: the accumulator composited over the echo (ghosting).
+            let k = 1.0 - a[3];
+            for c in 0..4 {
+                o[c] = a[c] + n[c] * k;
+            }
+        }
+        2 => {
+            // Max: per-channel lighten.
+            for c in 0..4 {
+                o[c] = a[c].max(n[c]);
+            }
+        }
+        3 => {
+            // Screen.
+            for c in 0..4 {
+                o[c] = a[c] + n[c] - a[c] * n[c];
+            }
+        }
+        4 => {
+            // Normal: the echo composited over the accumulator.
+            let k = 1.0 - n[3];
+            for c in 0..4 {
+                o[c] = n[c] + a[c] * k;
+            }
+        }
+        5 => {
+            // Multiply.
+            for c in 0..4 {
+                o[c] = a[c] * n[c];
+            }
+        }
+        6 => {
+            // Overlay = hard light with the accumulator as the switch.
+            for c in 0..4 {
+                o[c] = if a[c] <= 0.5 {
+                    2.0 * a[c] * n[c]
+                } else {
+                    1.0 - 2.0 * (1.0 - a[c]) * (1.0 - n[c])
+                };
+            }
+        }
+        7 => {
+            // Soft light (W3C), s = n, d = a.
+            for c in 0..4 {
+                let d = a[c];
+                let dd = if d <= 0.25 {
+                    ((16.0 * d - 12.0) * d + 4.0) * d
+                } else {
+                    d.sqrt()
+                };
+                o[c] = if n[c] <= 0.5 {
+                    d - (1.0 - 2.0 * n[c]) * d * (1.0 - d)
+                } else {
+                    d + (2.0 * n[c] - 1.0) * (dd - d)
+                };
+            }
+        }
+        8 => {
+            // Hard light: the echo is the switch.
+            for c in 0..4 {
+                o[c] = if n[c] <= 0.5 {
+                    2.0 * a[c] * n[c]
+                } else {
+                    1.0 - 2.0 * (1.0 - a[c]) * (1.0 - n[c])
+                };
+            }
+        }
+        _ => {
+            // Darken: per-channel min.
+            for c in 0..4 {
+                o[c] = a[c].min(n[c]);
+            }
+        }
+    }
+    o
 }
 
 /// The §1.6 oracle for Fast motion blur (docs/08 §3.2): the CPU twin of
@@ -822,17 +904,21 @@ pub fn motion_blur(
     }
 }
 
-/// The §1.6 oracle for Datamosh (docs/08 §3.12, K-104): the CPU twin of
-/// `fx_datamosh.wgsl`, op-for-op. `current` is the already block/scanline'd
-/// frame (linear premultiplied RGBA) this section blends against; `prev`
-/// is the raw -1 source neighbour; `u`/`v` are the dense flow the decode
-/// worker measured from the current frame to it (this raster's pixel
-/// grid, one entry per pixel — the same current→neighbour convention
-/// [`motion_blur`] uses for its own +1 neighbour, just pointed at -1). A
-/// single bilinear tap per pixel, not a streak integral: this looks up
-/// one displaced source pixel (motion-compensated prediction), not a
-/// line integral of motion. `intensity == 0.0` collapses every warped tap
-/// weight to zero, so the result is the bit-exact `current` input.
+/// The §1.6 oracle for Datamosh (docs/08 §3.12, K-104; Streak length added
+/// FX-14/K-148): the CPU twin of `fx_datamosh.wgsl`, op-for-op. `current` is
+/// the already block/scanline'd frame (linear premultiplied RGBA) this
+/// section blends against; `prev` is the raw -1 source neighbour; `u`/`v` are
+/// the dense flow the decode worker measured from the current frame to it
+/// (this raster's pixel grid, one entry per pixel — the same current→neighbour
+/// convention [`motion_blur`] uses for its own +1 neighbour, just pointed at
+/// -1). A single bilinear tap per pixel, not a streak integral: this looks up
+/// one displaced source pixel (motion-compensated prediction), not a line
+/// integral of motion. `streak` scales the flow displacement, so the warp
+/// reaches that many frames of predicted motion (1 = the historical
+/// one-frame prediction; higher accumulates more smear). `intensity == 0.0`
+/// collapses the blend to zero, so the result is the bit-exact `current`
+/// input regardless of `streak`.
+#[allow(clippy::too_many_arguments)]
 pub fn datamosh(
     current: &[f32],
     prev: &[f32],
@@ -841,13 +927,17 @@ pub fn datamosh(
     u: &[f32],
     v: &[f32],
     intensity: f32,
+    streak: f32,
 ) -> Vec<f32> {
     let mut out = current.to_vec();
     for y in 0..h {
         for x in 0..w {
             let idx = (y * w + x) as usize;
             let i = idx * 4;
-            let pos = (x as f32 + 0.5 + u[idx], y as f32 + 0.5 + v[idx]);
+            let pos = (
+                x as f32 + 0.5 + u[idx] * streak,
+                y as f32 + 0.5 + v[idx] * streak,
+            );
             let warped = bilinear(prev, w, h, pos.0, pos.1);
             for c in 0..4 {
                 out[i + c] = current[i + c] * (1.0 - intensity) + warped[c] * intensity;
@@ -1503,14 +1593,16 @@ pub fn block_glitch(
     }
 }
 
-/// Scanlines (docs/08 §3.12, split out by K-107): standalone periodic
-/// darken, the scanline section of the old combined Glitch effect. No
-/// hash, no block resample — reads the input pixel directly (pointwise,
-/// [`Roi::Exact`](super::Roi::Exact)), darkens by a periodic band in
-/// raster Y (plus the precomputed roll offset), alternating which half
-/// of the period darkens on odd periods when Interlace is on. Intensity
-/// 0 is the bit-exact passthrough, pinned by the early return below —
-/// the same neutral shape [`block_glitch`] uses.
+/// Scanlines (docs/08 §3.12, split out by K-107; single Intensity since
+/// FX-13/K-147): standalone periodic darken, the scanline section of the old
+/// combined Glitch effect. No hash, no block resample — reads the input pixel
+/// directly (pointwise, [`Roi::Exact`](super::Roi::Exact)), darkens the dark
+/// lines by a periodic band in raster Y (plus the precomputed roll offset),
+/// alternating which half of the period darkens on odd periods when Interlace
+/// is on. `intensity` is the single dial (0..1 = how dark the dark lines get,
+/// 1 = black); the bright half is untouched. Intensity 0 is the bit-exact
+/// passthrough, pinned by the early return below — the same neutral shape
+/// [`block_glitch`] uses.
 #[allow(clippy::too_many_arguments)]
 pub fn scanlines(
     rgba: &mut [f32],
@@ -1518,7 +1610,6 @@ pub fn scanlines(
     h: u32,
     intensity: f32,
     period_px: f32,
-    darkness: f32,
     roll_px: f32,
     interlace: bool,
     mix: f32,
@@ -1545,7 +1636,9 @@ pub fn scanlines(
             let t = cell - cell_floor;
             let odd = (cell_floor as i64).rem_euclid(2) != 0;
             let bright = (t < 0.5) != (interlace && odd);
-            let band = if bright { 1.0 } else { 1.0 - darkness };
+            // The dark half's base is black (band 0), so eff_mult is
+            // 1 − intensity there and 1 on the bright half.
+            let band = if bright { 1.0 } else { 0.0 };
             let eff_mult = 1.0 - intensity * (1.0 - band);
             c[0] *= eff_mult;
             c[1] *= eff_mult;

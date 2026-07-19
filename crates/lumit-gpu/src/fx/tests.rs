@@ -1643,11 +1643,10 @@ fn wgsl_block_glitch_matches_the_cpu_oracle() {
     }
 }
 
-/// The §1.6 oracle for Scanlines (docs/08 §3.12, split out by K-107):
-/// WGSL agrees with the CPU reference across intensity, period,
-/// darkness, roll and interlace, and is bit-stable (§2.4). Mirrors the
-/// old combined Glitch oracle's scanline cases — same maths, now a
-/// standalone pointwise pass with no block resample. Intensity 0 is
+/// The §1.6 oracle for Scanlines (docs/08 §3.12, split out by K-107; single
+/// Intensity since FX-13/K-147): WGSL agrees with the CPU reference across
+/// intensity, period, roll and interlace, and is bit-stable (§2.4). Intensity
+/// is now the sole darken dial (dark lines reach black at 1). Intensity 0 is
 /// asserted bit-exact against the untouched corpus regardless of Mix,
 /// matching the CPU reference's early return.
 #[test]
@@ -1664,7 +1663,6 @@ fn wgsl_scanlines_matches_the_cpu_oracle() {
         name: &'static str,
         intensity: f32,
         period_px: f32,
-        darkness: f32,
         roll_px: f32,
         interlace: bool,
         mix: f32,
@@ -1674,7 +1672,6 @@ fn wgsl_scanlines_matches_the_cpu_oracle() {
             name: "neutral-intensity0",
             intensity: 0.0,
             period_px: 3.0,
-            darkness: 0.6,
             roll_px: 1.0,
             interlace: true,
             mix: 0.4,
@@ -1683,7 +1680,6 @@ fn wgsl_scanlines_matches_the_cpu_oracle() {
             name: "moderate",
             intensity: 0.8,
             period_px: 4.0,
-            darkness: 0.5,
             roll_px: 2.5,
             interlace: true,
             mix: 1.0,
@@ -1692,7 +1688,6 @@ fn wgsl_scanlines_matches_the_cpu_oracle() {
             name: "full-partial-mix-no-interlace",
             intensity: 1.0,
             period_px: 2.5,
-            darkness: 0.8,
             roll_px: -1.5,
             interlace: false,
             mix: 0.6,
@@ -1707,7 +1702,6 @@ fn wgsl_scanlines_matches_the_cpu_oracle() {
             h,
             case.intensity,
             case.period_px,
-            case.darkness,
             case.roll_px,
             case.interlace,
             case.mix,
@@ -1717,7 +1711,6 @@ fn wgsl_scanlines_matches_the_cpu_oracle() {
         let op = ScanlinesOp {
             intensity: case.intensity,
             period_px: case.period_px,
-            darkness: case.darkness,
             roll_px: case.roll_px,
             interlace: case.interlace,
             mix: case.mix,
@@ -1929,13 +1922,18 @@ fn adjust_blend_lerps_by_coverage_times_opacity() {
     );
 }
 
-/// The §1.6 oracle for Echo (docs/08 §3.13): the GPU chain (an
-/// `echo_accumulate` per tap plus a final `echo_mix`) matches
-/// `lumit_core::fx::cpu::echo` across the three combine modes. Each
-/// accumulate stores an fp16 intermediate where the CPU keeps f32, so a
-/// two-tap sum can drift a little past the pointwise ≤2 ULP — the bound
-/// is stated at 4 ULP with that reason (measured well under it). The GPU
-/// is bit-stable (§2.4); no taps with Mix 1 is a bit-exact passthrough.
+/// The §1.6 oracle for Echo (docs/08 §3.13; blend modes + 16-echo cap since
+/// FX-17/K-149): the GPU chain (an `echo_accumulate` per tap plus a final
+/// `echo_mix`) matches `lumit_core::fx::cpu::echo` across every combine mode.
+/// Each accumulate stores an fp16 intermediate where the CPU keeps f32, so a
+/// two-tap sum can drift a little past the pointwise ≤2 ULP — the historical
+/// additive modes are held to 4 ULP with that reason (measured well under it).
+/// The multiplicative/perceptual modes (Screen, Multiply, Overlay, Soft/Hard
+/// light) additionally amplify the ≤½-ULP gap between the fp16-uploaded
+/// current frame and the CPU's f32 corpus by their local slope against the
+/// HDR neighbours, so they run single-tap under a looser 8-ULP bound — still
+/// orders of magnitude tighter than any formula mismatch. The GPU is
+/// bit-stable (§2.4); no taps with Mix 1 is a bit-exact passthrough.
 #[test]
 fn wgsl_echo_matches_the_cpu_oracle() {
     let Ok(ctx) = GpuContext::headless() else {
@@ -1967,10 +1965,32 @@ fn wgsl_echo_matches_the_cpu_oracle() {
     let gpu_neighbours: [(i32, &wgpu::Texture); 2] = [(-1, &n1_t), (-2, &n2_t)];
     let cpu_neighbours: [(i32, &[f32]); 2] = [(-1, &n1), (-2, &n2)];
 
-    for (weights, mode, mix) in [
-        ([0.6f32, 0.3, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], 0u32, 1.0f32),
-        ([0.7, 0.4, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], 1, 0.8),
-        ([0.9, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], 2, 1.0),
+    let two_tap = |a: f32, b: f32| {
+        let mut w = [0.0f32; 16];
+        w[0] = a;
+        w[1] = b;
+        w
+    };
+    let one_tap = |a: f32| {
+        let mut w = [0.0f32; 16];
+        w[0] = a;
+        w
+    };
+
+    // The historical additive modes (Add/Behind/Max), two-tap, ≤4 ULP.
+    for (weights, mode, mix, bound) in [
+        (two_tap(0.6, 0.3), 0u32, 1.0f32, 4i32),
+        (two_tap(0.7, 0.4), 1, 0.8, 4),
+        (two_tap(0.9, 0.5), 2, 1.0, 4),
+        // The new modes (FX-17/K-149), single-tap, ≤8 ULP: Screen, Normal,
+        // Multiply, Overlay, Soft light, Hard light, Darken.
+        (one_tap(0.6), 3, 1.0, 8),
+        (one_tap(0.5), 4, 0.9, 8),
+        (one_tap(0.7), 5, 1.0, 8),
+        (one_tap(0.6), 6, 1.0, 8),
+        (one_tap(0.5), 7, 1.0, 8),
+        (one_tap(0.8), 8, 1.0, 8),
+        (one_tap(0.6), 9, 1.0, 8),
     ] {
         let cpu = lumit_core::fx::cpu::echo(&current, &cpu_neighbours, weights, mode, mix);
         let op = EchoOp { weights, mode, mix };
@@ -1978,7 +1998,10 @@ fn wgsl_echo_matches_the_cpu_oracle() {
         let gpu = readback_linear_f32(&ctx, &out, w, h).unwrap();
         let worst = worst_f16_ulp(&cpu, &gpu);
         eprintln!("echo mode={mode} mix={mix}: worst {worst} ulp");
-        assert!(worst <= 4, "mode {mode} mix {mix}: worst {worst} fp16 ULP");
+        assert!(
+            worst <= bound,
+            "mode {mode} mix {mix}: worst {worst} fp16 ULP (bound {bound})"
+        );
         let out2 = fx.echo(&ctx, &cur_t, &gpu_neighbours, w, h, &op);
         assert_eq!(
             gpu,
@@ -1995,7 +2018,7 @@ fn wgsl_echo_matches_the_cpu_oracle() {
         w,
         h,
         &EchoOp {
-            weights: [0.0; 8],
+            weights: [0.0; 16],
             mode: 0,
             mix: 1.0,
         },
@@ -2199,16 +2222,20 @@ fn wgsl_datamosh_matches_the_cpu_oracle() {
     }
     let varying = (vary_u, vary_v);
 
-    for (field, intensity, name) in [
-        (&constant, 1.0f32, "constant"),
-        (&varying, 0.6, "varying"),
-        (&constant, 0.35, "partial mix"),
+    // Streak length (FX-14) scales the flow reach; the > 1 intensity case
+    // exercises the open ceiling (K-135), which mix() extrapolates past the
+    // moshed frame in both the CPU and GPU paths.
+    for (field, intensity, streak, name) in [
+        (&constant, 1.0f32, 1.0f32, "constant streak1"),
+        (&varying, 0.6, 2.0, "varying streak2"),
+        (&constant, 0.35, 4.0, "partial mix streak4"),
+        (&varying, 1.4, 1.5, "over-unity streak1.5"),
     ] {
         let (u, v) = field;
-        let cpu = lumit_core::fx::cpu::datamosh(&current, &prev, w, h, u, v, intensity);
+        let cpu = lumit_core::fx::cpu::datamosh(&current, &prev, w, h, u, v, intensity, streak);
         // Datamosh reads only the flow .xy; confidence is irrelevant (empty).
         let flow_t = upload_flow_field(&ctx, u, v, &[], w, h);
-        let op = DatamoshOp { intensity };
+        let op = DatamoshOp { intensity, streak };
         let out = fx.datamosh(&ctx, &cur_t, &prev_t, &flow_t, w, h, &op);
         let gpu = readback_linear_f32(&ctx, &out, w, h).unwrap();
         let worst = worst_f16_ulp(&cpu, &gpu);
@@ -2222,7 +2249,7 @@ fn wgsl_datamosh_matches_the_cpu_oracle() {
         );
     }
 
-    // Intensity 0 must be a bit-exact passthrough regardless of motion.
+    // Intensity 0 must be a bit-exact passthrough regardless of motion/streak.
     let moving = upload_flow_field(&ctx, &constant.0, &constant.1, &[], w, h);
     let out = fx.datamosh(
         &ctx,
@@ -2231,7 +2258,10 @@ fn wgsl_datamosh_matches_the_cpu_oracle() {
         &moving,
         w,
         h,
-        &DatamoshOp { intensity: 0.0 },
+        &DatamoshOp {
+            intensity: 0.0,
+            streak: 8.0,
+        },
     );
     assert_eq!(
         readback_linear_f32(&ctx, &out, w, h).unwrap(),

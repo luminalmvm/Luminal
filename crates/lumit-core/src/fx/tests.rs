@@ -595,6 +595,7 @@ fn motion_blur_and_datamosh_together_the_first_in_stack_order_wins() {
 fn datamosh_instantiates_and_resolves() {
     let e = instantiate("datamosh").unwrap();
     assert_eq!(e.float_at("intensity", 0.0), Some(0.5));
+    assert_eq!(e.float_at("streak_length", 0.0), Some(4.0));
     assert_eq!(e.float_at("mix", 0.0), Some(100.0));
 
     let r = resolve_stack(
@@ -608,6 +609,7 @@ fn datamosh_instantiates_and_resolves() {
         r,
         vec![Resolved::Datamosh {
             intensity: 0.5,
+            streak: 4.0,
             mix: 1.0,
         }]
     );
@@ -633,6 +635,51 @@ fn datamosh_instantiates_and_resolves() {
         r,
         vec![Resolved::Datamosh {
             intensity: 0.0,
+            streak: 4.0,
+            mix: 1.0,
+        }]
+    );
+}
+
+#[test]
+fn datamosh_intensity_ceiling_is_open_and_streak_migrates() {
+    // FX-14/K-148: the Intensity hard cap lifted (K-135), so a typed value
+    // above 1 resolves through for a punchier tear; Streak length is clamped
+    // at 1 below and open above.
+    let mut e = instantiate("datamosh").unwrap();
+    for p in &mut e.params {
+        if p.id == "intensity" {
+            p.value = EffectValue::Float(Property::fixed(2.5));
+        }
+        if p.id == "streak_length" {
+            p.value = EffectValue::Float(Property::fixed(9.0));
+        }
+    }
+    let r = resolve_stack(&[e], 0.0, 1000.0, 1.0, &MarkerContext::NONE);
+    assert_eq!(
+        r,
+        vec![Resolved::Datamosh {
+            intensity: 2.5,
+            streak: 9.0,
+            mix: 1.0,
+        }]
+    );
+
+    // An old project (pre-FX-14) has no streak_length param: it folds to the
+    // default 4-frame reach, and its intensity is no longer capped at 1.
+    let mut legacy = instantiate("datamosh").unwrap();
+    legacy.params.retain(|p| p.id != "streak_length");
+    for p in &mut legacy.params {
+        if p.id == "intensity" {
+            p.value = EffectValue::Float(Property::fixed(1.0));
+        }
+    }
+    let r = resolve_stack(&[legacy], 0.0, 1000.0, 1.0, &MarkerContext::NONE);
+    assert_eq!(
+        r,
+        vec![Resolved::Datamosh {
+            intensity: 1.0,
+            streak: 4.0,
             mix: 1.0,
         }]
     );
@@ -652,6 +699,7 @@ fn cpu_apply_datamosh_is_a_passthrough() {
         h,
         &Resolved::Datamosh {
             intensity: 1.0,
+            streak: 4.0,
             mix: 1.0,
         },
     );
@@ -897,7 +945,8 @@ fn cpu_datamosh_zero_intensity_is_the_bit_exact_current_frame() {
     let current: Vec<f32> = (0..n * 4).map(|i| (i % 7) as f32 * 0.1).collect();
     let prev: Vec<f32> = (0..n * 4).map(|i| (i % 5) as f32 * 0.2).collect();
     let (u, v) = (vec![3.0f32; n], vec![-2.0f32; n]);
-    let out = cpu::datamosh(&current, &prev, w, h, &u, &v, 0.0);
+    // Streak has no effect at intensity 0 — the blend collapses to `current`.
+    let out = cpu::datamosh(&current, &prev, w, h, &u, &v, 0.0, 8.0);
     assert_eq!(out, current, "intensity 0 is a bit-exact passthrough");
 }
 
@@ -917,12 +966,101 @@ fn cpu_datamosh_full_intensity_reads_the_shifted_previous_frame() {
     let mut u = vec![0.0f32; n];
     let v = vec![0.0f32; n];
     u[(4 * w + 4) as usize] = 2.0;
-    let out = cpu::datamosh(&current, &prev, w, h, &u, &v, 1.0);
+    // Streak 1 is the historical one-frame prediction: u = 2 lands on (6, 4).
+    let out = cpu::datamosh(&current, &prev, w, h, &u, &v, 1.0, 1.0);
     let i = ((4 * w + 4) * 4) as usize;
     assert_eq!(&out[i..i + 4], &[4.0, 2.0, 1.0, 1.0]);
     // A pixel whose flow is zero and whose `prev` neighbourhood is dark
     // stays dark (current is also dark there) — no bleed from elsewhere.
     assert_eq!(&out[0..4], &[0.0, 0.0, 0.0, 0.0]);
+}
+
+#[test]
+fn cpu_datamosh_streak_scales_the_flow_reach() {
+    // A single bright pixel at (6, 4). A half-strength flow of u = 1 reaches
+    // it only when Streak length doubles the displacement to 2 (FX-14): the
+    // warp then predicts two frames of motion from one frame's flow.
+    let (w, h) = (9u32, 9u32);
+    let n = (w * h) as usize;
+    let current = vec![0.0f32; n * 4];
+    let mut prev = vec![0.0f32; n * 4];
+    let bright = ((4 * w + 6) * 4) as usize; // (x=6, y=4)
+    prev[bright..bright + 4].copy_from_slice(&[4.0, 2.0, 1.0, 1.0]);
+    let mut u = vec![0.0f32; n];
+    let v = vec![0.0f32; n];
+    u[(4 * w + 4) as usize] = 1.0; // one frame of flow points halfway there
+    let i = ((4 * w + 4) * 4) as usize;
+
+    // Streak 1: u = 1 lands on (5, 4) — still dark, the bright pixel unreached.
+    let short = cpu::datamosh(&current, &prev, w, h, &u, &v, 1.0, 1.0);
+    assert_eq!(&short[i..i + 4], &[0.0, 0.0, 0.0, 0.0]);
+    // Streak 2: u × 2 = 2 lands on (6, 4) — the bright pixel is now recovered.
+    let long = cpu::datamosh(&current, &prev, w, h, &u, &v, 1.0, 2.0);
+    assert_eq!(&long[i..i + 4], &[4.0, 2.0, 1.0, 1.0]);
+}
+
+#[test]
+fn echo_defaults_to_screen_caps_at_16_and_migrates_legacy_modes() {
+    // FX-17/K-149: the default blend mode is Screen (index 3), Echoes clamps
+    // to the raised 16-frame window, and the legacy mode indices 0/1/2 still
+    // resolve to Add/Behind/Max so old projects load unchanged.
+    let e = instantiate("echo").unwrap();
+    assert!(matches!(e.param("mode"), Some(EffectValue::Choice(3))));
+
+    // Echoes 20 clamps to 16 non-zero geometric weights (decay^k).
+    let mut over = e.clone();
+    for p in &mut over.params {
+        if p.id == "echoes" {
+            p.value = EffectValue::Float(Property::fixed(20.0));
+        }
+        if p.id == "decay" {
+            p.value = EffectValue::Float(Property::fixed(0.5));
+        }
+    }
+    let r = resolve_stack(&[over], 0.0, 1000.0, 1.0, &MarkerContext::NONE);
+    let Resolved::Echo { weights, mode, .. } = r[0] else {
+        panic!("expected an echo op");
+    };
+    assert_eq!(mode, 3, "default mode is Screen");
+    assert!(weights.iter().all(|w| *w > 0.0), "all 16 taps are live");
+    assert!((weights[0] - 0.5).abs() < 1e-6 && (weights[15] - 0.5f32.powi(16)).abs() < 1e-9);
+
+    // Legacy modes: index 1 (Behind) and index 2 (Max) resolve unchanged.
+    for legacy_mode in [0u32, 1, 2] {
+        let mut old = e.clone();
+        for p in &mut old.params {
+            if p.id == "mode" {
+                p.value = EffectValue::Choice(legacy_mode);
+            }
+        }
+        let r = resolve_stack(&[old], 0.0, 1000.0, 1.0, &MarkerContext::NONE);
+        let Resolved::Echo { mode, .. } = r[0] else {
+            panic!("expected an echo op");
+        };
+        assert_eq!(mode, legacy_mode, "legacy mode index preserved");
+    }
+}
+
+#[test]
+fn cpu_echo_blend_modes_combine_a_single_tap() {
+    // One opaque grey pixel echoed by one darker opaque neighbour, weight 1,
+    // Mix 1 (so the output is the pure combine). Values chosen to be exact in
+    // f32: 0.5 and 0.25. Screen brightens, Multiply darkens, Darken takes the
+    // min — the standard blend maths mirrored into Echo (FX-17/K-149).
+    let current = [0.5f32, 0.5, 0.5, 1.0];
+    let neighbour = [0.25f32, 0.25, 0.25, 1.0];
+    let mut weights = [0.0f32; 16];
+    weights[0] = 1.0;
+    let run = |mode: u32| cpu::echo(&current, &[(-1, &neighbour)], weights, mode, 1.0);
+
+    // Screen (3): 0.5 + 0.25 − 0.5×0.25 = 0.625; alpha 1 + 1 − 1 = 1.
+    assert_eq!(run(3), vec![0.625, 0.625, 0.625, 1.0]);
+    // Multiply (5): 0.5 × 0.25 = 0.125.
+    assert_eq!(run(5), vec![0.125, 0.125, 0.125, 1.0]);
+    // Darken (9): min(0.5, 0.25) = 0.25.
+    assert_eq!(run(9), vec![0.25, 0.25, 0.25, 1.0]);
+    // Max (2): max(0.5, 0.25) = 0.5 — the leading frame wins.
+    assert_eq!(run(2), vec![0.5, 0.5, 0.5, 1.0]);
 }
 
 #[test]
@@ -3868,7 +4006,8 @@ fn scanlines_instantiates_and_resolves() {
     let e = instantiate("scanlines").unwrap();
     assert_eq!(e.float_at("intensity", 0.0), Some(0.35));
     assert_eq!(e.float_at("scanline_period", 0.0), Some(3.0));
-    assert_eq!(e.float_at("scanline_darkness", 0.0), Some(40.0));
+    // Darkness is gone (FX-13/K-147): Intensity is the single darken dial.
+    assert_eq!(e.float_at("scanline_darkness", 0.0), None);
     assert_eq!(e.float_at("scanline_roll", 0.0), Some(0.0));
     assert!(matches!(
         e.param("scanline_interlace"),
@@ -3885,13 +4024,46 @@ fn scanlines_instantiates_and_resolves() {
     assert_eq!(
         a,
         vec![Resolved::Scanlines {
-            intensity: 0.35,
-            period_px: 1.5, // 3 px@comp * px_scale 0.5
-            darkness: 0.40,
-            roll_px: 0.0, // roll speed 0
+            intensity: 0.35, // no Darkness param, so the raw Intensity stands
+            period_px: 1.5,  // 3 px@comp * px_scale 0.5
+            roll_px: 0.0,    // roll speed 0
             interlace: false,
             mix: 1.0,
         }]
+    );
+}
+
+#[test]
+fn scanlines_migrates_old_darkness_into_intensity() {
+    // An old project (FX-13/K-147) carried a separate Darkness param
+    // (0..100). On load it folds into the single Intensity so the darken is
+    // the old Intensity × Darkness product exactly.
+    let mut e = instantiate("scanlines").unwrap();
+    // Restore the pre-K-147 shape: Intensity 0.5 plus a Darkness of 80%.
+    for p in &mut e.params {
+        if p.id == "intensity" {
+            p.value = EffectValue::Float(Property::fixed(0.5));
+        }
+    }
+    e.params.push(crate::model::EffectParam {
+        id: "scanline_darkness".to_owned(),
+        value: EffectValue::Float(Property::fixed(80.0)),
+        extra: serde_json::Map::new(),
+    });
+    let a = resolve_stack(
+        std::slice::from_ref(&e),
+        0.0,
+        1000.0,
+        1.0,
+        &MarkerContext::NONE,
+    );
+    // 0.5 × 0.80 = 0.40.
+    let Resolved::Scanlines { intensity, .. } = a[0] else {
+        panic!("expected a scanlines op");
+    };
+    assert!(
+        (intensity - 0.40).abs() < 1e-6,
+        "old Darkness folds into Intensity: got {intensity}"
     );
 }
 
@@ -3913,7 +4085,7 @@ fn cpu_scanlines_is_identity_at_zero_intensity() {
     let (w, h) = (17u32, 9u32);
     let img = transform_card(w, h);
     let mut a = img.clone();
-    cpu::scanlines(&mut a, w, h, 0.0, 3.0, 0.6, 1.0, true, 0.4);
+    cpu::scanlines(&mut a, w, h, 0.0, 3.0, 1.0, true, 0.4);
     assert_eq!(a, img, "intensity 0 is the exact identity");
 }
 
@@ -3961,9 +4133,10 @@ fn cpu_scanlines_darken_a_periodic_band() {
     let red_at = |img: &[f32], y: u32| img[(y * w * 4) as usize];
 
     // Period 4px, no roll, no interlace: rows 0-1 of every period are
-    // bright, rows 2-3 dark — the same shape every period.
+    // bright, rows 2-3 dark — the same shape every period. Intensity 0.5
+    // takes the dark rows to half brightness (1 − intensity).
     let mut out = img.clone();
-    cpu::scanlines(&mut out, w, h, 1.0, 4.0, 0.5, 0.0, false, 1.0);
+    cpu::scanlines(&mut out, w, h, 0.5, 4.0, 0.0, false, 1.0);
     for y in 0..h {
         let expect = if (y % 4) < 2 { 1.0 } else { 0.5 };
         assert_eq!(red_at(&out, y), expect, "row {y}");
@@ -3973,7 +4146,7 @@ fn cpu_scanlines_darken_a_periodic_band() {
     // (rows 4-7) is dark-then-bright instead of bright-then-dark;
     // period 0 and period 2 (even) are unaffected.
     let mut inter = img.clone();
-    cpu::scanlines(&mut inter, w, h, 1.0, 4.0, 0.5, 0.0, true, 1.0);
+    cpu::scanlines(&mut inter, w, h, 0.5, 4.0, 0.0, true, 1.0);
     assert_eq!(red_at(&inter, 0), 1.0, "period 0 unaffected");
     assert_eq!(red_at(&inter, 2), 0.5, "period 0 unaffected");
     assert_eq!(red_at(&inter, 4), 0.5, "period 1 flips: dark first");

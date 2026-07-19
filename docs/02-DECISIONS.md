@@ -1683,6 +1683,65 @@ zooms to hide edges). CPU/GPU parity and the §1.6 oracle hold across all three 
 Spec: [08-EFFECTS.md](08-EFFECTS.md) §3.4. Built in an isolated worktree; not pushed —
 another agent may also claim K-146, renumber on merge if so.
 
+**K-147 · DECIDED · Scanlines collapses to a single Intensity (FX-13).** The Scanlines
+effect (§3.12) previously carried two darken controls — **Intensity** (0–1) and **Darkness**
+(%) — that multiplied into one darken amount (`eff_mult = 1 − Intensity × Darkness` on the
+dark half), so two dials did one job. They collapse into a **single Intensity** (0–1 = *how
+dark the dark lines get*: 0 the bit-exact passthrough, 1 takes the dark half to black); the
+bright half is untouched and Line period / Roll speed / Interlace / Mix are unchanged. The
+schema drops `scanline_darkness` and bumps the effect version 1 → 2. **Migration:** a project
+saved with the old pair still carries its `scanline_darkness` param; the resolve arm folds it
+in — the single Intensity resolves to the old `Intensity × Darkness` product — so the loaded
+look is unchanged (pinned by `scanlines_migrates_old_darkness_into_intensity`). The kernel is
+simplified (the dark half's base is black, band 0, so `eff_mult = 1 − Intensity`), keeping
+CPU/GPU parity and the §1.6 oracle; Intensity 0 stays a bit-exact passthrough via the
+early-return. Spec: [08-EFFECTS.md](08-EFFECTS.md) §3.12. Built in an isolated worktree; not
+pushed — another agent may also claim K-147, renumber on merge if so.
+
+**K-148 · DECIDED · Datamosh gains Streak length and an open Intensity ceiling (FX-14).**
+The Datamosh effect (§3.12) was too subtle at its one-frame reach. Two changes: (1) the
+**Intensity** hard cap lifts (K-135 value-range policy) — clamped at zero below, open above,
+so a value over 1 extrapolates past the moshed frame for a punchier tear (`mix()` does not
+clamp in either the CPU oracle or the WGSL kernel; 0 stays a bit-exact passthrough). (2) a new
+**Streak length** (frames, default 4, hard min 1, open above) scales the flow displacement the
+single warp reaches, so it predicts that many frames of motion from the -1 reference — the
+accumulated smear of a long P-frame run before a clean reference frame (longer = more
+smearing). The shared optical-flow texture stays `rgba32float`; only its `.xy` is read (the
+`.z` confidence lane is untouched). The clean I-frame "reset" is content-driven — where the
+flow is zero/unmeasurable (a still, a cut) the warp lands on the pixel itself; a
+**fixed-interval** I-frame reset was considered but deferred, as it needs the comp frame index
+threaded through `resolve_stack` (a broad signature change for one parameter) and Streak length
+already delivers the "how much accumulated smear" control without it. The schema bumps version
+1 → 2. **Migration:** an old project (no `streak_length` param) folds to the default 4-frame
+reach — a deliberate look change (the effect was too subtle), the sanctioned kind K-146 also
+took. CPU/GPU parity and the §1.6 oracle hold (the oracle sweeps streaks 1–4 and an over-unity
+intensity). The `match_name` and label stay "datamosh" for now; a rename is wanted but
+unchosen (candidate names proposed to the owner). Spec: [08-EFFECTS.md](08-EFFECTS.md) §3.12.
+Built in an isolated worktree; not pushed — another agent may also claim K-148, renumber on
+merge if so.
+
+**K-149 · DECIDED · Echo gains the standard blend modes (default Screen) and a 16-echo cap
+(FX-17).** The Echo effect (§3.13) previously offered three combine modes (Add / Behind / Max)
+and reached at most 8 frames back. Two changes: (1) **Mode** now mirrors the comp blend set —
+Normal, Add, Multiply, Screen, Overlay, Soft light, Hard light, Lighten (the legacy Max),
+Darken — plus the echo-specific **Behind** (ghosting), with the **default changed to Screen**.
+Each mode folds the weighted echo tap into the trail **per channel in the working linear
+premultiplied space** — not the compositor's perceptual sRGB domain, because Echo composites
+light trails (linear is correct there) and a single arithmetic domain keeps the CPU oracle
+(`cpu::echo_blend`) and the WGSL `echo_accumulate` bit-for-bit identical. The legacy Choice
+indices 0/1/2 (Add/Behind/Max) are held and the new modes appended, so a project saved before
+FX-17 loads unchanged; only new instances default to Screen. (2) The **echo-count cap rises
+8 → 16**: the static `temporal` window and the resolved/kernel weight arrays grow to 16
+(`[f32; 16]`), so up to 16 neighbour frames are decoded when Echo is live — a Spacing control
+and a dynamic window (the eventual 1–32 of the spec's parameter line) remain later
+refinements. The schema bumps version 1 → 2. CPU/GPU parity and the §1.6 oracle hold: the
+oracle sweeps every mode (the additive trio two-tap at ≤4 fp16 ULP, the
+multiplicative/perceptual modes single-tap at ≤8, the looser bound justified by their local
+slope amplifying the fp16 quantisation of the current frame against HDR neighbours — still
+orders of magnitude tighter than any formula error). Spec: [08-EFFECTS.md](08-EFFECTS.md)
+§3.13. Built in an isolated worktree; not pushed — another agent may also claim K-149,
+renumber on merge if so.
+
 **K-150 · DECIDED · A new layer's transform centres its anchor on its own content (FX-20).**
 A freshly added layer defaults its **anchor** (origin) to the centre of its *own* pixel
 content and its **position** to the composition centre, so it appears centred and pivots

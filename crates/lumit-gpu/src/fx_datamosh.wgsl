@@ -15,10 +15,10 @@
 // sampling `prev` instead of `src`).
 
 struct Params {
-    intensity: f32, // 0..1, blended against the current frame
+    intensity: f32, // blended against the current frame (> 1 extrapolates)
+    streak: f32,    // frames of predicted motion the warp reaches (FX-14)
     _pad0: f32,
     _pad1: f32,
-    _pad2: f32,
 };
 
 @group(0) @binding(0) var cur: texture_2d<f32>;
@@ -56,7 +56,9 @@ fn datamosh(@builtin(global_invocation_id) gid: vec3<u32>) {
         return;
     }
     let pos = vec2<f32>(xy) + vec2<f32>(0.5);
-    let uv = textureLoad(flow, xy, 0).xy;
+    // Read only the flow's .xy (the .z confidence lane is untouched); scale by
+    // the streak reach so a longer run accumulates more predicted motion.
+    let uv = textureLoad(flow, xy, 0).xy * p.streak;
     let warped = bilinear_clamp(pos.x + uv.x, pos.y + uv.y, size);
     let c = textureLoad(cur, xy, 0);
     textureStore(dst, xy, mix(c, warped, p.intensity));

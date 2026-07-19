@@ -700,23 +700,28 @@ carries the layer's local time into its cache key with no effect-specific plumbi
 
 #### Scanlines
 
-**Parameters:** Intensity (0–1, default 0.35, the master dial), Line period (px@comp,
-default 3), Darkness (%, default 40), Roll speed (lines/s, default 0, either direction),
-Interlace offset (Bool, default off), Mix.
+**Parameters:** Intensity (0–1, default 0.35), Line period (px@comp, default 3), Roll speed
+(lines/s, default 0, either direction), Interlace offset (Bool, default off), Mix.
 
 **Algorithm sketch.** A pointwise periodic darken in raster Y (plus the roll offset — roll
 speed × time × period, host-computed so the kernel never sees raw time), alternating which
 half of each period darkens on odd periods when Interlace offset is on — the classic
-interlaced-field look. No hash, no neighbour read: reads the input pixel directly, so ROI is
-`exact` (tighter than Block glitch's `full-frame`) and there is no Seed parameter. Intensity
-0 is the bit-exact passthrough, pinned by the same early-return shape as Block glitch's.
-`cheap` cost. Not seeded (`seeded: false`) — its pixels are a pure function of the frame's
-own position and the host-computed roll offset, not a random-looking hash, so it needs no
-extra cache-key plumbing beyond the ordinary parameter-animation case.
+interlaced-field look. **Intensity is the single darken dial** (FX-13, K-147): 0..1 is *how
+dark the dark lines get* — 0 the bit-exact passthrough, 1 takes them to black; the bright
+half is untouched. This collapses the former Intensity × Darkness pair (which multiplied to
+one darken amount) into one control; a project saved with the old pair folds losslessly on
+load — the single Intensity resolves to the old Intensity × Darkness product. No hash, no
+neighbour read: reads the input pixel directly, so ROI is `exact` (tighter than Block
+glitch's `full-frame`) and there is no Seed parameter. Intensity 0 is the bit-exact
+passthrough, pinned by the same early-return shape as Block glitch's. `cheap` cost. Not
+seeded (`seeded: false`) — its pixels are a pure function of the frame's own position and the
+host-computed roll offset, not a random-looking hash, so it needs no extra cache-key plumbing
+beyond the ordinary parameter-animation case.
 
 #### Datamosh
 
-**Parameters:** Intensity (0–1, default 0.5), Mix.
+**Parameters:** Intensity (default 0.5, open above per K-135), Streak length (frames,
+default 4, hard min 1, open above per K-135), Mix.
 
 **Algorithm sketch.** Simulates I-frame removal by re-warping the previous source frame
 with the flow field measured from the current frame to it, instead of showing the current
@@ -724,9 +729,20 @@ frame — blended by Intensity × Mix. It is a *look*, not real bitstream corrup
 deterministic and safe. Reuses the §3.2 flow machinery Motion blur introduced (`flow_pair`
 on the shared `FlowEngine`) rather than needing new plumbing. A single bilinear tap per
 pixel reads the -1 neighbour at the position its own flow vector displaces to — a
-motion-compensated prediction, not Motion blur's multi-tap streak integral. Footage-only:
-with no -1 neighbour or flow field (a non-footage layer, or a dropped decode) it degrades to
-a no-op, never a fault. Temporal window `{-1, 0}` — statically, unlike its K-104-era shape as
+motion-compensated prediction, not Motion blur's multi-tap streak integral. **Streak length**
+(FX-14, K-148) scales that flow displacement, so the single warp reaches that many frames of
+predicted motion — the accumulated smear of a long P-frame run before a clean reference frame
+(longer = more smearing), directly addressing the effect being too subtle at one frame's
+reach. The clean "reset" is content-driven: where the flow is zero or unmeasurable (a still,
+a cut) the warp lands on the pixel itself, exactly where a real codec inserts an I-frame; a
+fixed-interval I-frame reset would need the comp frame index threaded into resolve and is a
+later refinement. **Intensity's hard ceiling is open** (K-135): above 1 the blend
+extrapolates past the moshed frame for a punchier tear (`mix()` does not clamp in either the
+CPU or GPU path); 0 stays the bit-exact passthrough regardless of Streak length. Only the
+flow's `.xy` is read (the shared field's `.z` confidence lane is left untouched).
+Footage-only: with no -1 neighbour or flow field (a non-footage layer, or a dropped decode)
+it degrades to a no-op, never a fault. Temporal window `{-1, 0}` — statically, unlike its
+K-104-era shape as
 a toggle inside the combined Glitch effect (see Status below). A layer can carry only one
 flow field per frame in v1; if a stack somehow has both a live Motion blur and a live
 Datamosh, whichever comes first in stack order wins the single slot and the other's
@@ -756,17 +772,23 @@ resolved through Retime so slow-motion echoes stretch correctly), each transform
 attenuated. Temporal window declared dynamically from Count × Spacing so the prefetcher
 plans decode. `moderate` cost, `full-frame` ROI.
 
-**v1 status (shipped).** Echo is the first temporal effect — the render decodes the layer's
-source at each offset in the stack's temporal window (`fx::stack_temporal_window`) and hands
-them to the pass; the frame-cache key hashes those neighbour frames too (K-094). Pinned
-simplifications for v1: **Echoes 1–8 at a fixed one-frame spacing** (the trait's `temporal`
-window is `&'static`, so the maximum reach is a fixed 8-frame cap; a Spacing control and a
-larger/dynamic window are a later refinement), **intensity `Decay^k`** per echo `k`, and
-**Modes Add / Behind / Max** (Screen / Front and the per-echo Transform fan follow). It reads
-the layer's **source** frames, not the upstream stack's output at those times (full temporal
-stacking is later), and echoes footage layers only — Sequence-clip and adjustment-layer
-temporal effects are deferred. Marker-triggerable intensity spikes come with the §1.4 wiring
-already in place.
+**v1 status (shipped; blend modes + 16-echo cap FX-17/K-149).** Echo is the first temporal
+effect — the render decodes the layer's source at each offset in the stack's temporal window
+(`fx::stack_temporal_window`) and hands them to the pass; the frame-cache key hashes those
+neighbour frames too (K-094). Pinned simplifications for v1: **Echoes 1–16 at a fixed
+one-frame spacing** (the trait's `temporal` window is `&'static`, so the maximum reach is a
+fixed cap — raised from 8 to 16 by FX-17; a Spacing control and a larger/dynamic window are a
+later refinement) and **intensity `Decay^k`** per echo `k`. **Blend modes** now mirror the
+comp set — **Normal, Add, Multiply, Screen, Overlay, Soft light, Hard light, Lighten (= the
+legacy Max), Darken** — plus the echo-specific **Behind** (ghosting); the **default is
+Screen**. Each mode folds the weighted echo tap into the running trail per channel in the
+**working linear premultiplied space** (not the compositor's perceptual sRGB domain — Echo
+composites light trails, so it stays linear, which also keeps the CPU oracle and WGSL kernel
+bit-for-bit identical). The legacy mode indices 0/1/2 (Add/Behind/Max) are held so a project
+saved before FX-17 loads unchanged; the new modes are appended. It reads the layer's
+**source** frames, not the upstream stack's output at those times (full temporal stacking is
+later), and echoes footage layers only — Sequence-clip and adjustment-layer temporal effects
+are deferred. Marker-triggerable intensity spikes come with the §1.4 wiring already in place.
 
 ### 3.14 Vignette
 

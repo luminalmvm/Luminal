@@ -1692,17 +1692,19 @@ pub const BUILTINS: &[EffectSchema] = &[
         ],
     },
     // Scanlines (docs/08 §3.12, split out of the old combined Glitch effect
-    // by K-107). No hash, no seed — a pointwise periodic darken read
-    // straight from the input pixel, never a neighbour, so its ROI is
-    // `exact` (tighter than Block glitch's full-frame). Category Distortion,
-    // alongside Block glitch and Datamosh. Roll speed's sign is open (either
-    // direction); Interlace alternates which half of each scanline period
-    // darkens on odd periods, the classic interlaced-field look.
+    // by K-107; collapsed to a single Intensity by FX-13/K-147). No hash, no
+    // seed — a pointwise periodic darken read straight from the input pixel,
+    // never a neighbour, so its ROI is `exact` (tighter than Block glitch's
+    // full-frame). Category Distortion, alongside Block glitch and Datamosh.
+    // Roll speed's sign is open (either direction); Interlace alternates which
+    // half of each scanline period darkens on odd periods, the classic
+    // interlaced-field look. Intensity is now the one darken dial (the old
+    // separate Darkness param folds into it on load).
     EffectSchema {
         groups: &[],
         match_name: "scanlines",
         label: "Scanlines",
-        version: 1,
+        version: 2,
         category: FxCategory::Distortion,
         traits: EffectTraits {
             cost: CostClass::Cheap,
@@ -1716,8 +1718,11 @@ pub const BUILTINS: &[EffectSchema] = &[
             ParamSchema {
                 id: "intensity",
                 label: "Intensity",
-                // The master dial (§1.2): scales the darken strength. 0 is
-                // the bit-exact passthrough (pinned by test).
+                // The single dial (FX-13, K-147): 0..1 is how dark the dark
+                // lines get — 0 is the bit-exact passthrough (pinned by test),
+                // 1 takes the dark lines to black. Collapses the old
+                // Intensity × Darkness pair into one control; an old project's
+                // Darkness folds into this on load (the resolve arm).
                 kind: ParamKind::Float {
                     default: 0.35,
                     slider: (0.0, 1.0),
@@ -1732,15 +1737,6 @@ pub const BUILTINS: &[EffectSchema] = &[
                     default: 3.0,
                     slider: (1.0, 20.0),
                     hard: (Some(1.0), None),
-                },
-            },
-            ParamSchema {
-                id: "scanline_darkness",
-                label: "Darkness",
-                kind: ParamKind::Float {
-                    default: 40.0,
-                    slider: (0.0, 100.0),
-                    hard: (Some(0.0), Some(100.0)),
                 },
             },
             ParamSchema {
@@ -1761,28 +1757,30 @@ pub const BUILTINS: &[EffectSchema] = &[
             MIX_PARAM,
         ],
     },
-    // Datamosh (docs/08 §3.12, K-104, split out on its own by K-107):
-    // re-warps the -1 source neighbour along the flow measured from this
-    // frame to it — "reused an old frame's motion" — blended by Intensity.
-    // Reuses Motion blur's flow machinery and its own already-shipped GPU
-    // pass/CPU oracle unchanged (`FxEngine::datamosh`, `cpu::datamosh`):
-    // only the schema, the `Resolved` variant and the stack wiring are new.
-    // Previously a toggle inside the combined Glitch effect with a dynamic
-    // per-instance temporal reach (the one place `stack_temporal_window`/
-    // `stack_flow_neighbour` read a param value instead of the schema's own
-    // static `temporal`); as its own effect that toggle is gone and the
-    // reach is simply the schema's `{0, -1}`, exactly the static shape
-    // Motion blur's own `{0, 1}` already has. Footage-only: with no -1
-    // neighbour or flow field (a non-footage layer, or a dropped decode) it
-    // degrades to a no-op, never a fault. Category Distortion, matching
-    // Shake and RGB split (its closest siblings: a seeded positional
-    // wobble, a channel split) — but Datamosh itself reads no hash or seed,
-    // so `seeded: false`, unlike them.
+    // Datamosh (docs/08 §3.12, K-104, split out on its own by K-107; FX-14/
+    // K-148 lifted the Intensity cap and added Streak length): re-warps the
+    // -1 source neighbour along the flow measured from this frame to it —
+    // "reused an old frame's motion" — blended by Intensity. Streak length
+    // scales that flow displacement, so the single warp reaches that many
+    // frames of predicted motion — the accumulated smear of a long P-frame
+    // run before a clean reference frame (longer = more smearing). Reuses
+    // Motion blur's flow machinery and its GPU pass/CPU oracle
+    // (`FxEngine::datamosh`, `cpu::datamosh`). Previously a toggle inside the
+    // combined Glitch effect with a dynamic per-instance temporal reach (the
+    // one place `stack_temporal_window`/`stack_flow_neighbour` read a param
+    // value instead of the schema's own static `temporal`); as its own effect
+    // that toggle is gone and the reach is simply the schema's `{0, -1}`,
+    // exactly the static shape Motion blur's own `{0, 1}` already has.
+    // Footage-only: with no -1 neighbour or flow field (a non-footage layer,
+    // or a dropped decode) it degrades to a no-op, never a fault. Category
+    // Distortion, matching Shake and RGB split (its closest siblings: a
+    // seeded positional wobble, a channel split) — but Datamosh itself reads
+    // no hash or seed, so `seeded: false`, unlike them.
     EffectSchema {
         groups: &[],
         match_name: "datamosh",
         label: "Datamosh",
-        version: 1,
+        version: 2,
         category: FxCategory::Distortion,
         traits: EffectTraits {
             cost: CostClass::Cheap,
@@ -1799,12 +1797,27 @@ pub const BUILTINS: &[EffectSchema] = &[
             ParamSchema {
                 id: "intensity",
                 label: "Intensity",
-                // 0..1: blends between the ordinary frame and the moshed
-                // one. 0 is the bit-exact passthrough (pinned by test).
+                // Blends between the ordinary frame and the moshed one. 0 is
+                // the bit-exact passthrough (pinned by test); the hard ceiling
+                // is open (K-135/FX-14), so > 1 extrapolates past the moshed
+                // frame for a punchier tear.
                 kind: ParamKind::Float {
                     default: 0.5,
                     slider: (0.0, 1.0),
-                    hard: (Some(0.0), Some(1.0)),
+                    hard: (Some(0.0), None),
+                },
+            },
+            ParamSchema {
+                id: "streak_length",
+                label: "Streak length",
+                // Frames of predicted motion the single warp reaches: 1 is
+                // the historical one-frame prediction, higher reaches further
+                // along the flow so more smearing accumulates (the P-frame run
+                // length between clean reference frames). Open above (K-135).
+                kind: ParamKind::Float {
+                    default: 4.0,
+                    slider: (1.0, 16.0),
+                    hard: (Some(1.0), None),
                 },
             },
             MIX_PARAM,
@@ -1815,24 +1828,27 @@ pub const BUILTINS: &[EffectSchema] = &[
     // the render decodes the layer's source at those offsets). v1 status,
     // pinned here: echoes are spaced one comp frame apart (a Spacing control
     // is a later refinement), so the window reaches back Echoes frames, up to
-    // 8 (the static trait cap). Each echo k is at offset -k with intensity
-    // Decay^k, a geometric trail. Mode chooses how the echoes combine with
-    // the leading frame — Add sums light (bright trails), Behind lays them
-    // under it (ghosting), Max lightens per channel. Cheap and full-frame
-    // (it reads whole neighbour frames). Operates on the layer's *source*
-    // frames, not the upstream stack's output at those times (full temporal
-    // stacking is later) — so it echoes the footage, placed by the layer's
-    // own transform like any effect output.
+    // 16 (the static trait cap, raised from 8 by FX-17/K-149). Each echo k is
+    // at offset -k with intensity Decay^k, a geometric trail. Mode chooses how
+    // each echo combines into the trail — the standard compositing blend modes
+    // (default Screen, FX-17/K-149) plus the echo-specific Behind (ghosting)
+    // and Max (lighten). Cheap and full-frame (it reads whole neighbour
+    // frames). Operates on the layer's *source* frames, not the upstream
+    // stack's output at those times (full temporal stacking is later) — so it
+    // echoes the footage, placed by the layer's own transform like any effect
+    // output.
     EffectSchema {
         groups: &[],
         match_name: "echo",
         label: "Echo",
-        version: 1,
+        version: 2,
         category: FxCategory::Temporal,
         traits: EffectTraits {
             cost: CostClass::Cheap,
             roi: Roi::FullFrame,
-            temporal: &[0, -1, -2, -3, -4, -5, -6, -7, -8],
+            temporal: &[
+                0, -1, -2, -3, -4, -5, -6, -7, -8, -9, -10, -11, -12, -13, -14, -15, -16,
+            ],
             premultiplied: true,
             seeded: false,
             beat_input: false,
@@ -1842,11 +1858,12 @@ pub const BUILTINS: &[EffectSchema] = &[
                 id: "echoes",
                 label: "Echoes",
                 // Count of trailing frames; each is one comp frame further
-                // back (v1 fixed spacing). Capped at the 8-frame window.
+                // back (v1 fixed spacing). Capped at the 16-frame window
+                // (FX-17/K-149, raised from 8).
                 kind: ParamKind::Float {
                     default: 4.0,
-                    slider: (1.0, 8.0),
-                    hard: (Some(1.0), Some(8.0)),
+                    slider: (1.0, 16.0),
+                    hard: (Some(1.0), Some(16.0)),
                 },
             },
             ParamSchema {
@@ -1862,9 +1879,26 @@ pub const BUILTINS: &[EffectSchema] = &[
             ParamSchema {
                 id: "mode",
                 label: "Mode",
+                // The standard compositing blend modes mirroring the comp
+                // set (Normal, Add, Multiply, Screen, Overlay, Soft light,
+                // Hard light, Lighten [= Max], Darken), plus the echo-specific
+                // Behind (ghosting). The legacy indices 0/1/2 (Add/Behind/Max)
+                // are held so old projects load unchanged; the new modes are
+                // appended and the default is Screen (index 3, FX-17/K-149).
                 kind: ParamKind::Choice {
-                    options: &["Add", "Behind", "Max"],
-                    default: 1,
+                    options: &[
+                        "Add",
+                        "Behind",
+                        "Max",
+                        "Screen",
+                        "Normal",
+                        "Multiply",
+                        "Overlay",
+                        "Soft light",
+                        "Hard light",
+                        "Darken",
+                    ],
+                    default: 3,
                 },
             },
             MIX_PARAM,

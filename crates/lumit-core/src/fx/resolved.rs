@@ -355,17 +355,17 @@ pub enum Resolved {
         /// 0..1.
         mix: f32,
     },
-    /// Scanlines (docs/08 §3.12, split out by K-107). `roll_px` is the
-    /// scanline pattern's already-computed pixel offset (roll speed × local
-    /// time × period), host-computed so the kernel never sees raw time.
-    /// Intensity 0 is the bit-exact passthrough (pinned by test).
+    /// Scanlines (docs/08 §3.12, split by K-107; single Intensity since
+    /// FX-13/K-147). `roll_px` is the scanline pattern's already-computed
+    /// pixel offset (roll speed × local time × period), host-computed so the
+    /// kernel never sees raw time. Intensity 0 is the bit-exact passthrough
+    /// (pinned by test).
     Scanlines {
-        /// The master 0..1 dial; scales the darken strength.
+        /// The single 0..1 dial: how dark the dark lines get (1 = black).
+        /// An old project's separate Darkness folds into this at resolve.
         intensity: f32,
         /// Raster pixels (px@comp × the §2.3 preview factor).
         period_px: f32,
-        /// 0..1.
-        darkness: f32,
         /// The scanline pattern's pixel offset at this frame (roll speed ×
         /// local time × period_px, host-computed).
         roll_px: f32,
@@ -381,8 +381,13 @@ pub enum Resolved {
     /// footage and the decode fetched them; a missing pair degrades this to
     /// a no-op, never a fault.
     Datamosh {
-        /// 0..1: blended against the current frame.
+        /// Blend against the current frame; 0 the passthrough, > 1
+        /// extrapolates past the moshed frame (open ceiling, K-135/FX-14).
         intensity: f32,
+        /// Frames of predicted motion the warp reaches (FX-14): scales the
+        /// flow displacement, so a longer streak accumulates more smearing
+        /// from the -1 reference. 1 is the historical one-frame prediction.
+        streak: f32,
         /// 0..1, the host Mix. Composes with `intensity` by multiplication
         /// before reaching the kernel (mixing the same two inputs twice
         /// collapses to one mix by the product), so the existing GPU/CPU
@@ -391,10 +396,12 @@ pub enum Resolved {
     },
     /// Echo / trails (docs/08 §3.13). `weights[i]` is the intensity of the
     /// echo at frame offset `-(i+1)` (0 = no echo there); the render supplies
-    /// the neighbour frame at each live offset. `mode`: 0 = Add, 1 = Behind,
-    /// 2 = Max.
+    /// the neighbour frame at each live offset. `mode` is the combine blend
+    /// (FX-17/K-149): 0 = Add, 1 = Behind, 2 = Max, 3 = Screen, 4 = Normal,
+    /// 5 = Multiply, 6 = Overlay, 7 = Soft light, 8 = Hard light, 9 = Darken.
+    /// Up to 16 echoes (the raised static window).
     Echo {
-        weights: [f32; 8],
+        weights: [f32; 16],
         mode: u32,
         /// 0..1.
         mix: f32,
@@ -1019,11 +1026,19 @@ fn resolve_one(
             })
         }
         "scanlines" => {
-            let intensity = (e.float_at("intensity", lt).unwrap_or(0.35) as f32).clamp(0.0, 1.0);
+            // The single Intensity (FX-13, K-147): 0..1 = how dark the dark
+            // lines get. An old project also carried a separate Darkness
+            // param (0..100): fold it in, so the loaded look is the old
+            // Intensity × Darkness product exactly. A new project has no
+            // Darkness param, so the raw Intensity stands.
+            let raw = e.float_at("intensity", lt).unwrap_or(0.35);
+            let folded = match e.float_at("scanline_darkness", lt) {
+                Some(darkness_pct) => raw * (darkness_pct / 100.0),
+                None => raw,
+            };
+            let intensity = (folded as f32).clamp(0.0, 1.0);
             let period_px =
                 (e.float_at("scanline_period", lt).unwrap_or(3.0) as f32 * px_scale).max(1.0);
-            let darkness = (e.float_at("scanline_darkness", lt).unwrap_or(40.0) as f32 / 100.0)
-                .clamp(0.0, 1.0);
             let roll_speed = e.float_at("scanline_roll", lt).unwrap_or(0.0);
             // The scanline pattern's pixel offset at this frame (roll
             // speed × local time × period), so the kernel never sees
@@ -1039,30 +1054,42 @@ fn resolve_one(
             Some(Resolved::Scanlines {
                 intensity,
                 period_px,
-                darkness,
                 roll_px,
                 interlace,
                 mix,
             })
         }
         "datamosh" => {
-            let intensity = (e.float_at("intensity", lt).unwrap_or(0.5) as f32).clamp(0.0, 1.0);
+            // Intensity ceiling is open (K-135/FX-14): clamp only at zero, so
+            // > 1 extrapolates past the moshed frame. An old project with no
+            // Streak length param reaches the default 4 frames — deliberately
+            // stronger than the historical one-frame prediction (FX-14: the
+            // effect was too subtle), a sanctioned look change.
+            let intensity = (e.float_at("intensity", lt).unwrap_or(0.5) as f32).max(0.0);
+            let streak = (e.float_at("streak_length", lt).unwrap_or(4.0) as f32).max(1.0);
             let mix = (e.float_at("mix", lt).unwrap_or(100.0) as f32 / 100.0).clamp(0.0, 1.0);
-            Some(Resolved::Datamosh { intensity, mix })
+            Some(Resolved::Datamosh {
+                intensity,
+                streak,
+                mix,
+            })
         }
         "echo" => {
             // Echoes k = 1..count sit at offset -k with intensity
             // decay^k (v1 fixed one-frame spacing); the render supplies
             // the neighbour frame at each offset. weights[i] is the echo
-            // at offset -(i+1).
-            let count = (e.float_at("echoes", lt).unwrap_or(4.0).round() as i32).clamp(1, 8);
+            // at offset -(i+1). Up to 16 echoes (FX-17/K-149).
+            let count = (e.float_at("echoes", lt).unwrap_or(4.0).round() as i32).clamp(1, 16);
             let decay = (e.float_at("decay", lt).unwrap_or(0.6) as f32).clamp(0.0, 1.0);
+            // Combine blend mode; the default when the param is absent matches
+            // the schema default (Screen, index 3). Clamped to the 0..9 range
+            // the CPU oracle and WGSL kernel branch over.
             let mode = match e.param("mode") {
-                Some(EffectValue::Choice(c)) => (*c).min(2),
-                _ => 1,
+                Some(EffectValue::Choice(c)) => (*c).min(9),
+                _ => 3,
             };
             let mix = (e.float_at("mix", lt).unwrap_or(100.0) as f32 / 100.0).clamp(0.0, 1.0);
-            let mut weights = [0.0f32; 8];
+            let mut weights = [0.0f32; 16];
             for (i, w) in weights.iter_mut().enumerate() {
                 if (i as i32) < count {
                     *w = decay.powi(i as i32 + 1);
