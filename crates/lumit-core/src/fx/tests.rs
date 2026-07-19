@@ -103,6 +103,90 @@ fn this_layer_effect_time_holds_only_the_this_layer_scope() {
     );
 }
 
+// posterize_sample_times (docs/08 §3.25): the decode planner's per-layer held
+// comp time — the piece that makes Posterize Time step *footage playback*, not
+// only comp-driven animation. An Everything-below adjustment holds every layer
+// beneath it; a This-layer Posterize holds only its own layer; a plain stack is
+// left at the live playhead. This is the FX-1 regression: the sampled time must
+// snap to the rate.
+#[test]
+fn posterize_sample_times_snap_covered_layers_to_the_grid() {
+    use crate::model::{LayerKind, Switches, TransformGroup};
+    use crate::time::{CompTime, Rational};
+    let secs = |n: i64, d: i64| CompTime(Rational::new(n, d).unwrap());
+    let layer = |kind: LayerKind, effects: Vec<EffectInstance>| Layer {
+        id: uuid::Uuid::now_v7(),
+        name: "l".into(),
+        kind,
+        in_point: secs(0, 1),
+        out_point: secs(10, 1),
+        start_offset: secs(0, 1),
+        transform: TransformGroup::default(),
+        matte: None,
+        parent: None,
+        blend: Default::default(),
+        masks: Vec::new(),
+        effects,
+        switches: Switches::default(),
+        extra: serde_json::Map::new(),
+    };
+    let footage = |effects| {
+        layer(
+            LayerKind::Solid {
+                def: uuid::Uuid::now_v7(),
+            },
+            effects,
+        )
+    };
+
+    // Everything-below Posterize at 10 fps on an adjustment (index 0, the top),
+    // two plain layers beneath. At t = 0.37 the layers below snap to the 0.3
+    // grid; the adjustment carrying the effect is not held by its own effect.
+    let mut post = instantiate("posterize_time").unwrap();
+    for p in &mut post.params {
+        if p.id == "rate" {
+            p.value = EffectValue::Float(Property::fixed(10.0));
+        }
+    }
+    let layers = vec![
+        layer(LayerKind::Adjustment, vec![post.clone()]),
+        footage(vec![]),
+        footage(vec![]),
+    ];
+    let st = posterize_sample_times(&layers, 0.37);
+    assert!((st[0] - 0.37).abs() < 1e-9, "the adjustment itself is live");
+    assert!(
+        (st[1] - 0.3).abs() < 1e-9,
+        "a layer below snaps to the 10 fps grid"
+    );
+    assert!((st[2] - 0.3).abs() < 1e-9);
+
+    // A This-layer Posterize holds only its own layer's sampling; the layer
+    // below it stays live.
+    let mut this = instantiate("posterize_time").unwrap();
+    for p in &mut this.params {
+        match p.id.as_str() {
+            "rate" => p.value = EffectValue::Float(Property::fixed(10.0)),
+            "scope" => p.value = EffectValue::Choice(1),
+            _ => {}
+        }
+    }
+    let layers = vec![footage(vec![this]), footage(vec![])];
+    let st = posterize_sample_times(&layers, 0.37);
+    assert!(
+        (st[0] - 0.3).abs() < 1e-9,
+        "the This-layer layer snaps its own sampling"
+    );
+    assert!(
+        (st[1] - 0.37).abs() < 1e-9,
+        "a layer below a This-layer Posterize is untouched"
+    );
+
+    // No live Posterize → every layer stays at the live playhead.
+    let st = posterize_sample_times(&[footage(vec![]), footage(vec![])], 0.37);
+    assert!(st.iter().all(|&s| (s - 0.37).abs() < 1e-9));
+}
+
 // stack_accumulation_mb (docs/08 §3.26) finds the effect, resolves its shutter
 // and Mix, and derives the centred sub-frame offsets; a bypassed or plain stack
 // reports nothing, and it resolves to no per-pixel op (executed at the

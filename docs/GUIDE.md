@@ -204,16 +204,19 @@ Two mechanisms make this safe, and you'll see them by name in the code:
   layers or the clock). Instead it plugs in at the one place that holds the layers and the
   time — the render loop itself — and that place is the same in the preview and in an export,
   so they always agree (the whole point of the shared `render_below_at` helper: both the live
-  viewer and the file are literally the same re-render code). Two honest details: the footage
-  itself is *held* (it does not step frame-by-frame — smoothing footage in time is the flow
-  Motion blur effect's job), so Posterize quantises the *movement and effects*, not the video
-  playback; and a couple of exotic combinations (an echo *inside* the held part, or Posterize
-  buried in a collapsed precomp) quietly do nothing rather than risk a wrong picture. There is
-  also a Scope switch for a per-layer version, "just this layer's own effects": drop Posterize
-  onto a normal layer and set that scope, and only *that layer's effects* go choppy on the grid
-  — the layer keeps moving smoothly, but its blur, glow, glitch and so on step in time. It needs
-  no re-render of the rest of the scene at all: the layer simply reads a "held" clock for its
-  own effect stack while its position and picture read the live one. That is why it is the
+  viewer and the file are literally the same re-render code). Two honest details: the *video
+  frame itself* also steps to the coarse grid (that was the FX-1 fix — a scene that is only
+  footage playing back would otherwise look untouched, because only the animation was being held;
+  now the app also picks the held moment's source frame, so playback visibly chunks along at, say,
+  12 a second). Smoothing footage *between* those held frames — real motion blur on the streaks —
+  is a different effect (the flow Motion blur); Posterize just quantises the playback grid. And a
+  couple of exotic combinations (an echo *inside* the held part, or Posterize buried in a
+  collapsed precomp) quietly do nothing rather than risk a wrong picture. There is also a Scope
+  switch for a per-layer version, "just this layer's own effects": drop Posterize onto a normal
+  layer and set that scope, and only *that layer* goes choppy on the grid — its effects and its
+  footage playback step while the layer keeps *moving* smoothly. It needs no re-render of the rest
+  of the scene at all: the layer simply reads a "held" clock for its own effect stack and source
+  frame while its position reads the live one. That is why it is the
   cheap, simple cousin of the whole-scene version.
 - **"Don't re-sample this effect" — a per-effect opt-out for the choppy passes.** When
   Posterize time (and, soon, accumulation motion blur) re-renders the scene at a *different*

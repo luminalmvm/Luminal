@@ -1,5 +1,5 @@
 use super::*;
-use crate::model::{EffectInstance, EffectNamespace, EffectValue};
+use crate::model::{EffectInstance, EffectNamespace, EffectValue, Layer, LayerKind};
 
 /// Which layers a Posterize Time effect (docs/08 §3.25) holds in time — the
 /// owner's Scope choice.
@@ -90,6 +90,57 @@ pub fn stack_posterize(
             };
             PosterizeParams { rate, phase, scope }
         })
+}
+
+/// The comp time each layer in a stack is *sampled* at — the time its source
+/// footage is decoded and its transform/effects read — once the live Posterize
+/// Time effects covering it have held their input on the coarse grid (docs/08
+/// §3.25, docs/impl/temporal-rerender.md). The vector is 1:1 with `layers` and
+/// in the same top-to-bottom document order (index 0 is the topmost layer, so a
+/// layer at a higher index is *below*).
+///
+/// Two holds compose onto a running sample time as the walk descends:
+/// * a **This layer** Posterize on a layer holds that layer's own sample time
+///   (so its footage playback and transform step — the owner's per-layer
+///   stop-motion), affecting only itself;
+/// * an **Everything below** Posterize on an adjustment layer holds the sample
+///   time of every layer beneath it (the owner's global stop-motion pass).
+///
+/// This is the piece that makes Posterize Time visibly step *footage playback*,
+/// not only comp-driven animation: the decode planner reads this to snap which
+/// source frame each covered layer decodes to the held grid, matching the held
+/// re-render the draw builder already performs. Nested/stacked Posterize
+/// adjustments compose by snapping the already-held time again, so a coarser
+/// grid above dominates. Pure and deterministic, and shared by the preview
+/// decode planner and export so the two hold the identical frame (K-031).
+pub fn posterize_sample_times(layers: &[Layer], t_comp: f64) -> Vec<f64> {
+    // The time imposed on the current layer by every Everything-below Posterize
+    // adjustment seen above it, composed. Starts at the true playhead.
+    let mut below_hold = t_comp;
+    let mut out = Vec::with_capacity(layers.len());
+    for layer in layers {
+        // Start from the time the adjustments above hold this layer at.
+        let mut sample_t = below_hold;
+        let lt = below_hold - layer.start_offset.0.to_f64();
+        // A This-layer Posterize holds this layer's own source sampling too.
+        if let Some(p) = stack_posterize(&layer.effects, layer.switches.fx, lt) {
+            if p.scope == PosterizeScope::ThisLayer {
+                sample_t = posterize_held_time(below_hold, p.rate, p.phase);
+            }
+        }
+        out.push(sample_t);
+        // An Everything-below Posterize on an adjustment layer holds every layer
+        // beneath it — compose its grid onto the running below-hold so nested
+        // adjustments snap the already-held time again.
+        if matches!(layer.kind, LayerKind::Adjustment) {
+            if let Some(p) = stack_posterize(&layer.effects, layer.switches.fx, lt) {
+                if p.scope == PosterizeScope::EverythingBelow {
+                    below_hold = posterize_held_time(below_hold, p.rate, p.phase);
+                }
+            }
+        }
+    }
+    out
 }
 
 /// An accumulation motion blur effect resolved at a layer time (docs/08 §3.26,

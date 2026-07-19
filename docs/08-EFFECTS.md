@@ -1013,9 +1013,12 @@ remaps by luma rather than grading in place. The fuller shadows/mids/highlights 
 layers it covers render at. The current comp time snaps down to a coarser grid —
 `held_t = floor((t − phase)·rate)/rate + phase` — and the covered content re-renders at
 `held_t` instead of `t`, so the animation updates only `rate` times a second (the choppy
-stop-motion / on-twos look). It re-resolves **transforms, effects and the camera** at the held
-time; **footage frames are held** at the current frame (sub-frame footage playback is the flow
-Motion blur effect's job, §3.2), so this quantises comp-driven animation. Because it re-renders
+stop-motion / on-twos look). It re-resolves **transforms, effects, the camera AND which source
+frame footage decodes to** at the held time, so a scene that is only footage playing back
+visibly steps to the coarser rate (the decode planner snaps the covered layers' sample time via
+`lumit_core::fx::posterize_sample_times`, the twin of the held re-render — FX-1). Smooth
+sub-frame footage *motion blur* between the held frames is a different effect (the flow Motion
+blur, §3.2); Posterize only *quantises* the playback grid. Because it re-renders
 rather than filters, it lives at the frame-orchestration layer — detected where
 `build_comp_draws` + realise (preview) and `render_comp_linear` (export) run, never in
 `run_ops` — and so resolves to **no** per-pixel op. See
@@ -1025,14 +1028,15 @@ rather than filters, it lives at the frame-orchestration layer — detected wher
 the effect's adjustment layer re-renders at `held_t` and is laid back over the live composite
 by the adjustment's coverage (its mask × opacity), so the owner's global "posterise the whole
 scene" pass is simply the effect on a full-frame adjustment layer. *This layer's effects* holds
-only the layer's own **effect stack** at `held_t` (a per-layer time substitution — no
-re-render of others, no orchestration re-entry): the effects step on the coarse grid while the
-layer's **transform and source stay live**, so the layer moves smoothly but its effect
-animation is choppy — the AE per-layer form. The held effect time is
-`lumit_core::fx::this_layer_effect_time` (the grid computed on comp time, mapped into the
-layer's own base), fed to `resolve_stack_temporal` as the sample time so a
-`sample_temporally == false` effect still resolves at the live playhead. Both scopes ship in
-v1.
+only the layer's own **effect stack and its source sampling** at `held_t` (a per-layer time
+substitution — no re-render of others, no orchestration re-entry): the effects and the footage
+decode step on the coarse grid while the layer's **transform stays live**, so the layer moves
+smoothly but its own effect animation and footage playback are choppy — the AE per-layer form.
+The held effect time is `lumit_core::fx::this_layer_effect_time` (the grid computed on comp
+time, mapped into the layer's own base), fed to `resolve_stack_temporal` as the sample time so a
+`sample_temporally == false` effect still resolves at the live playhead; the held source frame
+comes from the same `posterize_sample_times` snap the *Everything below* layers use. Both scopes
+ship in v1.
 
 **Determinism & cache.** `held_t` is a pure function of `t`, `rate` and `phase`, so many
 frames share it and re-render identically; the frame key folds the effect's parameters, and
@@ -1044,10 +1048,13 @@ one cache entry) is a tracked optimisation on top — correctness never depends 
 shared `Realiser`. A still-scene re-render at the same time is bit-identical to no re-render,
 and a full-coverage posterised frame is bit-identical to a plain render at the held time (both
 pinned by test). **Boundaries (v1):** temporal effects *inside* the held below-stack (echo,
-flow Motion blur, Datamosh) degrade to stills — the held re-render reuses the frame-time decode
-and carries no neighbour frames (the same boundary the after-effects matte takes, K-125); and a
-Posterize adjustment *inside a collapsed* Precomp degrades to a no-op (its held draws are sized
-for the nested comp). `cheap` cost, `FullFrame` ROI, `{0}` temporal, Category **Temporal**.
+flow Motion blur, Datamosh) degrade to stills — the held re-render carries no *neighbour* frames
+(only the primary source frame is snapped to the grid), the same boundary the after-effects
+matte takes (K-125); footage is held everywhere below the adjustment (so a *masked* Posterize
+reveals held footage outside the mask too, comp animation stepping only inside it — the
+full-frame adjustment being the intended global pass); and a Posterize adjustment *inside a
+collapsed* Precomp degrades to a no-op (its held draws are sized for the nested comp). `cheap`
+cost, `FullFrame` ROI, `{0}` temporal, Category **Temporal**.
 
 ### 3.26 Accumulation motion blur — the expensive, correct motion blur
 
