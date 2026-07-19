@@ -116,8 +116,10 @@ changes update `docs/08` and ship their oracle test; new concepts update `GUIDE.
 
 - [ ] **GEN-1** Blend modes need Darken / Subtract options.
 - [ ] **GEN-2** Add a **Vibrancy** effect to complement Saturation.
-- [ ] **GEN-3** Lanes: layers should move either side of the composition bounds (before 0,
-  past the end) without trimming. Also fixes long-import auto-trim.
+- [x] **GEN-3** (K-153) Layers now sit freely across comp bounds (start < 0, end > comp end);
+  render/audio intersect with [0, comp_end); long imports keep full media duration. LIMIT: the
+  timeline doesn't yet pan to negative time, so a pre-0 overhang draws clipped under the lane's
+  left edge (flagged for a later view-model change).
 - [x] **GEN-4** Audio fixed (K-141): the comp mix now re-derives from the document each
   frame, so mute, move, trim (active span) and delete all take effect live. Caveat: editing
   one of several audio layers mid-playback has a brief re-decode snap; all-silent is instant.
