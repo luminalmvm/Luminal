@@ -331,20 +331,25 @@ Sequence layer show thumbnails/waveforms.
 
 ### 6.3 Cache bar
 
-The cache bar is a 4px stripe under the time ruler showing cached frames per tier. All three
-tiers are the `success` (olive/mint) family — cached is *good news*, quiet and cool:
+The cache bar is a thin stripe under the time ruler showing which frames are cached, per
+tier. Cached is *good news* — quiet and cool, never alarming.
 
-| Tier | Token | Value | Fill height |
+Two of Nebula's tiers ship today (the VRAM tier is future, docs/06 §5.6). Both runs draw as a
+2px band beneath the ruler:
+
+| Tier | Token | Value | Meaning |
 |---|---|---|---|
-| VRAM cache | `cache.vram` | `#5fcfae` | 4px (full) |
-| RAM cache | `cache.ram` | `#3f9077` | 3px |
-| Disk cache | `cache.disk` | `#2c6353` | 2px |
-| Uncached | `cache.uncached` | `surface_3` | 4px, neutral |
+| RAM cache | `success` | `#5fcfae` (mint) | in memory, plays right now |
+| Disk cache | `cache_disk` | `#5f93b8` (steel blue) | parked on disk, promotable |
+| Uncached | — | (no bar) | neutral — the normal starting state |
 
-Tiers therefore differ in *both* brightness and fill height, so the bar reads without colour
-vision. Per the household no-punishment rule, **uncached is neutral, never alarming** — no
-amber, no red, no pulsing. An uncached timeline is the normal starting state of every project,
-not a failure.
+Mint reads as hot (playable now); the disk tier's cooler blue marks frames that are one
+promotion away (docs/06 §5.6). The fuller design — a VRAM tier and tiers differing in *both*
+brightness and fill height, so the bar reads without colour vision — lands with the VRAM cache
+tier and its dedicated tonal ramp; until then the mint/blue hue split carries the distinction.
+Per the household no-punishment rule, **uncached is neutral, never alarming** — no amber, no
+red, no pulsing. An uncached timeline is the normal starting state of every project, not a
+failure.
 
 ### 6.4 Overrun, markers, waveforms
 

@@ -33,6 +33,11 @@ original snapshot; this log is the running record of what has since changed.
   claim reworded as a future extension (v1 is plain JSON).
 - **08 §3.1 (flow "variational/patch-match hybrid") — resolved.** Doc synced to the shipped
   DIS engine; 08 Open Question 1 resolved and logged as **K-169**.
+- **15 §6.3 (cache-bar colours) — doc-synced.** Rewritten to the shipped two-tier bar (RAM
+  `success` mint, disk `cache_disk` steel-blue per 06 §5.6, 2px bands); the all-mint tonal
+  ramp and VRAM tier noted as future. No code change.
+- **10 §1.1 (enum serialisation "lower-kebab") — doc-synced.** Corrected to serde's default
+  PascalCase / external tagging, matching the shipped `.lum` format and round-trip tests.
 
 ## Status legend
 
