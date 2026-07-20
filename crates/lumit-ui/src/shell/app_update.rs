@@ -379,16 +379,23 @@ impl Shell {
                                 }
                                 self.app.fill_in_flight = None;
                             } else {
-                                // Realtime mode (K-030, docs/06 §6.5): time the
-                                // live composite and feed it to the adaptive
-                                // controller so the next frames' resolution tracks
+                                // Realtime mode (K-030, docs/06 §6.5): feed the
+                                // adaptive controller the *true* end-to-end cost of
+                                // this frame so the next frames' resolution tracks
                                 // the load. Only uncached frames reach here (cached
                                 // ones present earlier, for free), so the tier only
                                 // moves when we're actually rendering live.
-                                // CAVEAT: this is the CPU-side composite/submit
-                                // cost — a partial proxy that does NOT capture the
-                                // async GPU execution or the decode cost. Needs
-                                // validation on real hardware (audit 06 §6.5).
+                                //
+                                // Cost = the worker's decode time (cf.render_cost,
+                                // the dominant and measurable part) plus this CPU
+                                // composite submit. Both are real work, and neither
+                                // includes the UI's repaint-poll interval — the
+                                // earlier signal timed only the sub-millisecond
+                                // submit, so the controller never saw the real load,
+                                // never dropped resolution, and the picture stayed at
+                                // Full and choppy. (Async GPU execution is still not
+                                // awaited, so a purely GPU-bound comp can under-drop —
+                                // audit 06 §6.5, needs a GPU timestamp later.)
                                 let started = std::time::Instant::now();
                                 self.preview_display = Some(gpu.present_comp(
                                     pose,
@@ -399,9 +406,9 @@ impl Shell {
                                 ));
                                 if self.app.preview_realtime && self.app.is_playing() {
                                     let fps = comp.frame_rate.fps().max(1.0);
-                                    self.app
-                                        .realtime_ctrl
-                                        .record(started.elapsed().as_secs_f64(), fps);
+                                    let cost = cf.render_cost.as_secs_f64()
+                                        + started.elapsed().as_secs_f64();
+                                    self.app.realtime_ctrl.record(cost, fps);
                                 }
                                 // The live render we were gated on has landed and
                                 // been shown+measured; release the pull so the

@@ -84,6 +84,13 @@ pub struct CompFrame {
     pub frame: usize,
     /// Top-of-stack first (document order); the renderer draws bottom-up.
     pub layers: Vec<CompLayerPixels>,
+    /// Wall time this frame's layers took to decode on the worker thread — the
+    /// dominant, measurable part of the true render cost. Realtime mode feeds it
+    /// to the adaptive controller. Measured here (not as dispatch→display on the
+    /// UI thread) so it reflects real work, not the UI's repaint-poll interval —
+    /// otherwise every frame would appear to cost one repaint (~16 ms) and the
+    /// resolution would walk down even on comps that play fine at Full.
+    pub render_cost: std::time::Duration,
 }
 
 pub enum PreviewResult {
@@ -277,6 +284,7 @@ fn decode_comp(
     frame: usize,
     jobs: &[CompJob],
 ) -> Result<CompFrame, String> {
+    let decode_started = std::time::Instant::now();
     let mut layers = Vec::with_capacity(jobs.len());
     for job in jobs {
         let req = Request {
@@ -381,5 +389,6 @@ fn decode_comp(
         comp,
         frame,
         layers,
+        render_cost: decode_started.elapsed(),
     })
 }

@@ -1620,7 +1620,17 @@ Two mechanisms make this safe, and you'll see them by name in the code:
   controller was never told how slow things were, and the picture sat frozen. Rendering one
   un-abandoned frame at a time fixes both — the picture always moves forward, and the
   resolution actually adapts. (A cached frame still shows instantly and for free, without
-  waiting on any render.)
+  waiting on any render.) The "how slow was that frame" measurement is taken on the worker
+  thread as the actual decode time, *not* as the time from asking to seeing — the latter
+  would fold in how often the screen happens to refresh (~16 ms), making even a cheap comp
+  look exactly one refresh slow and walking the resolution down for no reason. One honest
+  limit worth knowing: dropping the preview resolution makes the *compositing and effects*
+  cheaper, but video *decoding* costs about the same whatever size you view it at (the whole
+  frame is decoded, then shrunk). So on a comp whose cost is mostly raw footage decoding,
+  realtime can still look a little choppy even at a low resolution — the smooth path there is
+  Cached mode, which renders ahead and then replays from memory. Truly smoothing realtime for
+  decode-heavy comps needs *rendering ahead* (a shelf of frames prepared before their time
+  comes), which is the `FrameRing` machinery that is built and tested but not yet wired in.
 - **The frame scheduler's brain (`lumit-eval::schedule`)** — the decision rules for
   smooth playback, written as plain arithmetic so tests can prove them. During playback
   Lumit renders frames ahead of the playhead onto a small shelf; each screen refresh
