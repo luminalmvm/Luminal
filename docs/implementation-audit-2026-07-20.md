@@ -14,7 +14,41 @@ with a short note on what *is* solid); the tables list only the gaps.
 ## Fixes applied (living log)
 
 Work resolving the findings below, newest first. The finding tables are left as the
-original snapshot; this log is the running record of what has since changed.
+original snapshot; this log is the running record of what has since changed. Per-row detail
+(commit, CI/test status, and `👁` where behaviour needs the owner's eye) lives in each table's
+**Resolution / next step** column.
+
+### Second pass (autonomous, CI-verified on PR #3)
+
+Engine crates build and test here; `lumit-ui`/`lumit-media`/`lumit-audio` need FFmpeg 7.1 which
+this box lacks, so those changes are CI-verified (macOS + Windows) and their behaviour is flagged
+`👁` for an interactive check.
+
+- **Keyboard layer: a cross-platform `global_shortcuts` handler + the doc's unbound keys** —
+  **End** (last preview frame), **Shift+F3** (graph editor), **Cmd/Ctrl+D** (duplicate),
+  **`=`/`-`/`\`** (timeline zoom), and **`[`/`]`/Alt+`[`/`]`** (move/trim the selected layer to
+  the playhead). The last uses a pure, unit-tested `lumit_core::ops::edit_layer_span`. 07 §4.6/
+  §4.7/§5/§15. All CI-green.
+- **Retime → Rate wiring (04 §5.2).** A `→Rate` button in the speed-lens graph header exposes the
+  tested-but-unwired `with_segment_as_rate` Map→Rate fit; drift reported as a status notice.
+- **Crash recovery third option (10 §4).** "Open an autosave" now joins restore-journal / last-save
+  in the recovery modal (`latest_autosave` unit-tested; `recover_from_autosave`). Also corrected the
+  audit: clear-on-save *was* already wired.
+- **Audio: master limiter at −0.3 dBFS (09 §3.1)** (`MASTER_CEILING`, both-polarity test) and a
+  **0–100 beat-sensitivity slider (09 §5)** (unit-tested `delta_from_sensitivity`, 50 %→old Standard).
+- **Export: YouTube 1440p60 preset (06 §7.5)** (Master left out — needs DNxHR/ProRes the encoder lacks).
+- **Engineering/CI:** `EvalGraph::node` made non-panicking (14 §4); `todo!`/`unimplemented!` denied
+  workspace-wide; the **coverage gate widened to all 6 FFmpeg-free engine crates and ratcheted 75→80 %**
+  (measured 93.7 %); a **byte-identical-save determinism test** (10 §1); and **K-170** logged to justify
+  the unbounded latest-wins UI channels (14 §5).
+- **Doc-honesty syncs:** 03-DATA-MODEL, 05-ARCHITECTURE (real crate graph + dependency rules), and the
+  15-DESIGN layer-colour / theme-token tables, all reconciled to the shipped code.
+- **Glossary compliance investigated (14 §7):** the codebase honours the banned-terms table in practice;
+  a CI gate needs a curated allowlist (most terms are context-sensitive) — flagged for an owner decision.
+- **Cross-cutting ① confirmed green on CI** (the fp32 accumulator below); the accumulation *and* the
+  per-layer `motion_blur_average` path now both sum in fp32 (bit-exact tests).
+
+### First pass
 
 - **Cross-cutting ① — CI red → fixed.** `Compositor::accumulate` now sums the
   accumulation-motion-blur combine in fp32 (ping-ponged `Rgba32Float` targets, resolved to
