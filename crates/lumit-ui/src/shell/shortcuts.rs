@@ -100,8 +100,9 @@ impl Shell {
     }
 
     /// Cross-platform global shortcuts (both platforms, unlike the non-macOS
-    /// menu accelerators in [`Self::shortcuts`] / the macOS native menu).
-    /// Shift+F3 toggles the timeline's graph editor (docs/07-UI-SPEC §5).
+    /// menu accelerators in [`Self::shortcuts`] / the macOS native menu):
+    /// Shift+F3 graph editor (§5), Cmd/Ctrl+D duplicate (§4.7), `=`/`-`/`\`
+    /// timeline zoom (§4.6), and `[`/`]`/Alt+`[`/`]` layer span edits (§4.7).
     /// Skipped while a text field holds focus so typing is never stolen.
     pub(super) fn global_shortcuts(&mut self, ctx: &egui::Context) {
         use egui::{Key, KeyboardShortcut, Modifiers};
@@ -138,6 +139,31 @@ impl Shell {
         }
         if zoom_fit {
             self.app.timeline_zoom = 1.0;
+        }
+        // Layer span edits (docs/07-UI-SPEC §4.7): `[`/`]` move the selected
+        // layer's in/out to the playhead; Alt+`[`/`]` trim that edge. Only when a
+        // layer is selected. The Alt (trim) chord is checked before the plain
+        // (move) one so the more-specific binding wins.
+        if self.app.selected_layer.is_some() {
+            use lumit_core::ops::SpanEdit;
+            const MOVE_IN: KeyboardShortcut =
+                KeyboardShortcut::new(Modifiers::NONE, Key::OpenBracket);
+            const MOVE_OUT: KeyboardShortcut =
+                KeyboardShortcut::new(Modifiers::NONE, Key::CloseBracket);
+            const TRIM_IN: KeyboardShortcut =
+                KeyboardShortcut::new(Modifiers::ALT, Key::OpenBracket);
+            const TRIM_OUT: KeyboardShortcut =
+                KeyboardShortcut::new(Modifiers::ALT, Key::CloseBracket);
+            if ctx.input_mut(|i| i.consume_shortcut(&TRIM_IN)) {
+                self.app.edit_selected_layer_span(SpanEdit::TrimIn);
+            } else if ctx.input_mut(|i| i.consume_shortcut(&MOVE_IN)) {
+                self.app.edit_selected_layer_span(SpanEdit::MoveIn);
+            }
+            if ctx.input_mut(|i| i.consume_shortcut(&TRIM_OUT)) {
+                self.app.edit_selected_layer_span(SpanEdit::TrimOut);
+            } else if ctx.input_mut(|i| i.consume_shortcut(&MOVE_OUT)) {
+                self.app.edit_selected_layer_span(SpanEdit::MoveOut);
+            }
         }
     }
 
