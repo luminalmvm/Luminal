@@ -375,6 +375,17 @@ impl Shell {
                                 }
                                 self.app.fill_in_flight = None;
                             } else {
+                                // Realtime mode (K-030, docs/06 §6.5): time the
+                                // live composite and feed it to the adaptive
+                                // controller so the next frames' resolution tracks
+                                // the load. Only uncached frames reach here (cached
+                                // ones present earlier, for free), so the tier only
+                                // moves when we're actually rendering live.
+                                // CAVEAT: this is the CPU-side composite/submit
+                                // cost — a partial proxy that does NOT capture the
+                                // async GPU execution or the decode cost. Needs
+                                // validation on real hardware (audit 06 §6.5).
+                                let started = std::time::Instant::now();
                                 self.preview_display = Some(gpu.present_comp(
                                     pose,
                                     comp.width,
@@ -382,6 +393,12 @@ impl Shell {
                                     background,
                                     &draws,
                                 ));
+                                if self.app.preview_realtime && self.app.is_playing() {
+                                    let fps = comp.frame_rate.fps().max(1.0);
+                                    self.app
+                                        .realtime_ctrl
+                                        .record(started.elapsed().as_secs_f64(), fps);
+                                }
                                 // Paused: bank the frame while it's hot (playback
                                 // misses skip the readback to protect the frame
                                 // budget; draft frames are never banked — the

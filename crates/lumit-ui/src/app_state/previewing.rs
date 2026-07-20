@@ -379,13 +379,38 @@ impl AppState {
     }
 
     pub fn target_width_for(&self, natural_w: u32) -> Option<u32> {
+        // Realtime mode (K-030, docs/06 §6.5): the adaptive controller's tier
+        // drives the divisor and overrides the manual/Auto picker. Draft (scrub)
+        // still caps on top for instant feedback.
+        #[cfg(feature = "media")]
+        let (auto_res, divisor) = if self.preview_realtime {
+            (false, self.realtime_ctrl.tier())
+        } else {
+            (self.preview_auto_res, self.preview_divisor)
+        };
+        #[cfg(not(feature = "media"))]
+        let (auto_res, divisor) = (self.preview_auto_res, self.preview_divisor);
         decode_target_width(
             natural_w,
             self.preview_draft,
-            self.preview_auto_res,
+            auto_res,
             self.last_display_scale,
-            self.preview_divisor,
+            divisor,
         )
+    }
+
+    /// The preview divisor Realtime mode is currently applying — the adaptive
+    /// controller's tier (1 = Full … 4 = Quarter). 1 when built without media.
+    /// Surfaced in the viewer bar so the adaptation is visible.
+    pub fn realtime_tier(&self) -> u32 {
+        #[cfg(feature = "media")]
+        {
+            self.realtime_ctrl.tier()
+        }
+        #[cfg(not(feature = "media"))]
+        {
+            1
+        }
     }
 
     /// Recursively collect decode jobs for a comp at time `t`

@@ -649,6 +649,12 @@ pub struct AppState {
     pub media: media::MediaRegistry,
     #[cfg(feature = "media")]
     pub preview_engine: preview::PreviewEngine,
+    /// Adaptive realtime-resolution controller (K-030): fed each live playback
+    /// frame's GPU-composite cost, it returns the preview divisor to use next
+    /// (drop fast, rise slow, anti-flap). Only consulted while
+    /// [`Self::preview_realtime`] is on. Pure logic, tested in `lumit_eval`.
+    #[cfg(feature = "media")]
+    pub realtime_ctrl: lumit_eval::schedule::RealtimeController,
     #[cfg(feature = "media")]
     audio_engine: Option<lumit_audio::AudioEngine>,
     #[cfg(feature = "media")]
@@ -900,6 +906,11 @@ pub struct AppState {
     /// decodes a coarse draft for instant feedback, then reloads at the
     /// specified resolution once scrubbing stops (Mack's "force realtime").
     pub preview_draft: bool,
+    /// Realtime preview mode (K-030, docs/06 §6.5): when on, playback resolution
+    /// is driven by [`Self::realtime_ctrl`] rather than the manual divisor / Auto
+    /// — the divisor drops under load and recovers slowly, trading resolution
+    /// for smooth motion. Off = Cached mode (the manual/Auto picker applies).
+    pub preview_realtime: bool,
     /// View zoom (1.0 = fit) and pan, in screen pixels. View controls only —
     /// never part of any render (07-UI-SPEC: Viewer).
     pub view_zoom: f32,
@@ -1011,6 +1022,8 @@ impl Default for AppState {
             #[cfg(feature = "media")]
             preview_engine: preview::PreviewEngine::default(),
             #[cfg(feature = "media")]
+            realtime_ctrl: lumit_eval::schedule::RealtimeController::new(),
+            #[cfg(feature = "media")]
             audio_engine: None,
             #[cfg(feature = "media")]
             audio_cache: std::collections::HashMap::new(),
@@ -1085,6 +1098,7 @@ impl Default for AppState {
             preview_divisor: 1,
             preview_auto_res: false,
             preview_draft: false,
+            preview_realtime: false,
             view_zoom: 1.0,
             view_pan: egui::Vec2::ZERO,
             last_display_scale: 1.0,
