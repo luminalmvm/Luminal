@@ -112,6 +112,14 @@ impl Shell {
         if ctx.input_mut(|i| i.consume_shortcut(&GRAPH)) {
             self.app.timeline_graph_mode = !self.app.timeline_graph_mode;
         }
+        // Cmd/Ctrl+D duplicates the selected layer (docs/07-UI-SPEC §4.7, the AE
+        // convention). Only consumed when a layer is selected, so it is a clean
+        // no-op otherwise rather than flashing an error. Razor is Ctrl+Shift+D,
+        // a different chord.
+        const DUPLICATE: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::D);
+        if self.app.selected_layer.is_some() && ctx.input_mut(|i| i.consume_shortcut(&DUPLICATE)) {
+            self.app.duplicate_layer();
+        }
     }
 
     #[cfg(not(target_os = "macos"))]

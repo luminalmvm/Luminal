@@ -401,8 +401,8 @@ whole documented subsystems are absent.
 | 4.4 | Razor tool on `C` | Contradicted | No razor tool; cut is Ctrl+Shift+D at playhead (`app_update.rs:880`) | — |
 | 4.5 | Snapping to edit points/in-out/keyframes/playhead/work area; Ctrl suspend; indication | Partial | Markers/beats snapping + whole-frame magnet only | — |
 | 4.6 | `=`/`-`/`Shift+=`/`\` zoom keys; Ctrl-scrub audio; edge-follow scroll | Partial | Wheel routing exists; keys unbound; no audio scrub | — |
-| 4.7 | `[`/`]`, Alt+[/], Ctrl+D | Not implemented | Unbound; duplicate via menu only | — |
-| 5 | Graph toggled by Shift+F3; per-property include toggle | Contradicted | Button in timeline row (`bottom_bar.rs:70-84`); selected-property only | ◑ Partial · ⚠ CI-compiled (can't build lumit-ui here) · **Shift+F3** now toggles the graph editor via a new cross-platform `global_shortcuts` handler (the bottom-bar button stays too). The per-property include toggle (graph still shows the selected property only) is unchanged |
+| 4.7 | `[`/`]`, Alt+[/], Ctrl+D | Not implemented | Unbound; duplicate via menu only | ◑ Partial · ⚠ CI-compiled (can't build lumit-ui here) · bound **Cmd/Ctrl+D** → duplicate the selected layer (in `global_shortcuts`; only consumed when a layer is selected). `[`/`]` (trim in/out to playhead) and Alt+`[`/`]` still want the underlying trim actions |
+| 5 | Graph toggled by Shift+F3; per-property include toggle | Contradicted | Button in timeline row (`bottom_bar.rs:70-84`); selected-property only | ◑ Partial · ✅ CI-green · **Shift+F3** now toggles the graph editor via a new cross-platform `global_shortcuts` handler (the bottom-bar button stays too). The per-property include toggle (graph still shows the selected property only) is unchanged |
 | 5.1 | Acceleration graph; auto/stacked/ghosted views | Not implemented | Value + Speed lenses only | — |
 | 5.3 | Ease-in/out `Shift+F9`/`Ctrl+Shift+F9`; auto-bezier; numeric keyframe entry; `F` fit; box scale | Partial | `F9` easy-ease + Linear/Bezier/Hold buttons only | — |
 | 6 | Effect Controls solo/reset/rename/copy-to-layer | Partial | Panel + enable/reorder/eyedropper exist; those extras not evident | — |
@@ -415,7 +415,7 @@ whole documented subsystems are absent.
 | 13.2 | Tooltips with shortcut text at 500 ms | Partial | Tooltips exist, no shortcut text, default delay | — |
 | 14 | Focus cycling (Ctrl+F6), Tab traversal, arrow nav, Move-panel-to | Not implemented | None bound | — |
 | 15 | Remappable keymap + conflict detection + AE preset; keymap settings page | Not implemented | Hardcoded bindings; no keymap page | — |
-| 15 | J/K/L shuttle ×2/×4/×8; Home/End; the ~30 other listed keys | Contradicted / not implemented | J = single frame-step back; L = toggle play; K = pause; End unbound; Page/I/O/,/./*/Ctrl+M/P-S-R-T-A/E/M/U/X/Z/Y etc. all unbound | ◑ Partial · ⚠ CI-compiled (can't build lumit-ui here) · bound **End** → last frame of the current preview via a new `AppState::preview_frame_count` (comp or footage); Home already sought frame 0. The shuttle multipliers and the ~30 other keys remain — a full remappable keymap is the real fix (see the row above) |
+| 15 | J/K/L shuttle ×2/×4/×8; Home/End; the ~30 other listed keys | Contradicted / not implemented | J = single frame-step back; L = toggle play; K = pause; End unbound; Page/I/O/,/./*/Ctrl+M/P-S-R-T-A/E/M/U/X/Z/Y etc. all unbound | ◑ Partial · ✅ CI-green · bound **End** → last frame of the current preview via a new `AppState::preview_frame_count` (comp or footage); Home already sought frame 0. The shuttle multipliers and the ~30 other keys remain — a full remappable keymap is the real fix (see the row above) |
 | 15 | macOS native menu matches keymap | Contradicted (minor) | Own accelerator set (`native_menu.rs:96`) | — |
 
 ---
