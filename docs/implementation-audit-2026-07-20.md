@@ -466,7 +466,7 @@ missing or hardcoded.
 | 2/3.1 | 48 kHz session rate, RAM ring, lazy decode, background import pass | Partial/deviates | Playback resamples to device rate; whole-file synchronous decode into RAM (`audio.rs:34`); export does use 48 kHz | — |
 | 4 | Multi-tier sidecar peak files (min/max/RMS at 3 zooms, content-hash keyed) | Not implemented | Live-computed single 2048-bucket strip | — |
 | 4 | Waveforms on layers and inside clips | Not implemented | One comp-wide strip only (`timeline/panel.rs:305-357`) | — |
-| 5 | Sensitivity slider 0–100 | Partial | Two hardcoded presets (1.5 / 1.1) via menu | ◑ Partial · ⚠ audio half tested on CI, UI half can't build here (CI-verified) · added `lumit_audio::beat::delta_from_sensitivity(0–100→δ)` (anchored 50→1.5, 70→1.1; unit-tested) and replaced the two-item Detect-beats menu with a 0–100 slider + Detect button (`beat_sensitivity` app-state field, default 50). Keyboard quick-detect shortcuts still use the two fixed densities · 👁 try the slider |
+| 5 | Sensitivity slider 0–100 | Partial | Two hardcoded presets (1.5 / 1.1) via menu | ◑ Partial · ✅ CI-green (macOS + Windows + coverage gate ran the mapping test) · added `lumit_audio::beat::delta_from_sensitivity(0–100→δ)` (anchored 50→1.5, 70→1.1; unit-tested) and replaced the two-item Detect-beats menu with a 0–100 slider + Detect button (`beat_sensitivity` app-state field, default 50). Keyboard quick-detect shortcuts still use the two fixed densities · 👁 try the slider |
 | 5 | BPM confirm/type + phase; grid-fill missed beats | Partial | Auto grid-snap + BPM display only; no UI, no fill | — |
 | 5 | Tap tempo | Not implemented | Nothing | — |
 | 7 | Retime mutes audio with a badge | Not implemented | Retimed footage audio plays un-retimed, un-muted, un-badged | — |
@@ -491,7 +491,7 @@ pervasive unknown-field preservation are genuinely implemented and tested. Delta
 | 2 | Collect-for-sharing command | Not implemented | No such function | — |
 | 3 | Full sidecar tree (disk-cache/proxies/peaks/flow/index) | Partial | Journal, media-index and presets dirs only | — |
 | 4 | Autosave every N minutes + before risky ops | Partial | Rotation/writing real; timer and risky-op triggers live outside the crate (cadence exists in UI settings; risky-op trigger not found) | — |
-| 4 | Journal truncated on successful save; recovery dialogue | Partial | `clear` exists but nothing wires clear-on-save; recovery replay exists in UI, the three-way offer dialogue does not | — |
+| 4 | Journal truncated on successful save; recovery dialogue | Partial | ~~`clear` exists but nothing wires clear-on-save~~; recovery replay exists in UI, the three-way offer dialogue does not | ✅ Corrected (audit was wrong on half) · clear-on-save **is** wired — `AppState::save` truncates the journal on a successful write (`project.rs:165-168`), as do `new_project` and discard-recovery. Genuine remaining gap: the recovery offer is two-way (last-save+replay / last-save) — the doc's **third** option, opening an autosave, isn't presented · 👁 owner: want the autosave-as-third-choice built? |
 | 5 | Preset extension `.kfxpreset` (zip) | Contradicted | `.lumfx` plain JSON (`preset.rs:25`) | ✅ Done · 28a3752 (doc) |
 | 5 | "New from template" mode | Not implemented | No template-open mode | — |
 | 6 | AE Bridge / Lottie / OTIO interchange | Not implemented / future | Doc marks Lottie/OTIO future; Bridge import absent (see 11) | — |
