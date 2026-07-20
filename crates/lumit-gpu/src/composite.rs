@@ -266,11 +266,6 @@ pub struct Compositor {
     pipeline_add: wgpu::RenderPipeline,
     pipeline_multiply: wgpu::RenderPipeline,
     pipeline_snapshot: wgpu::RenderPipeline,
-    /// Pure-additive blend (BOTH colour and alpha add), used only to
-    /// accumulate the per-layer motion-blur sub-frame copies into a true
-    /// premultiplied average — distinct from `pipeline_add` (the Add blend
-    /// mode), which over-composites alpha (docs/06 §4, K-120).
-    pipeline_accumulate: wgpu::RenderPipeline,
     /// fp32 accumulation (docs/06 §4). The motion-blur combine sums its weighted
     /// premultiplied sub-frames in an `Rgba32Float` target so a still scene
     /// averages back to itself bit-for-bit — an fp16 target rounds the `0.75·v`
@@ -282,6 +277,7 @@ pub struct Compositor {
     accum_layout: wgpu::BindGroupLayout,
     pipeline_accum_f32: wgpu::RenderPipeline,
     pipeline_accum_copy: wgpu::RenderPipeline,
+    pipeline_add_f32: wgpu::RenderPipeline,
     layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
     /// Bound at binding 3 when a layer has no matte.
@@ -421,25 +417,9 @@ impl Compositor {
                     cache: None,
                 })
         };
-        // Pure add on both channels: the motion-blur accumulator wants the
-        // arithmetic mean of the premultiplied sub-frames, so alpha must add
-        // (weight 1/N each), not over-composite the way Add does.
-        let blend_accumulate = wgpu::BlendState {
-            color: wgpu::BlendComponent {
-                src_factor: wgpu::BlendFactor::One,
-                dst_factor: wgpu::BlendFactor::One,
-                operation: wgpu::BlendOperation::Add,
-            },
-            alpha: wgpu::BlendComponent {
-                src_factor: wgpu::BlendFactor::One,
-                dst_factor: wgpu::BlendFactor::One,
-                operation: wgpu::BlendOperation::Add,
-            },
-        };
         let pipeline = make_pipeline(blend, "composite-normal");
         let pipeline_add = make_pipeline(blend_add, "composite-add");
         let pipeline_multiply = make_pipeline(blend_multiply, "composite-multiply");
-        let pipeline_accumulate = make_pipeline(blend_accumulate, "composite-mb-accumulate");
         // fp32 accumulation layout (docs/06 §4): src (filterable fp16 sub-frame)
         // + sampler + uniform, plus the running sum at binding 6 as an
         // UNFILTERABLE float — an Rgba32Float view lives here and is read by
@@ -550,6 +530,36 @@ impl Compositor {
                     multiview: None,
                     cache: None,
                 });
+        // Full-frame add of a cleared fp16 temp into the fp32 running sum, for
+        // per-layer motion blur (docs/06 §4). Same layout as the accumulate
+        // pipelines; the temp rides in at binding 0, the running sum at 6.
+        let pipeline_add_f32 = ctx
+            .device
+            .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("composite-add-f32"),
+                layout: Some(&accum_pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some("vs_layer"),
+                    buffers: &[],
+                    compilation_options: Default::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some("fs_add_f32"),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: wgpu::TextureFormat::Rgba32Float,
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options: Default::default(),
+                }),
+                primitive: Default::default(),
+                depth_stencil: None,
+                multisample: Default::default(),
+                multiview: None,
+                cache: None,
+            });
         // Snapshot blends: no fixed-function blending — the fragment
         // composites itself from the dst snapshot and writes the final value.
         let pipeline_snapshot =
@@ -633,10 +643,10 @@ impl Compositor {
             pipeline_add,
             pipeline_multiply,
             pipeline_snapshot,
-            pipeline_accumulate,
             accum_layout,
             pipeline_accum_f32,
             pipeline_accum_copy,
+            pipeline_add_f32,
             layout,
             sampler,
             white,
@@ -977,11 +987,14 @@ impl Compositor {
             view_formats: &[],
         });
         let view = target.create_view(&Default::default());
-        // Equal weights sum to 1: N copies at opacity 1/N (UI percent 100/N).
-        let weight = if samples.is_empty() {
+        // Equal weights sum to 1: N copies each contributing 1/N. The weight is
+        // NOT baked into the placement (which renders at full alpha into the
+        // fp16 temp) — it is applied in f32 by the add pass, so a static layer
+        // stays bit-exact (docs/06 §4).
+        let weight_frac = if samples.is_empty() {
             0.0
         } else {
-            100.0 / samples.len() as f32
+            1.0 / samples.len() as f32
         };
         let src_view = texture.create_view(&Default::default());
         let white_view = self.white.create_view(&Default::default());
@@ -996,7 +1009,7 @@ impl Compositor {
                     anchor: s.anchor,
                     scale: s.scale,
                     rotation_deg: s.rotation_deg,
-                    opacity: weight,
+                    opacity: 100.0,
                     matte: None,
                     blend: Blend::Add,
                     z: s.z,
@@ -1011,8 +1024,9 @@ impl Compositor {
                         .matrix(width as f32, height as f32, camera.as_ref())
                         .to_cols_array_2d(),
                     // No matte on a sub-copy: the layer's matte applies to the
-                    // averaged result at the caller's 1:1 composite.
-                    params: [(weight / 100.0).clamp(0.0, 1.0), 0.0, 0.0, 0.0],
+                    // averaged result at the caller's 1:1 composite. Full alpha —
+                    // the 1/N weight is applied later, in f32, by the add pass.
+                    params: [1.0, 0.0, 0.0, 0.0],
                     target: [width as f32, height as f32, -1.0, 0.0],
                 };
                 let buffer = wgpu::util::DeviceExt::create_buffer_init(
@@ -1056,33 +1070,226 @@ impl Compositor {
             })
             .collect();
 
+        // fp32 accumulation (docs/06 §4). Additive blend into an fp16 target
+        // drifts a LSB on a static layer's edges; fp32 blend into a render
+        // target is unavailable, and each placement is a transformed (partial)
+        // quad, so the accumulate() full-frame ping-pong can't apply. Instead:
+        // render each placement into a cleared fp16 temp (0 outside its quad),
+        // add that temp into an fp32 running sum full-frame, and resolve once.
+        let mk_f32 = |label: &str| {
+            ctx.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some(label),
+                size: wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba32Float,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            })
+        };
+        let temp = ctx.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("mb-temp"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: WORKING_FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let temp_view = temp.create_view(&Default::default());
+        let accum_a = mk_f32("mb-accum-a");
+        let accum_b = mk_f32("mb-accum-b");
+        let a_view = accum_a.create_view(&Default::default());
+        let b_view = accum_b.create_view(&Default::default());
+
+        // Identity full-frame placement for the add and resolve passes.
+        let ident_matrix = CompositeLayer {
+            texture: &self.white,
+            size: (width as f32, height as f32),
+            position: (0.0, 0.0),
+            anchor: (0.0, 0.0),
+            scale: (100.0, 100.0),
+            rotation_deg: 0.0,
+            opacity: 100.0,
+            matte: None,
+            blend: Blend::Add,
+            z: 0.0,
+            rotation_x_deg: 0.0,
+            rotation_y_deg: 0.0,
+            three_d: false,
+            layer_mask: None,
+            pre: None,
+        }
+        .matrix(width as f32, height as f32, None)
+        .to_cols_array_2d();
+        // Full-frame uniform for the add/resolve passes; `px` is the add weight
+        // (1/N), applied in f32 by fs_add_f32 (fs_copy_f32 ignores it).
+        let full_uniform = |px: f32| {
+            let u = LayerUniform {
+                matrix: ident_matrix,
+                params: [px, 0.0, 0.0, 0.0],
+                target: [width as f32, height as f32, -1.0, 0.0],
+            };
+            wgpu::util::DeviceExt::create_buffer_init(
+                &ctx.device,
+                &wgpu::util::BufferInitDescriptor {
+                    label: Some("mb-fullframe-uniform"),
+                    contents: bytemuck::bytes_of(&u),
+                    usage: wgpu::BufferUsages::UNIFORM,
+                },
+            )
+        };
+
+        let mut keep: Vec<wgpu::Buffer> = Vec::with_capacity(binds.len() + 1);
+        let mut add_binds: Vec<wgpu::BindGroup> = Vec::with_capacity(binds.len());
         let mut encoder = ctx
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("mb-average"),
             });
+        // The running sum starts at zero.
+        encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("mb-accum-clear"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &a_view,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            ..Default::default()
+        });
+
+        let mut prev_is_a = true;
+        for bind in &binds {
+            // Render this placement into a cleared temp: Normal-over transparent
+            // lays down premul(source)·weight where the quad falls, 0 elsewhere.
+            {
+                let mut rp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("mb-placement"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &temp_view,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    ..Default::default()
+                });
+                rp.set_pipeline(&self.pipeline);
+                rp.set_bind_group(0, bind, &[]);
+                rp.draw(0..6, 0..1);
+            }
+            // Add the temp into the fp32 running sum (whole frame at once).
+            let (prev_view, next_view) = if prev_is_a {
+                (&a_view, &b_view)
+            } else {
+                (&b_view, &a_view)
+            };
+            let ubuf = full_uniform(weight_frac);
+            let add_bind = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("mb-add"),
+                layout: &self.accum_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&temp_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(&self.sampler),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: ubuf.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 6,
+                        resource: wgpu::BindingResource::TextureView(prev_view),
+                    },
+                ],
+            });
+            {
+                let mut rp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("mb-add"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: next_view,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    ..Default::default()
+                });
+                rp.set_pipeline(&self.pipeline_add_f32);
+                rp.set_bind_group(0, &add_bind, &[]);
+                rp.draw(0..6, 0..1);
+            }
+            keep.push(ubuf);
+            add_binds.push(add_bind);
+            prev_is_a = !prev_is_a;
+        }
+
+        // Resolve the fp32 sum (in accum_a when the next write would target it)
+        // back to the working format.
+        let sum_view = if prev_is_a { &a_view } else { &b_view };
+        let rbuf = full_uniform(1.0);
+        let copy_bind = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("mb-resolve"),
+            layout: &self.accum_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&white_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&self.sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: rbuf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 6,
+                    resource: wgpu::BindingResource::TextureView(sum_view),
+                },
+            ],
+        });
+        keep.push(rbuf);
         {
-            let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("mb-average"),
+            let mut rp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("mb-resolve"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &view,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        // Transparent black: the additive accumulation builds
-                        // the average up from nothing.
                         load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
                         store: wgpu::StoreOp::Store,
                     },
                 })],
                 ..Default::default()
             });
-            rpass.set_pipeline(&self.pipeline_accumulate);
-            for bind in &binds {
-                rpass.set_bind_group(0, bind, &[]);
-                rpass.draw(0..6, 0..1);
-            }
+            rp.set_pipeline(&self.pipeline_accum_copy);
+            rp.set_bind_group(0, &copy_bind, &[]);
+            rp.draw(0..6, 0..1);
         }
         ctx.queue.submit([encoder.finish()]);
+        drop((keep, add_binds));
         target
     }
 
@@ -2316,6 +2523,14 @@ mod tests {
             alpha(&still_px, 20, 8) > 0.9,
             "static interior alpha {} must stay opaque (premultiplied average)",
             alpha(&still_px, 20, 8)
+        );
+        // fp32 payoff (docs/06 §4): four identical placements at 1/N each equal a
+        // single full-weight placement BIT-FOR-BIT, anti-aliased edges included —
+        // an fp16 accumulator drifts a LSB on the fractional edge coverage.
+        let single_px = readback(&[sample_at(18.0)]);
+        assert_eq!(
+            still_px, single_px,
+            "a static layer averaged over N must equal one placement bit-for-bit"
         );
 
         // Moving: the same quad slid rightward across the shutter — coverage

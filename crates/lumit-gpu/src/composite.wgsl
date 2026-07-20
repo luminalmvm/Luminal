@@ -288,3 +288,17 @@ fn fs_accumulate_f32(in: VsOut) -> @location(0) vec4<f32> {
 fn fs_copy_f32(in: VsOut) -> @location(0) vec4<f32> {
     return textureLoad(accum_prev, vec2<i32>(in.pos.xy), 0);
 }
+
+// Per-layer motion blur (docs/06 §4) sums its sub-frame placements the same way,
+// but each placement is a TRANSFORMED quad, not a full-frame one — so it can't
+// carry the running sum through pixels it doesn't cover. Instead each placement
+// is rendered at FULL alpha into a cleared fp16 temp (this pass's `src`, 0
+// outside the quad) and this full-frame pass adds `weight · temp` to the fp32
+// running sum. The 1/N weight is applied HERE, in f32 — baking it into the fp16
+// temp first would round each contribution and lose the bit-exact still-scene
+// identity. `weight` rides in params.x.
+@fragment
+fn fs_add_f32(in: VsOut) -> @location(0) vec4<f32> {
+    let coord = vec2<i32>(in.pos.xy);
+    return textureLoad(accum_prev, coord, 0) + layer.params.x * textureLoad(src, coord, 0);
+}
