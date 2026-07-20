@@ -50,14 +50,13 @@ impl Frames {
     }
 }
 
-/// Solid sources: uuid → sRGB byte colour, uploaded and linearised at comp
-/// size exactly as the shipped renderer prepares sources.
+/// Solid sources: uuid → (sRGB byte colour, pixel size), uploaded and
+/// linearised exactly as the shipped renderer prepares sources.
 struct SolidSource {
     ctx: Rc<GpuContext>,
     colour: Rc<ColourEngine>,
     frames: Rc<RefCell<Frames>>,
-    solids: HashMap<Uuid, [u8; 4]>,
-    size: (u32, u32),
+    solids: HashMap<Uuid, ([u8; 4], (u32, u32))>,
     fetches: usize,
 }
 
@@ -74,46 +73,71 @@ impl FrameSource for SolidSource {
                 message: format!("skeleton handles solids only, got {source:?}"),
             });
         };
-        let rgba = self.solids.get(id).ok_or(ExecError::Node {
+        let (rgba, (w, h)) = self.solids.get(id).ok_or(ExecError::Node {
             node: 0,
             message: "unknown solid".into(),
         })?;
         self.fetches += 1;
-        let (w, h) = self.size;
         let px: Vec<u8> = std::iter::repeat_n(*rgba, (w * h) as usize)
             .flatten()
             .collect();
-        let srgb = self.colour.upload_srgb8(&self.ctx, &px, w, h);
+        let srgb = self.colour.upload_srgb8(&self.ctx, &px, *w, *h);
         let linear = self.colour.linearise(&self.ctx, &srgb);
         Ok(self.frames.borrow_mut().push(linear))
     }
 }
 
-/// Non-source nodes over the real compositor. Layer semantics (opacity here;
-/// the full transform later) are resolved by the adapter from its own layer
-/// table — the executor stays semantics-blind, as designed.
+/// One layer's resolved placement — the values the real adapter will read
+/// out of the document snapshot at time `t` (Property::value_at); the test
+/// pins them in a table instead.
+#[derive(Clone, Copy)]
+struct Placement {
+    /// Layer-pixel size the transform applies to (the source's size).
+    size: (f32, f32),
+    position: (f32, f32),
+    anchor: (f32, f32),
+    scale: (f32, f32),
+    rotation_deg: f32,
+    opacity: f32,
+}
+
+impl Placement {
+    /// Identity: a `(w, h)` frame drawn 1:1 at full opacity.
+    fn full_frame(w: f32, h: f32) -> Self {
+        Self {
+            size: (w, h),
+            position: (0.0, 0.0),
+            anchor: (0.0, 0.0),
+            scale: (100.0, 100.0),
+            rotation_deg: 0.0,
+            opacity: 100.0,
+        }
+    }
+}
+
+/// Non-source nodes over the real compositor. Layer semantics (placement,
+/// opacity; masks/retimes/effects later) are resolved by the adapter from
+/// its own layer table — the executor stays semantics-blind, as designed.
 struct GpuKernels {
     ctx: Rc<GpuContext>,
     compositor: Compositor,
     frames: Rc<RefCell<Frames>>,
     size: (u32, u32),
     background: [f64; 4],
-    /// layer id → opacity percent (the slice of the snapshot this adapter
-    /// resolves; defaults to 100).
-    opacity: HashMap<Uuid, f32>,
+    /// layer id → resolved placement (defaults to full-frame identity).
+    layers: HashMap<Uuid, Placement>,
 }
 
 impl GpuKernels {
-    /// A comp-sized frame drawn 1:1 (identity placement) at `opacity`.
-    fn full_frame<'a>(&self, tex: &'a wgpu::Texture, opacity: f32) -> CompositeLayer<'a> {
+    fn placed<'a>(&self, tex: &'a wgpu::Texture, p: Placement) -> CompositeLayer<'a> {
         CompositeLayer {
             texture: tex,
-            size: (self.size.0 as f32, self.size.1 as f32),
-            position: (0.0, 0.0),
-            anchor: (0.0, 0.0),
-            scale: (100.0, 100.0),
-            rotation_deg: 0.0,
-            opacity,
+            size: p.size,
+            position: p.position,
+            anchor: p.anchor,
+            scale: p.scale,
+            rotation_deg: p.rotation_deg,
+            opacity: p.opacity,
             matte: None,
             blend: Blend::Normal,
             z: 0.0,
@@ -123,6 +147,13 @@ impl GpuKernels {
             layer_mask: None,
             pre: None,
         }
+    }
+
+    /// A comp-sized frame drawn 1:1 (accumulator hand-off).
+    fn full_frame<'a>(&self, tex: &'a wgpu::Texture, opacity: f32) -> CompositeLayer<'a> {
+        let mut p = Placement::full_frame(self.size.0 as f32, self.size.1 as f32);
+        p.opacity = opacity;
+        self.placed(tex, p)
     }
 }
 
@@ -147,7 +178,11 @@ impl KernelExecutor for GpuKernels {
                 if *blend != lumit_core::model::BlendMode::Normal {
                     return Err(err(format!("skeleton blends Normal only, got {blend:?}")));
                 }
-                let opacity = self.opacity.get(layer).copied().unwrap_or(100.0);
+                let placement = self
+                    .layers
+                    .get(layer)
+                    .copied()
+                    .unwrap_or(Placement::full_frame(w as f32, h as f32));
                 let frames = self.frames.borrow();
                 let top = inputs
                     .first()
@@ -168,7 +203,7 @@ impl KernelExecutor for GpuKernels {
                     w,
                     h,
                     [0.0, 0.0, 0.0, 0.0],
-                    &[self.full_frame(top, opacity)],
+                    &[self.placed(top, placement)],
                     None,
                     seed,
                 );
@@ -258,25 +293,33 @@ impl Rig {
         })
     }
 
+    /// Solids at comp size (the common case; sized solids pass a map directly).
     fn source(&self, solids: HashMap<Uuid, [u8; 4]>) -> SolidSource {
+        let sized = solids
+            .into_iter()
+            .map(|(id, rgba)| (id, (rgba, self.size)))
+            .collect();
+        self.source_sized(sized)
+    }
+
+    fn source_sized(&self, solids: HashMap<Uuid, ([u8; 4], (u32, u32))>) -> SolidSource {
         SolidSource {
             ctx: Rc::clone(&self.ctx),
             colour: Rc::clone(&self.colour),
             frames: Rc::clone(&self.frames),
             solids,
-            size: self.size,
             fetches: 0,
         }
     }
 
-    fn kernels(&self, background: [f64; 4], opacity: HashMap<Uuid, f32>) -> GpuKernels {
+    fn kernels(&self, background: [f64; 4], layers: HashMap<Uuid, Placement>) -> GpuKernels {
         GpuKernels {
             ctx: Rc::clone(&self.ctx),
             compositor: Compositor::new(&self.ctx),
             frames: Rc::clone(&self.frames),
             size: self.size,
             background,
-            opacity,
+            layers,
         }
     }
 
@@ -364,7 +407,9 @@ fn two_layers_blend_in_linear_light_through_the_seams() {
         (green, [0, 255, 0, 255]),
     ]));
     // Top layer red at 50% opacity over the opaque green bottom layer.
-    let mut kernels = rig.kernels([0.0, 0.0, 0.0, 1.0], HashMap::from([(l_top, 50.0)]));
+    let mut half_red = Placement::full_frame(8.0, 8.0);
+    half_red.opacity = 50.0;
+    let mut kernels = rig.kernels([0.0, 0.0, 0.0, 1.0], HashMap::from([(l_top, half_red)]));
     let mut cache = MapCache::default();
     let node = |kind, inputs| Node { kind, inputs };
     let graph = EvalGraph {
@@ -482,4 +527,49 @@ fn a_cached_frame_re_renders_with_zero_gpu_work() {
         "expected pure blue, got first pixel {:?}",
         &px[..4]
     );
+}
+
+/// A transform's placement carries through the seams: a 4×4 solid positioned
+/// into the bottom-right quadrant of an 8×8 comp colours exactly those
+/// pixels, with the background everywhere else — the compositor's own
+/// `place_matrix` maths, driven by the executor.
+#[test]
+fn a_placed_layer_lands_where_the_transform_puts_it() {
+    let Some(rig) = Rig::new((8, 8)) else { return };
+    let (solid, layer, comp) = (Uuid::now_v7(), Uuid::now_v7(), Uuid::now_v7());
+    let mut source = rig.source_sized(HashMap::from([(solid, ([255, 0, 0, 255], (4, 4)))]));
+    let placement = Placement {
+        size: (4.0, 4.0),
+        position: (4.0, 4.0),
+        anchor: (0.0, 0.0),
+        scale: (100.0, 100.0),
+        rotation_deg: 0.0,
+        opacity: 100.0,
+    };
+    let mut kernels = rig.kernels([0.0, 0.0, 0.0, 1.0], HashMap::from([(layer, placement)]));
+    let mut cache = MapCache::default();
+    let graph = one_layer_graph(solid, layer, comp, 8, 8);
+    let token = Epoch::new().token();
+    let out = render_frame(
+        &graph,
+        0.0,
+        None,
+        &mut source,
+        &mut kernels,
+        &mut cache,
+        &token,
+    )
+    .expect("skeleton renders");
+    let px = rig.readback(out);
+    for y in 0..8usize {
+        for x in 0..8usize {
+            let p = &px[(y * 8 + x) * 4..(y * 8 + x) * 4 + 4];
+            let expected: [u8; 4] = if x >= 4 && y >= 4 {
+                [255, 0, 0, 255] // the placed solid
+            } else {
+                [0, 0, 0, 255] // the background
+            };
+            assert_eq!(p, expected, "pixel ({x},{y})");
+        }
+    }
 }

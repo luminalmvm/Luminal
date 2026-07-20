@@ -32,9 +32,9 @@ flowchart TD
   end
 
   subgraph SSPINE["Render and evaluation spine"]
-    WPOOL["✅ Worker pool — built + tested<br/>(lumit-eval::pool, cores−3 min 2, two classes;<br/>shell spawn migration lands with the wiring)"]
+    WPOOL["✅ Worker pool — built + tested<br/>(lumit-eval::pool, cores−3 min 2, two classes;<br/>its tenants — per-frame render jobs — arrive with PIXPASS;<br/>existing shell spawns are decode/IO roles, correctly off-pool)"]
     SEAMS["✅ Eval trait seams — built + tested<br/>(lumit-eval::exec: FrameSource / KernelExecutor /<br/>CacheStore + demand-pull executor over fakes)"]
-    PIXPASS["Eval-graph pixel pass — the graph renders,<br/>not lumit-ui (06 §1.1). Executor core done +<br/>walking skeleton proven on the real compositor;<br/>remaining: full-vocabulary adapters +<br/>switching preview/export onto it"]
+    PIXPASS["Eval-graph pixel pass — the graph renders,<br/>not lumit-ui (06 §1.1). Executor core done; walking<br/>skeleton proven on the real compositor (solids, exact<br/>transform placement, linear blend, cache hits);<br/>remaining: masks/retime/effects vocabulary +<br/>switching preview/export onto it"]
     ROIDOD["ROI/DoD protocol, macro-tiles,<br/>per-node CPU fallback (06 §2, K-019)"]
     EXPORTC["Export compiler and baking (06 §7.2, K-024)"]
     PROFILER["Per-node profiler and<br/>render-time column (13 §7.1)"]
