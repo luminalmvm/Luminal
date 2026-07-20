@@ -346,7 +346,7 @@ eval-graph executor, and several headline claims are contradicted.
 | 3.4 | Host-managed `wants_straight_alpha` unpremult/premult fusing | Contradicted (mechanism) | Each effect shader hand-rolls the wrap (`fx_contrast.wgsl:28` etc.); no host flag | — |
 | 3.5a | Luma mattes use Rec.709 Y of the **sRGB-encoded** signal | **Contradicted** | Luma dot-product runs on linear premultiplied values (`composite.wgsl:214,252`) — luma mattes will read differently than specified | ✅ Done · 22a9ddd · tested · 👁 eyeball luma mattes on real footage |
 | 3.5 | Stencil/Silhouette/Alpha-add modes "ship in v1" (table) | Future-by-design | Absent; the doc's own prose reclassifies them post-v1, contradicting its table | — |
-| 4 | Adaptive motion-blur sample count, fp32 accumulator, sub-frame re-render | Partial (self-flagged) | Fixed comp samples; working-format mean; source drawn once at N placements | ◑ Partial · 93c5e90 (accumulate path fp32); `motion_blur_average` still fp16 |
+| 4 | Adaptive motion-blur sample count, fp32 accumulator, sub-frame re-render | Partial (self-flagged) | Fixed comp samples; working-format mean; source drawn once at N placements | ◑ Partial · fp32 accumulator DONE both paths (93c5e90, 6fcf695, tested); the "adaptive sample count" part of this row is still fixed-N |
 | 5.1 | Three cache tiers; playback promotes disk→RAM→VRAM | Partial | RAM + disk only; no VRAM tier (`lumit-cache/src/lib.rs:5`) | — |
 | 5.1/5.4 | fp16 planes in RAM/disk; LZ4 fp16 + colourspace marker on disk | Contradicted | Disk stores 8-bit sRGB RGBA LZ4 only (`disk.rs:27,171`); fp16 noted future | — |
 | 5.3 | Cost-aware GreedyDual eviction, pinning, demotion | Not implemented | Plain LRU (RAM) and oldest-mtime (disk) | — |
