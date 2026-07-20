@@ -12,10 +12,11 @@
 //! sockets fit.
 //!
 //! Scope: Source (solids), Transform (identity passthrough — placement
-//! resolution stays with the adapter's owner), Composite (Normal blend,
-//! per-layer opacity), CompOutput (over the comp background). Retime, masks
-//! and adjustments are later slices. Skips cleanly when no GPU adapter is
-//! present, like every other lumit-gpu test.
+//! resolution stays with the adapter's owner), Composite (all blend modes via
+//! the adapter's `BlendMode` → `Blend` map, per-layer opacity), CompOutput
+//! (over the comp background). Retime, masks and adjustments are later slices.
+//! Skips cleanly when no GPU adapter is present, like every other lumit-gpu
+//! test.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -175,9 +176,6 @@ impl KernelExecutor for GpuKernels {
                 .copied()
                 .ok_or_else(|| err("transform needs an input".into())),
             NodeKind::Composite { layer, blend, .. } => {
-                if *blend != lumit_core::model::BlendMode::Normal {
-                    return Err(err(format!("skeleton blends Normal only, got {blend:?}")));
-                }
                 let placement = self
                     .layers
                     .get(layer)
@@ -198,12 +196,20 @@ impl KernelExecutor for GpuKernels {
                     ),
                     None => None,
                 };
+                // The layer's blend mode carries through the seam via the
+                // adapter's BlendMode → Blend map (the production adapter will
+                // resolve this the same way the shipped renderer's draw builder
+                // does). Snapshot-computed modes (Screen, Overlay…) read the
+                // layer below as their destination, which the accumulator
+                // hand-off already supplies as the seed.
+                let mut top_layer = self.placed(top, placement);
+                top_layer.blend = blend_of(*blend);
                 let out = self.compositor.composite_seeded(
                     &self.ctx,
                     w,
                     h,
                     [0.0, 0.0, 0.0, 0.0],
-                    &[self.placed(top, placement)],
+                    &[top_layer],
                     None,
                     seed,
                 );
@@ -232,6 +238,43 @@ impl KernelExecutor for GpuKernels {
             }
             other => Err(err(format!("skeleton does not run {other:?} yet"))),
         }
+    }
+}
+
+/// The document's `BlendMode` → the compositor's `Blend`. The two enums carry
+/// the same variants by design (K-162), so this is a plain 1:1 map. It mirrors
+/// the shipped renderer's `blend_of` (lumit-ui) — the production pixel-pass
+/// adapter will own the identical map, since the model↔GPU bridge is an
+/// app-layer concern (lumit-gpu itself stays model-agnostic).
+fn blend_of(m: lumit_core::model::BlendMode) -> Blend {
+    use lumit_core::model::BlendMode as M;
+    match m {
+        M::Normal => Blend::Normal,
+        M::Add => Blend::Add,
+        M::Multiply => Blend::Multiply,
+        M::Screen => Blend::Screen,
+        M::Overlay => Blend::Overlay,
+        M::SoftLight => Blend::SoftLight,
+        M::HardLight => Blend::HardLight,
+        M::Lighten => Blend::Lighten,
+        M::Darken => Blend::Darken,
+        M::Subtract => Blend::Subtract,
+        M::ColourBurn => Blend::ColourBurn,
+        M::LinearBurn => Blend::LinearBurn,
+        M::DarkerColour => Blend::DarkerColour,
+        M::ColourDodge => Blend::ColourDodge,
+        M::LighterColour => Blend::LighterColour,
+        M::LinearLight => Blend::LinearLight,
+        M::VividLight => Blend::VividLight,
+        M::PinLight => Blend::PinLight,
+        M::HardMix => Blend::HardMix,
+        M::Difference => Blend::Difference,
+        M::Exclusion => Blend::Exclusion,
+        M::Divide => Blend::Divide,
+        M::Hue => Blend::Hue,
+        M::Saturation => Blend::Saturation,
+        M::Colour => Blend::Colour,
+        M::Luminosity => Blend::Luminosity,
     }
 }
 
@@ -476,6 +519,91 @@ fn two_layers_blend_in_linear_light_through_the_seams() {
     assert!(
         (r - expected).abs() <= 1 && (g - expected).abs() <= 1 && b == 0 && a == 255,
         "expected ≈({expected},{expected},0,255), got ({r},{g},{b},{a})"
+    );
+}
+
+/// A non-Normal blend mode carries through the seams: the layer's `Add` mode
+/// reaches the compositor via the one canonical `BlendMode` → `Blend` map, and
+/// the accumulator hand-off feeds it the layer below as its destination. Two
+/// opaque solids on separate channels (red on top, green below) add to a frame
+/// that carries *both* channels — the give-away that the top blended with the
+/// bottom rather than replacing it (Normal would drop the green).
+#[test]
+fn a_blend_mode_carries_through_the_seams() {
+    let Some(rig) = Rig::new((8, 8)) else { return };
+    let (green_bottom, red_top) = (Uuid::now_v7(), Uuid::now_v7());
+    let (l_top, l_bottom, comp) = (Uuid::now_v7(), Uuid::now_v7(), Uuid::now_v7());
+    let v = 128u8; // a mid value on its own channel, so Add never clamps
+    let mut source = rig.source(HashMap::from([
+        (green_bottom, [0, v, 0, 255]),
+        (red_top, [v, 0, 0, 255]),
+    ]));
+    let mut kernels = rig.kernels([0.0, 0.0, 0.0, 1.0], HashMap::new());
+    let mut cache = MapCache::default();
+    let node = |kind, inputs| Node { kind, inputs };
+    let graph = EvalGraph {
+        nodes: vec![
+            node(
+                NodeKind::Source {
+                    source: SourceRef::Solid(green_bottom),
+                },
+                vec![],
+            ),
+            node(NodeKind::Transform { layer: l_bottom }, vec![0]),
+            node(
+                NodeKind::Composite {
+                    layer: l_bottom,
+                    blend: lumit_core::model::BlendMode::Normal,
+                    has_matte: false,
+                },
+                vec![1],
+            ),
+            node(
+                NodeKind::Source {
+                    source: SourceRef::Solid(red_top),
+                },
+                vec![],
+            ),
+            node(NodeKind::Transform { layer: l_top }, vec![3]),
+            node(
+                NodeKind::Composite {
+                    layer: l_top,
+                    blend: lumit_core::model::BlendMode::Add,
+                    has_matte: false,
+                },
+                vec![4, 2],
+            ),
+            node(
+                NodeKind::CompOutput {
+                    comp,
+                    width: 8,
+                    height: 8,
+                },
+                vec![5],
+            ),
+        ],
+        output: 6,
+    };
+    let token = Epoch::new().token();
+    let out = render_frame(
+        &graph,
+        0.0,
+        None,
+        &mut source,
+        &mut kernels,
+        &mut cache,
+        &token,
+    )
+    .expect("skeleton renders");
+    // Add mixes in linear light; the channels don't overlap, so each survives
+    // its own round-trip back to ~v. The key point is that both are present:
+    // green did not get replaced (Normal would leave green = 0).
+    let px = rig.readback(out);
+    let (r, g, b, a) = (i32::from(px[0]), i32::from(px[1]), i32::from(px[2]), px[3]);
+    let vi = i32::from(v);
+    assert!(
+        (r - vi).abs() <= 1 && (g - vi).abs() <= 1 && b == 0 && a == 255,
+        "Add of red-over-green should keep both channels ≈({vi},{vi},0,255), got ({r},{g},{b},{a})"
     );
 }
 
