@@ -53,11 +53,12 @@ Reserved for later (no crate exists yet):
   layer MUST be replaceable (GPUI, Qt shell) without touching the engine.
 - `lumit-core` MUST have no dependency on wgpu, rsmpeg, cpal, or QuickJS. The document model
   (and the time types folded into it) is testable on any machine with no GPU and no codecs.
-- `lumit-eval` depends **only on `lumit-core`** (it reads compiled snapshots). The one seam
-  it defines is the `SourceStamper` trait, so source-identity folding unit-tests against
-  fakes. The graph's pixel pass — and therefore any dependency on `lumit-gpu`/`lumit-media`/
-  `lumit-cache` — is **not here yet**: in v1 the render/present path lives in `lumit-ui`. The
-  eventual `FrameSource`/`KernelExecutor`/`CacheStore` trait seams are reserved, not built.
+- `lumit-eval` depends **only on `lumit-core`** (it reads compiled snapshots). Its seams are
+  trait objects defined in `lumit-eval` itself: `SourceStamper` (source identity for keys) and
+  the pixel-pass sockets `FrameSource` / `KernelExecutor` / `CacheStore` (`lumit-eval::exec`),
+  so the demand-pull executor unit-tests against fakes with no GPU, codecs or disk. The *real*
+  implementations (GPU kernels, decode, the cache) are wired in app-side; until that wiring
+  lands, the shipped render/present path is still the draw-list renderer in `lumit-ui`.
 - Heavy FFI crates (`rsmpeg`, cudarc, QuickJS bindings) live only in their one owning crate.
   **Known deviation:** `wgpu` is a direct dependency of both `lumit-gpu` and `lumit-flow`
   (the flow WGSL twin needs its own device access); it also appears in `lumit-ui`/`lumit-app`
@@ -75,7 +76,7 @@ Inside the main process, threads have fixed roles:
 | Thread | Role |
 |---|---|
 | **UI thread** | winit events, egui, document edits, painting. Per K-017 it MUST NOT evaluate any node, decode any frame, run any expression, or block on any render. It reads results from latest-wins mailboxes and cache-status snapshots. |
-| **Worker pool** | Work-stealing pool (`cores − 1` threads, adaptive), running evaluation-graph jobs. Two priority classes: *interactive* (current Viewer frame, scrub, audio-adjacent) and *background* (cache warming, thumbnails, proxy checks). Interactive always pre-empts at job boundaries. |
+| **Worker pool** | Work-stealing pool (`cores − 3` threads, min 2, per the pinned sizing in [impl/playback-scheduler.md](impl/playback-scheduler.md) §2), running evaluation-graph jobs. Two priority classes: *interactive* (current Viewer frame, scrub, audio-adjacent) and *background* (cache warming, thumbnails, proxy checks). Interactive always pre-empts at job boundaries. **Built:** `lumit-eval::pool` — a dedicated rayon pool behind bounded two-class queues, tested; the shell's per-job `thread::spawn`s migrate onto it as the pixel pass is wired. |
 | **Decode threads** | One per active media stream, owned by `lumit-media`, feeding bounded frame queues. Decode never runs on pool workers: long-GOP seeks stall unpredictably and would starve the pool. |
 | **IO threads** | Disk-cache read/write, project autosave journal appends, proxy/export file IO. |
 | **Audio thread pair** | The cpal callback (real-time, lock-free ring-buffer reads only) plus an audio-render thread that evaluates the audio graph ahead of the callback, sample-accurately. |

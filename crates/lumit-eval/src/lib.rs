@@ -25,7 +25,9 @@ use lumit_core::model::{Composition, Document, LayerKind, MatteChannel};
 use uuid::Uuid;
 
 pub mod epoch;
+pub mod exec;
 pub mod graph;
+pub mod pool;
 pub mod schedule;
 
 /// Bump when any rendering algorithm's output changes: every cached frame

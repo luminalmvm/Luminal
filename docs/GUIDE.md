@@ -1554,6 +1554,31 @@ Two mechanisms make this safe, and you'll see them by name in the code:
   workers glance at the wall between small steps and quietly stop if their ticket is
   stale. Nothing is ever force-killed. A test proves a deliberately slow job stops
   within 15 milliseconds of the number changing.
+- **The worker pool (`lumit-eval::pool`)** — the crew of threads that will do the
+  rendering, so the interface thread never has to. Picture a small workshop with two
+  in-trays: an *urgent* tray (the frame under your cursor, a scrub) and an *everything
+  else* tray (warming the cache, thumbnails). Whenever a worker finishes a job it always
+  takes from the urgent tray first, so scrubbing never queues behind housekeeping. Both
+  trays have a fixed size on purpose: if one fills up, new work is refused on the spot
+  and the caller decides what to drop — work can never silently pile up behind a stall.
+  The pool never kills a running job; jobs stop *themselves* by glancing at the epoch
+  wall (previous bullet). The crew size is your machine's core count minus three — one
+  core each left free for the interface, the GPU feeder, and the operating system.
+  Tests prove the urgent-first rule, the fixed tray sizes, and that a misbehaving job
+  can't take a worker down with it.
+- **The pixel-pass walker and its plug sockets (`lumit-eval::exec`)** — the piece that
+  walks the wiring diagram (two bullets up) and turns it into an ordered list of actual
+  work. It starts at the final "comp output" box and works backwards: to blend a layer
+  you first need its placed pixels, to place them you first need the source frame. Each
+  box is done exactly once — two layers sharing a clip share the one fetched frame — and
+  the real pixel work is done through three *sockets* it doesn't look inside: "fetch me
+  this source's frame", "run this one step", and "have we rendered this exact frame
+  before?" (the cache, checked before doing anything and filled afterwards). Because the
+  sockets are plug-shaped, the tests plug in cardboard fakes — no GPU, no codecs — and
+  prove the order, the sharing, the cache behaviour, and that a scrub landing mid-walk
+  abandons it cleanly. Plugging in the *real* parts (the GPU compositor, the decoder,
+  the frame cache) is the remaining step; until then the shipped renderer in `lumit-ui`
+  keeps drawing the picture.
 - **The frame scheduler's brain (`lumit-eval::schedule`)** — the decision rules for
   smooth playback, written as plain arithmetic so tests can prove them. During playback
   Lumit renders frames ahead of the playhead onto a small shelf; each screen refresh
