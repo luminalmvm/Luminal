@@ -252,7 +252,7 @@ flowchart TD
     TRACING["tracing spans + diagnostics ring log +<br/>export action (14 §8, 13 §7.2)"]
     CRASHH["Crash-handler process, Crashpad (05 §8, 14 §8)"]
     GLOSSCI["Decision: glossary banned-terms CI gate —<br/>term list + scoping (14 §7, 01 §9)"]
-    JCOMPACT["Undo-journal compaction (14 §5)"]
+    JCOMPACT["✅ Undo-journal compaction (14 §5) — the in-memory undo/redo<br/>history is now bounded to MAX_UNDO_DEPTH (500): commits past the<br/>cap drop the oldest steps (state untouched), redo is transitively<br/>bounded, crash recovery unaffected (disk journal is separate).<br/>Compaction story documented at the type; regression-tested"]
     AEFIXT["AE golden keyframe fixtures +<br/>denominator property test (04 impl notes)"]
     FIXTURES --> BENCH
     BENCH --> PERFCI
