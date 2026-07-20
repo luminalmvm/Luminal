@@ -11,6 +11,10 @@ is still to be implemented, so a pre-release worklist can be drawn from it. Alre
 implemented claims are deliberately omitted from the tables below (each section opens
 with a short note on what *is* solid); the tables list only the gaps.
 
+**Companion:** [implementation-dependency-graph.md](implementation-dependency-graph.md) draws
+the remaining items as a dependency graph (what must land before what), kept updated as boxes
+complete — use it to pick the next feature; use the tables here for the per-claim evidence.
+
 ## Fixes applied (living log)
 
 Work resolving the findings below, newest first. The finding tables are left as the
