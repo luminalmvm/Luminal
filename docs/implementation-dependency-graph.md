@@ -20,15 +20,11 @@ commit (add ✅ / re-wire arrows), so the graph stays the live picture of what r
 flowchart TD
 
   subgraph SVERIFY["Verify first — built, awaiting your eye"]
-    RTEYE["👁 Realtime adaptive preview — render-pull rework:<br/>no longer freezes (one un-superseded render at a time),<br/>and now fed the real decode cost so the tier drops + the box<br/>is honest. Owner accepted (moving on). Known limit: dropping<br/>res doesn't cut decode, so decode-bound comps stay a bit<br/>choppy until render-ahead (RING) is wired — Cached is smooth"]
-    LUMAEYE["✅ Luma matte perceptual gate — owner-verified"]
+    RTEYE["✅ Realtime adaptive preview — render-pull rework, owner-accepted:<br/>no longer freezes (one un-superseded render at a time),<br/>fed the real decode cost so the tier drops + the box is honest.<br/>Known limit (documented): dropping res doesn't cut decode, so<br/>decode-bound comps stay a bit choppy until render-ahead (RING) —<br/>Cached is the smooth path there"]
+    SETTINGSMAC["✅ Settings reachable on macOS — added to the app menu at Cmd+,<br/>(native menu bar had no Settings item); owner confirmed Cmd+, works"]
     BANNEREYE["👁 Error banner fig tint (15 §10)"]
     SOLOEYE["👁 Audio solo — logic verified; re-test the live<br/>mix plan: edits heard on the next callback"]
-    LIMEYE["✅ Master limiter — owner-verified by ear"]
     BEATEYE["👁 Beat sensitivity slider — now in the timeline<br/>empty-lane right-click menu; re-check there"]
-    RECEYE["✅ Crash recovery — owner-accepted"]
-    KEYSEYE["✅ New keybindings — owner-verified"]
-    RATEEYE["✅ Retime to-Rate button — owner-verified<br/>(all further retime work deferred by owner to last)"]
     AUDIOMEMEYE["👁 Memory + instant audio — re-test with the movie:<br/>RAM within the ONE Settings budget (half RAM default),<br/>solo/mute/move heard instantly, waveform arrives after"]
   end
 
@@ -42,7 +38,7 @@ flowchart TD
     GPUSUB["GPU-submit thread owns the queue (05 §2)"]
     RING["Wire render-ahead ring and pre-roll (06 §6.4)"]
     FRAMEPACE["Frame-pacing budgets B5–B7 (13 §2)"]
-    CACHEDPLAY["👁 Cached playback render-gated stepping — BUILT (K-171):<br/>every frame shown, advances when cached + at realtime pace,<br/>audio pauses while awaiting a frame. Tested core (cached_step).<br/>Re-test on the movie; then remaining: audio timestretch (vs pause)"]
+    CACHEDPLAY["✅ Cached playback render-gated stepping — owner-confirmed working (K-171):<br/>every frame shown, advances when cached + at realtime pace,<br/>audio pauses while awaiting a frame. Tested core (cached_step).<br/>Remaining refinement: audio timestretch instead of pause"]
     SCOPESGPU["GPU compute scopes (06 §8, K-096)"]
     WPOOL --> PIXPASS
     SEAMS --> PIXPASS
@@ -180,7 +176,6 @@ flowchart TD
     RTCOPY["Copy/paste retime + paste-attributes (04 §8.2)"]
     FREEZE --> HOLDP
   end
-  RATEEYE --> DRIFTB
 
   subgraph SFILE["File format and relink"]
     FPRINT["MediaRef content fingerprint (10 §2, 03 §3)"]
@@ -296,12 +291,16 @@ flowchart TD
 
 ## Suggested attack order
 
-1. **The 👁 queue** — pure verification, no code. Cheap, and confirming three of them directly
-   unblocks new work (realtime slice → degradation ladder and the Preview panel; →Rate →
-   drift badge).
-2. **The spine: worker pool + eval seams → pixel pass.** The single biggest fan-out in the graph
-   — it unlocks ROI/DoD, the export compiler, and the per-node profiler, and it is the
-   architecture 05/06 actually specify.
+1. **The 👁 queue** — pure verification, no code. Mostly cleared: realtime (accepted), cached
+   playback (confirmed), macOS Settings, luma matte, limiter, crash recovery, keybindings and
+   the Rate button are all owner-confirmed. Remaining eyes: error-banner tint, audio solo on the
+   live mix, the beat-sensitivity slider, and memory+instant-audio on the movie.
+2. **The spine: worker pool + eval seams → pixel pass.** ← *in progress.* The single biggest
+   fan-out in the graph — it unlocks ROI/DoD, the export compiler, and the per-node profiler,
+   and it is the architecture 05/06 actually specify. Worker pool and the trait seams are done;
+   the walking skeleton (executor driving the real compositor through the seams) is being widened
+   one vocabulary slice at a time — solids, transform placement, opacity and linear blend proven;
+   blend modes / masks / adjustments / retime next — before preview and export switch onto it.
 3. **Texture pool → governor → degradation ladder** (plus device-lost recovery and the VRAM
    tier) — the performance backbone; nothing in 13 can be enforced without it.
 4. **Media and colour: persistent decoders → hardware decode → CM pass, with colour tags.**
