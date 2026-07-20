@@ -20,7 +20,7 @@ commit (add ✅ / re-wire arrows), so the graph stays the live picture of what r
 flowchart TD
 
   subgraph SVERIFY["Verify first — built, awaiting your eye"]
-    RTEYE["👁 Realtime adaptive preview — reworked as a distinct mode;<br/>cost signal still CPU-composite-only (may under-drop tier).<br/>Verify on PC; may need decode/GPU cost added"]
+    RTEYE["👁 Realtime adaptive preview — render-pull rework:<br/>no longer freezes (one un-superseded render at a time),<br/>and now fed the real decode cost so the tier drops + the box<br/>is honest. Owner accepted (moving on). Known limit: dropping<br/>res doesn't cut decode, so decode-bound comps stay a bit<br/>choppy until render-ahead (RING) is wired — Cached is smooth"]
     LUMAEYE["✅ Luma matte perceptual gate — owner-verified"]
     BANNEREYE["👁 Error banner fig tint (15 §10)"]
     SOLOEYE["👁 Audio solo — logic verified; re-test the live<br/>mix plan: edits heard on the next callback"]
@@ -66,6 +66,7 @@ flowchart TD
     GOV --> LADDER
   end
   RTEYE --> LADDER
+  RING -.->|smooths decode-bound realtime| RTEYE
 
   subgraph SMEDIA["Media and colour"]
     DECODER["Persistent per-stream decoders (05 §2, 06 §3.2)"]
