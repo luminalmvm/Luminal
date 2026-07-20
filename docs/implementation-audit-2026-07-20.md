@@ -600,7 +600,7 @@ several binding rules are violated or their promised enforcement doesn't exist.
 | §6 | Engine-crate coverage gate | Partial | Only `lumit-core` + `lumit-project` gated at 75%; other engine crates excluded | ✅ Done · gate extended to all six FFmpeg-free engine crates (`+eval/cache/flow/text`) and threshold ratcheted 75→80 (measured 93.7% combined locally via `cargo llvm-cov`; lowest crate 87%). `lumit-gpu` held out while its kernel tests skip on adapterless runners |
 | §7 | `rust_2024_idioms`, `clippy::pedantic` | Not implemented | Absent from workspace lints | — |
 | §7 | i18n from day one | Not implemented | Raw string literals everywhere | — |
-| §7 | CI greps glossary banned terms | Not implemented | No such step | — |
+| §7 | CI greps glossary banned terms | Not implemented | No such step | ◑ Investigated · codebase is compliant in practice — every banned-term hit is a glossary-sanctioned context (the K-076 "Velocity" lens label, "track matte", audio "track" in media, AE-context "Time Remap"); no CTI. A real CI gate needs a curated allowlist + user-facing-string scoping (most terms — line/render/event/bin/clip — are too context-sensitive to grep raw), so it's a scoped design task, not a blind add. **Owner decision needed on term list + scope** 👁 |
 | §7 | FFI `catch_unwind` + layout tests | Partial/unverifiable | No `catch_unwind`; likely moot (no registered callbacks) | — |
 | §8 | `tracing` spans throughout; per-node timings; crash capture (Crashpad); opt-in telemetry | Not implemented | `tracing` not a dependency of any crate; no crash handler | — |
 | §9 | `cargo deny` in CI | Not implemented | No `deny.toml`, no job | — |
