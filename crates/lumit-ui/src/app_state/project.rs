@@ -103,8 +103,12 @@ impl AppState {
     }
 
     pub fn open_dialog(&mut self) {
+        // `.lum` is the project extension (docs/10 §1). `kir` is the
+        // pre-rename leftover (K-083): saves made while the save dialog
+        // still carried it landed as `<name>.lum.kir`, so the open filter
+        // keeps showing those until none remain in the wild.
         let picked = rfd::FileDialog::new()
-            .add_filter("Lumit project", &["kir"])
+            .add_filter("Lumit project", &["lum", "kir"])
             .pick_file();
         if let Some(path) = picked {
             self.open_path(&path);
@@ -182,8 +186,12 @@ impl AppState {
     pub fn save(&mut self) {
         let path = match &self.path {
             Some(p) => Some(p.clone()),
+            // Save writes `.lum` only (docs/10 §1). The filter used to say
+            // `kir` (the pre-rename extension, K-083), and Windows appends
+            // the filter's extension to a name that lacks it — which turned
+            // the default into `untitled.lum.kir`.
             None => rfd::FileDialog::new()
-                .add_filter("Lumit project", &["kir"])
+                .add_filter("Lumit project", &["lum"])
                 .set_file_name("untitled.lum")
                 .save_file(),
         };
