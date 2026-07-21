@@ -142,6 +142,15 @@ flowchart TD
     RAZORD --> KEYS30
   end
 
+  subgraph SDIST["Distribution"]
+    FLATPAK["✅ Linux Flatpak bundle — manifest + CI artifact (TF-3);<br/>bundles FFmpeg 7.1, installs on any distro"]
+    LINUXCI["✅ Linux CI: clippy, tests, GPU oracles on lavapipe,<br/>release compile check (TF-3)"]
+    MACAPP["macOS .app bundle + signing/notarisation"]
+    WINPKG["Windows installer (MSI/MSIX) + code signing"]
+    FLATHUB["Flathub submission (needs screenshots,<br/>a narrower --filesystem than host)"]
+    FLATPAK --> FLATHUB
+  end
+
   subgraph SUI["UI shell"]
     THUMBS["Thumbnail render service (engine-rendered)"]
     HOVSCRUB["Project panel columns, sort, Ctrl+F,<br/>hover-scrub thumbnails (07 §3.1)"]

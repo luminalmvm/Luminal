@@ -167,6 +167,35 @@ jobs:
           -p lumit-cache -p lumit-flow -p lumit-text -p lumit-keymap
           --fail-under-lines 80
 
+  flatpak:
+    name: flatpak bundle (installs on any distro)
+    runs-on: ubuntu-latest
+    container:
+      # Carries flatpak + flatpak-builder and the freedesktop 24.08 SDK the
+      # manifest builds against.
+      image: ghcr.io/flathub-infra/flatpak-github-actions:freedesktop-24.08
+      options: --privileged
+    steps:
+      - uses: actions/checkout@v5
+      # A Flatpak build runs offline, so every crate in the lockfile has to be
+      # declared as a source. Mechanical from Cargo.lock, so it is generated
+      # here rather than committed (see the manifest's header).
+      - name: Generate the offline cargo sources
+        env:
+          GENERATOR: https://raw.githubusercontent.com/flatpak/flatpak-builder-tools/master/cargo/flatpak-cargo-generator.py
+        run: |
+          python3 -m pip install --user aiohttp toml ||
+            python3 -m pip install --break-system-packages aiohttp toml
+          curl -fsSL -o /tmp/generator.py "$GENERATOR"
+          python3 /tmp/generator.py Cargo.lock -o packaging/flatpak/cargo-sources.json
+      # Publishes the bundle as a run artifact: what a Linux tester installs
+      # with `flatpak install lumit.flatpak`, whatever distribution they run.
+      - uses: flatpak/flatpak-github-actions/flatpak-builder@v6
+        with:
+          bundle: lumit.flatpak
+          manifest-path: packaging/flatpak/io.github.luminalmvm.Lumit.yml
+          cache-key: flatpak-builder-${{ github.sha }}
+
   no-hex-outside-theme:
     name: design-token lint (no hex literals outside the theme module)
     runs-on: ubuntu-latest

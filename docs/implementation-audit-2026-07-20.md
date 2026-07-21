@@ -60,6 +60,12 @@ locally (fmt, clippy `-D warnings`, 638 + 64 GPU tests). Tracked as TF-1..4 / OD
   (regression: `precomp_audio_follows_nested_and_carrier_mutes`). Precomp rows with nested
   audio carry the speaker. And the restored project's first frame re-renders as probes land
   (`MediaRegistry::poll` reports arrivals) instead of waiting for a playhead move.
+- **Linux becomes a proven target (TF-3).** A `tests (Linux, with media)` CI job — desktop
+  system libs, the same BtbN n7.1 FFmpeg the Windows job takes, LLVM 18, clippy, the
+  workspace tests, the GPU oracles under Mesa's lavapipe, and a release compile check — plus
+  **Flatpak packaging** (`packaging/flatpak/`) that bundles its own FFmpeg 7.1 and publishes
+  an installable `lumit.flatpak` artifact per run. K-082 said Linux is supported; it is now
+  continuously proven rather than asserted.
 
 ### Second pass (autonomous, CI-verified on PR #3)
 

@@ -2082,11 +2082,41 @@ One honest caveat: the build needs FFmpeg **7**, and some distributions still sh
 FFmpeg 6 — Ubuntu 24.04 LTS is the big one. On those, `cargo build` will complain about
 "ffmpeg stuff" (a version the binding doesn't accept, or missing headers). The fix is a
 newer distribution release, or building FFmpeg 7.1 from source and letting `pkg-config`
-find it. There is no Linux machine in CI yet, so treat Linux as "documented and expected
-to work" rather than "verified on every push".
+find it.
+
+### Not building it at all: the Flatpak
+
+If you just want to *run* Lumit on Linux, there is now a **Flatpak** — the one artifact
+that sidesteps the whole FFmpeg-version problem. A Flatpak is an application packaged
+together with the exact libraries it was built against, run in a light sandbox. Because
+Lumit's bundle carries its own FFmpeg 7.1, it does not care what the distribution ships:
+the same file installs on Ubuntu, Fedora, Arch or anything else.
+
+Every CI run builds one and attaches it to the run as `lumit.flatpak`. Download it, then:
+
+```
+flatpak install --user lumit.flatpak
+flatpak run io.github.luminalmvm.Lumit
+```
+
+The recipe lives in `packaging/flatpak/`. Two parts of it are worth understanding, because
+they look strange otherwise. First, the manifest **builds FFmpeg 7.1 itself** rather than
+using the one in the Flatpak runtime — the runtime's is 6.x, the same version problem as
+above, just moved indoors. Second, a Flatpak build has **no network access** on purpose (so
+a build is reproducible and can't fetch surprises), which means every Rust crate Lumit
+depends on has to be listed in advance; CI generates that list mechanically from
+`Cargo.lock` before building, which is why you won't find it committed.
+
+The sandbox is granted the GPU (the whole compositor is GPU work), audio out, and access to
+your files — a video editor has to read footage from wherever you keep it, external drives
+included.
 
 ### What the robots check
 
-Every push, CI rebuilds and retests everything on both macOS and Windows, media included, so
-"it builds on my machine" can never quietly drift from "it builds for real". The Windows
-recipe above is exactly what CI does, written out by hand in `.github/workflows/ci.yml`.
+Every push, CI rebuilds and retests everything on **macOS, Windows and Linux**, media
+included, so "it builds on my machine" can never quietly drift from "it builds for real".
+The platform recipes above are exactly what CI does, written out by hand in
+`.github/workflows/ci.yml`. The Linux job goes a little further than the others: it installs
+Mesa's *lavapipe*, a Vulkan driver that renders on the CPU, so the GPU tests actually run on
+a machine with no graphics card in it. And a sixth job builds the Flatpak, which is how we
+know the packaging works and not just the code.

@@ -359,7 +359,12 @@ Four notes relayed by the owner; the tester started on main, then switched to th
   Windows job uses (the distro's 6.x does not match the crate's `ffmpeg7_1` feature; the
   tarball's .pc prefixes are rewritten so pkg-config resolves), pins LLVM 18 for bindgen, and
   runs clippy `-D warnings`, the workspace tests, the GPU oracles single-threaded under
-  lavapipe, and a release-mode compile check. Flatpak packaging follows in its own commit.
+  lavapipe, and a release-mode compile check. **Flatpak** shipped alongside it: a manifest
+  (`packaging/flatpak/`, app id `io.github.luminalmvm.Lumit`) that builds FFmpeg 7.1 into the
+  bundle — the runtime's is 6.x — plus a desktop entry, AppStream metainfo and the brand icon;
+  a CI job generates the offline cargo sources from Cargo.lock (a Flatpak build has no
+  network) and publishes `lumit.flatpak` as a run artifact, which is what a Linux tester
+  installs on any distribution. Both were the tester's own suggestion, verbatim.
 - [ ] TF-4 **Decode speed hunch (GOP walk)** — half true, half already done. The decoder
   already keeps per-item persistent decoders with a sequential fast path (`next_sequential`:
   playing frame N+1 after N decodes exactly one frame — no re-walk from the keyframe), so
