@@ -286,7 +286,9 @@ where the row is logic).
   — taking the option the port allows — they live in the context menu instead
   (`panels/timeline/columns.dart`, the pure `parentingWouldCycle` unit-tested).
   Rename, Add effect and Convert still route to `app.engine(...)` honestly —
-  widget-tested
+  widget-tested. **Not carried over** (2026-07-22 audit): egui's **Trim to source
+  end** entry (offered on a retimed footage layer, `menu.rs:174-184`) has no
+  Flutter counterpart
 - ☑ Layer search (wave 2): a search box in the outline header filters rows by
   case-insensitive name substring — unit-tested + widget-tested
 - ☑ Horizontal pan (wave 2): shift-wheel + a scrollbar when zoomed past fit,
@@ -398,11 +400,13 @@ First slice (2026-07-21):
   remainder: the `.lumfx` **preset save/load** (needs the file + preset bridge
   ops — a placeholder row at the bottom says exactly that), category grouping,
   and drag-onto-a-layer application.
-- ◐ Add mask ▸ Rectangle/Ellipse/Star: wired from the **layer context menu**
-  (`addMask`, wave 3); `AppStateStub.addMaskToSelected(kind)` exposes the
-  selected-layer path (quiet error when none). INTEGRATOR: repoint the
-  menu-bar / command-palette Add-mask entries (owned elsewhere) at
-  `addMaskToSelected` — that repoint is left for after the wave.
+- ☑ Add mask ▸ Rectangle/Ellipse/Star: wired from the **layer context menu**
+  (`addMask`, wave 3) and from the **Composition ▸ Add mask** menu bar
+  (`shell/menu_bar.dart:90-94` → `addMaskToSelected`, corrected 2026-07-22 audit —
+  the earlier "INTEGRATOR: repoint left for after the wave" note was stale; the
+  menu-bar repoint is done). `AppStateStub.addMaskToSelected(kind)` exposes the
+  selected-layer path (quiet error when none). The command palette has no Add-mask
+  entry (egui's palette has none either), so there is nothing to repoint there.
 - ☑ Export dialogue + queue + live progress: the Settings-window-style modal
   (`export_dialog.dart`) — preset dropdown (stamps codec/size/bitrate/name via
   `app.exportPreset`, the engine-side `ExportDialogState::apply` resolver), codec
@@ -482,6 +486,185 @@ dart` (off-thread renderer) and `test/timeline_columns_session_test.dart`
   ~500 ms trailing debounce, flushed on dispose and on project close (open/new).
   Autosave is untouched. Guard: a 30-frame scrub writes 0 times mid-scrub, one
   time after the flush (`test/timeline_columns_session_test.dart`).
+
+- ◐ **Playhead-drag scrub smoothness (owner, desk-test round 2, 2026-07-22).**
+  Scrubbing is "much better" after the perf pass above but still short of egui.
+  Causal analysis (the mechanism, named): egui serves a scrub from an in-RAM
+  rendered-frame cache — `AppState::comp_frame_cache` in
+  `crates/lumit-ui/src/app_state/previewing.rs` (a per-frame map; a re-visited
+  frame is a hash-map hit with no render, and it is also what feeds the timeline
+  cache bar via `cache_bar()` at previewing.rs:201). The Flutter path renders
+  **every** scrub frame fresh through the bridge (`renderCompFrame` on the worker
+  isolate, `panels/preview_isolate.dart`) with a full-resolution GPU→CPU RGBA
+  readback each time; the only reuse is the 8-entry `ui.Image` LRU in
+  `preview_source.dart`, which is keyed on already-*decoded* single frames, not on
+  rendered comp frames — so a re-scrubbed frame re-renders end to end. Fixes, in
+  order of leverage:
+  1. a **bridge-side rendered-frame cache** keyed exactly like egui's
+     `comp_frame_cache` (comp+frame+scale → RGBA), so a re-scrubbed frame skips
+     the render entirely — the highest-leverage change and the one that closes
+     most of the gap;
+  2. **engine-side render cancellation** — today latest-wins only drops the
+     Dart-side *reply* (F2 render-isolate remainder); a superseded comp render
+     still runs to completion in the worker, stealing the lock the next frame
+     wants;
+  3. the **D3D11 shared-texture / keyed-mutex zero-copy path** (no readback at
+     all — the F2 "shared-texture path" row).
+  None started.
+
+## Desk-test round 2 findings (owner, 2026-07-22)
+
+Three items the owner raised on the second desk-test. Item 3 (playhead-drag
+smoothness) is recorded in full under **Performance (K-176)** above; items 1 and
+2 are below.
+
+### 1. "Right clicking menu items" — context-menu coverage
+
+The owner wants right-click menus everywhere egui offers one. Per-surface audit
+(egui call sites are `.context_menu(…)` in `crates/lumit-ui/src/**`; Flutter is
+`onSecondaryTap*` handlers in `flutter_ui/lib/**`):
+
+| Surface | egui offers (source) | Flutter has (source) | Gap |
+|---|---|---|---|
+| Bare pane | Pop out into its own window (`shell/dock.rs:231`) | Yes — Pop out, surfaces the multi-window notice (`shell/dock_widget.dart:642`) | **parity** (pop-out itself still deferred) |
+| Layer row (outline name) | Rename · Add effect ▸ (categorised) · Add mask ▸ · Duplicate · Delete · Solo · Enabled · Motion blur · Convert to sequenced · **Trim to source end** (retimed footage) (`shell/timeline/menu.rs:27`, opened at `timeline/panel.rs:816`) | Rename\* · Add effect\* · Add mask ▸ · **Blend mode ▸ · Matte ▸ · Parent ▸** · Duplicate · Delete · Solo · Enabled · Motion blur · Convert\* (`panels/timeline/layer_menu.dart`) | **partial** — Rename / Add effect / Convert are stubs (`app.engine(…)`, layer_menu.dart:152-156); **Trim to source end missing**; Add effect not categorised. Blend/Matte/Parent added deliberately (narrow column, K-note) |
+| Lane / property keyframe | Timeline lane key: right-click removes; graph-editor key: Easy ease · Linear · Hold · Unify handles · Delete key (`shell/graph.rs:1676`) | Property-row key right-click **removes only** (`panels/timeline/property_row.dart:137`) | **partial** — interpolation-set menu (Easy ease/Linear/Hold/Unify) missing; the graph-editor's own key right-click is entirely absent (`graph_editor.dart` has no `onSecondaryTap`) |
+| Empty timeline lane | Composition settings · Reveal in project · Show time grid · Beat sensitivity slider + Detect beats · Clear beat markers (`timeline/panel.rs:384`) | none | **whole menu missing** |
+| Comp-tab strip (empty space) | Pop out timeline (`shell/panels.rs:1139`) | none (`panels/timeline/comp_tabs.dart` is tap-only) | **missing** |
+| Project row | Composition settings · Relink… (missing footage) · Find missing footage · Move to root · Delete (`shell/panels.rs:909`) | none — the Project panel is display-only (`panels/project_panel.dart`) | **whole menu missing** |
+| Viewer toolbar Shape tool | Rectangle / Ellipse / Star mask shape (`shell/app_update.rs:971`) | none — the Viewer has no draw-tool row | **missing** |
+| Value field (DragValue) | egui built-in Reset / Copy / Paste on every drag box | none (`DragValueField`) | **missing** (minor) |
+| Dock tab pill (inside a tab group) | none (egui gives only bare panes a menu) | none | parity |
+
+### 2. "The layer area being in the wrong order" — investigated
+
+Fact established from the code (topmost-first convention, all four in agreement):
+
+- egui timeline draws rows **forward** over the model Vec — `for (layer_no, layer)
+  in comp.layers.iter().enumerate()` (`shell/timeline/panel.rs:489`), so
+  `layers[0]` is the **top** row, numbered "1" (`panel.rs:777-780`, `layer_no + 1`).
+- The model's own contract agrees: `Op::AddLayer` / `Op::MoveLayer` document
+  **"index 0 = top"** (`crates/lumit-core/src/ops.rs:50,60`); the bridge inserts
+  new layers at index 0 (`crates/lumit-bridge/src/edits.rs:81-88`).
+- The compositor renders `layers[0]` **topmost**: `render_comp_linear` builds the
+  draw list with `comp.layers.iter().enumerate().rev()` (`export.rs:1463`), so
+  `layers[0]` is pushed last, and `composite_seeded` paints the list front-to-back
+  (`crates/lumit-gpu/src/composite.rs:852` — painter's order, comment at 248), so
+  the last-pushed (`layers[0]`) lands on top.
+- The bridge serialises layers **forward** (`crates/lumit-bridge/src/snapshot.rs:130`,
+  `.iter().enumerate()`), and Flutter draws them **forward** — `for (final l in
+  widget.comp.layers)` (`flutter_ui/lib/panels/timeline_panel.dart:224`, comment
+  "top-first"), numbering `displayIndex + 1` (`panels/timeline/layer_row.dart:333`).
+
+**Conclusion (honest):** the Flutter layer list is **not inverted** — row order,
+1-based numbering and compositor stacking all agree with egui (`layers[0]` = top
+row = topmost render). No code-level order defect was reproducible from static
+reading. Should a live repro confirm a visible inversion, the single-line fix
+would be to reverse the iteration at `timeline_panel.dart:224` — but the code as
+written is correct, so this is left recorded, not fixed. **Most plausible real
+cause of the owner's impression** (both to verify live): the Project panel cannot
+open or reorder comps and no menu path adds a layer (see the sweep gaps), so what
+the owner sees is whatever fixed order the loaded `.lum` already holds, with no
+way to move a row — i.e. an *inability to reorder*, not a wrong render order.
+Layer reorder-by-drag exists in egui (`panel.rs:799-814`, `Op::MoveLayer`) but
+has **no bridge op and no Flutter UI** (neither `crates/lumit-bridge/src` nor
+`flutter_ui/lib` mentions `move_layer`/`reorder`).
+
+## Parity sweep gaps (2026-07-22 audit — newly recorded)
+
+Found by the full sweep and **not** already tracked elsewhere in this file. Each
+is a genuine miss (fires even with a live bridge) unless marked otherwise.
+
+### Layer & footage placement (the biggest hole)
+
+- ☐ **No UI path to add a layer.** The menu bar and command palette "Add solid /
+  text / camera / adjustment / sequence layer" items call `app.engine(…)` — the
+  F0 stub notice — **even with a live bridge** (`shell/menu_bar.dart:70-74`,
+  `shell/command_palette.dart:48-56`), although `AppStateStub.addSolidLayer …
+  addSequenceLayer` and the bridge ops behind them exist and are tested
+  (`state/app_state.dart:552-567`; `add_*_layer` in `crates/lumit-bridge`). They
+  are defined but **called from nowhere in the UI**.
+- ☐ **Footage cannot be placed into a comp at all (MAJOR).** There is no
+  drag-from-Project-to-timeline (no `Draggable`/`DragTarget` anywhere in
+  `flutter_ui/lib`), and the add-layer menu items are stubs (above). Combined,
+  **a composition cannot gain its first layer from the Flutter UI** — only
+  Duplicate/Delete of an already-present layer work. A comp only has layers if the
+  loaded `.lum` already carried them.
+- ☐ **Layer reorder-by-drag missing** (also the subject of desk-test item 2): egui
+  drags a row to restack (`shell/timeline/panel.rs:799-814` → `Op::MoveLayer`);
+  the bridge exposes **no** reorder op and Flutter has no reorder UI.
+- ☐ **Razor / clip editing missing.** "Cut clip at playhead" and "Delete clip at
+  playhead" are menu stubs (`shell/menu_bar.dart:76-77`); no bridge op. Sequence-
+  layer sub-clip editing likewise absent.
+- ☐ **Beat detection missing.** "Detect beats" (with the 0–100 sensitivity) and
+  "Clear beat markers" are menu stubs (`shell/menu_bar.dart:87-89`); the bridge
+  has no beat op. egui hosts these in the empty-lane context menu and the
+  Composition menu.
+
+### Project panel (display-only)
+
+- ☐ **Project panel is read-only** (`panels/project_panel.dart`): no selection, no
+  click / double-click to **open a composition**, no context menu (see item 1),
+  no footage thumbnail, no "Relink…" button, no missing-footage badge, no
+  Composition-settings entry, no rename / delete / move-to-folder, no drag. egui's
+  equivalent (`shell/panels.rs`) offers all of these. (The existing F1 row already
+  notes "thumbnails, relink, missing badge, selection/drag" — this widens it to
+  open-comp and the context menu.)
+
+### Settings & window
+
+- ☐ **UI-scale persisted but never applied.** The Interface page writes
+  `ws.interface.uiScale` (`shell/settings_window.dart:276-284`) and it round-trips
+  to the workspace JSON, but **nothing consumes it** — no `MediaQuery` /
+  `TextScaler` / window-metrics wiring exists in `flutter_ui/lib`, so the slider is
+  inert. egui applies UI scale on slider release (K-117, 02-UI-INVENTORY §10).
+- ☐ **Cache controls stubbed.** Performance page "Clear cache"
+  (`settings_window.dart:334`) and "Choose cache root folder"
+  (`settings_window.dart:367`) call `app.engine(…)`; no bridge cache op backs them.
+- ◐ **Tooltip coverage is partial.** `LumitTooltip` exists and honours "Show
+  tooltips", but it is applied to only a subset of controls (effects list, effect-
+  controls rows, dock grip, Viewer play, a few timeline buttons, graph header).
+  Many egui `on_hover_text` surfaces have none yet — layer switches, transport
+  step/loop buttons, the ruler, the scopes header. Breadth gap, not a defect.
+
+### Editors & viewer
+
+- ☐ **Property editors beyond Transform missing.** Effect controls shows only the
+  Transform rows and the effect stack (`panels/effect_controls_panel.dart`). No
+  **text content editing** (a text layer's string cannot be changed), no camera-
+  specific properties, no solid colour/size editor. egui's `shell/inspector/`
+  gives each layer kind its own rows. (Text editing is the sharp one — there is no
+  way to change what a text layer says.)
+- ☐ **Retime reverse toggle and interpolation switch missing.** The graph lens
+  exposes the Retime enable toggle, the ramp presets and →Rate, but no **reverse**
+  toggle and no **Nearest / Flow / Blend** interpolation switch
+  (`panels/timeline/graph_editor.dart`); the bridge carries `reverse` /
+  `interpolation` in the read-back but exposes **no setter** for either (Bridge
+  v0.4 ops are enable/speed/preset/→Rate/drag-boundary only).
+- ☐ **Recovery modal missing.** 02-UI-INVENTORY §4 and the F4 header both list a
+  crash-recovery dialogue (restore journal / last save / open an autosave); no
+  such surface exists in `flutter_ui/lib` (`shell/dialogs.dart` has only comp
+  settings + add-mask shape pickers).
+- ☐ **Splash boot lines are placeholder, not the engine's real boot log.** The F0
+  row promised "the engine's real boot log streams in at F1"; the splash still
+  shows canned lines — no bridge boot-log stream is wired.
+
+### Unwired `app.engine(…)` action strings (full inventory)
+
+Every distinct string, where it fires, and what it awaits. "no-bridge fallback"
+= only shown when `bridge == null` (the placeholder build behaves as before, so
+not a true gap); "**stub**" = fires even with a live bridge.
+
+| String | Fires from | Status / awaits |
+|---|---|---|
+| New project / New composition / Undo / Redo / Save / Open project / Import footage | `state/app_state.dart:327-410` | no-bridge fallback (the real op runs when a bridge is present) |
+| Add solid / text / camera / adjustment / sequence layer | menu bar (`menu_bar.dart:70-74`) + palette (`command_palette.dart:48-56`) | **stub** — repoint to `app.addSolidLayer` … `addSequenceLayer` (already defined) |
+| Add marker at playhead | palette (`command_palette.dart:56`) | **stub** in the palette (the menu-bar copy is wired to `app.addMarker`) |
+| Export comp | palette default / `shell/shell.dart:120` | fallback when no export opener is wired in that context |
+| Cut clip at playhead / Delete clip at playhead | menu bar (`menu_bar.dart:76-77`) | **stub** — awaits a razor bridge op |
+| Detect beats (sensitivity N) / Clear beat markers | menu bar (`menu_bar.dart:87-89`) | **stub** — awaits a beat-detection bridge op |
+| Clear cache / Choose cache root folder | settings (`settings_window.dart:334,367`) | **stub** — awaits a cache bridge op |
+| Rename layer / Add effect / Convert to sequenced layer | layer context menu (`layer_menu.dart:152-156`) | **stub** — Add effect needs the layer-menu categorised picker; Rename needs an in-place editor; Convert awaits a bridge op |
 
 ## Post-parity fixes (owner's known rough edges — do NOT fix during the port)
 
