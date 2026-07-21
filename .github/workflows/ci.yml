@@ -97,7 +97,11 @@ jobs:
           components: rustfmt, clippy
       # The desktop stack's system libraries: ALSA (cpal), GL/EGL (eframe's
       # glow backend), X11 / Wayland / xkb (winit), and Mesa's lavapipe so
-      # wgpu finds a software Vulkan adapter for the GPU oracles.
+      # wgpu finds a software Vulkan adapter for the GPU oracles. Plus
+      # libclang for bindgen — the distro's own clang 18, which is exactly the
+      # pin Windows downloads. (The upstream LLVM tarball is the wrong tool
+      # here: it links libtinfo.so.5, an ncurses ABI Ubuntu 24.04 dropped, so
+      # bindgen cannot dlopen it.)
       - name: Install desktop build dependencies
         run: |
           sudo apt-get update
@@ -105,7 +109,7 @@ jobs:
             pkg-config libasound2-dev libgl-dev libegl-dev \
             libxkbcommon-dev libxkbcommon-x11-dev \
             libx11-dev libxcursor-dev libxi-dev libxrandr-dev libxcb1-dev \
-            libwayland-dev mesa-vulkan-drivers
+            libwayland-dev mesa-vulkan-drivers libclang-18-dev
       - name: Install FFmpeg 7.1 (BtbN shared build)
         run: |
           url="https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/${FFMPEG_ASSET}.tar.xz"
@@ -120,15 +124,10 @@ jobs:
           echo "FFMPEG_PKG_CONFIG_PATH=$root/lib/pkgconfig" >> "$GITHUB_ENV"
           echo "LD_LIBRARY_PATH=$root/lib" >> "$GITHUB_ENV"
           echo "$root/bin" >> "$GITHUB_PATH"
-      # bindgen (via rusty_ffmpeg) needs libclang; the same LLVM 18 pin the
-      # Windows job carries (newer libclang emits broken opaque structs).
-      - name: Install LLVM 18 (libclang for bindgen)
-        uses: KyleMayes/install-llvm-action@v2
-        with:
-          version: "18.1.8"
-          directory: ${{ runner.temp }}/llvm
+      # bindgen wants LLVM 18 exactly (newer libclang makes it emit opaque FFI
+      # structs and rsmpeg stops compiling) — installed above from the distro.
       - name: Point bindgen at libclang
-        run: echo "LIBCLANG_PATH=$RUNNER_TEMP/llvm/lib" >> "$GITHUB_ENV"
+        run: echo "LIBCLANG_PATH=/usr/lib/llvm-18/lib" >> "$GITHUB_ENV"
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace --exclude lumit-gpu
