@@ -82,6 +82,64 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
 
+  linux:
+    name: tests (Linux, with media)
+    runs-on: ubuntu-latest
+    env:
+      # The same BtbN "shared, GPL" n7.1 build the Windows job takes, so all
+      # three platforms link an identical FFmpeg. The distro's own is 6.x,
+      # which the crate's `ffmpeg7_1` feature does not match.
+      FFMPEG_ASSET: ffmpeg-n7.1-latest-linux64-gpl-shared-7.1
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      # The desktop stack's system libraries: ALSA (cpal), GL/EGL (eframe's
+      # glow backend), X11 / Wayland / xkb (winit), and Mesa's lavapipe so
+      # wgpu finds a software Vulkan adapter for the GPU oracles.
+      - name: Install desktop build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libasound2-dev libgl-dev libegl-dev \
+            libxkbcommon-dev libxkbcommon-x11-dev \
+            libx11-dev libxcursor-dev libxi-dev libxrandr-dev libxcb1-dev \
+            libwayland-dev mesa-vulkan-drivers
+      - name: Install FFmpeg 7.1 (BtbN shared build)
+        run: |
+          url="https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/${FFMPEG_ASSET}.tar.xz"
+          curl -fsSL "$url" -o "$RUNNER_TEMP/ffmpeg.tar.xz"
+          mkdir -p "$RUNNER_TEMP/ffmpeg"
+          tar -xJf "$RUNNER_TEMP/ffmpeg.tar.xz" -C "$RUNNER_TEMP/ffmpeg" --strip-components=1
+          root="$RUNNER_TEMP/ffmpeg"
+          # The tarball's .pc files carry the build machine's prefix, so
+          # pkg-config would emit -L/-I paths that do not exist here. Point
+          # them at where we actually unpacked.
+          sed -i "s|^prefix=.*|prefix=$root|" "$root"/lib/pkgconfig/*.pc
+          echo "FFMPEG_PKG_CONFIG_PATH=$root/lib/pkgconfig" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=$root/lib" >> "$GITHUB_ENV"
+          echo "$root/bin" >> "$GITHUB_PATH"
+      # bindgen (via rusty_ffmpeg) needs libclang; the same LLVM 18 pin the
+      # Windows job carries (newer libclang emits broken opaque structs).
+      - name: Install LLVM 18 (libclang for bindgen)
+        uses: KyleMayes/install-llvm-action@v2
+        with:
+          version: "18.1.8"
+          directory: ${{ runner.temp }}/llvm
+      - name: Point bindgen at libclang
+        run: echo "LIBCLANG_PATH=$RUNNER_TEMP/llvm/lib" >> "$GITHUB_ENV"
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace --exclude lumit-gpu
+      # The GPU oracles single-threaded (the project convention), so a software
+      # rasteriser neither races nor thrashes. They skip themselves when no
+      # adapter is present, so this can only fail on a real regression.
+      - name: GPU oracle tests (lavapipe software Vulkan)
+        run: cargo test -p lumit-gpu -- --test-threads=1
+      - name: Release-mode compile check
+        run: cargo check --workspace --release
+
   coverage:
     name: engine-crate coverage gate
     runs-on: macos-latest

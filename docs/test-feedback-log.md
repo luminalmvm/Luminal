@@ -353,8 +353,13 @@ Four notes relayed by the owner; the tester started on main, then switched to th
   still fails its comp's frame (deliberately — compositing without the layer and caching that
   under the frame's content key would poison the cache); surfacing that error visibly instead
   of retrying is future UI work.
-- [ ] TF-3 **Linux builds + flatpak in CI** — tracked, not started: needs owner decisions
-  (app id, runtime, whether CI minutes are worth it pre-1.0) and a Linux FFmpeg wiring pass.
+- [x] TF-3 **Linux builds + flatpak in CI** — Linux is a first-class CI target now: a
+  `tests (Linux, with media)` job on ubuntu-latest installs the desktop stack's system libs
+  (ALSA, GL/EGL, X11/Wayland/xkb) plus Mesa's lavapipe, takes the same BtbN n7.1 FFmpeg the
+  Windows job uses (the distro's 6.x does not match the crate's `ffmpeg7_1` feature; the
+  tarball's .pc prefixes are rewritten so pkg-config resolves), pins LLVM 18 for bindgen, and
+  runs clippy `-D warnings`, the workspace tests, the GPU oracles single-threaded under
+  lavapipe, and a release-mode compile check. Flatpak packaging follows in its own commit.
 - [ ] TF-4 **Decode speed hunch (GOP walk)** — half true, half already done. The decoder
   already keeps per-item persistent decoders with a sequential fast path (`next_sequential`:
   playing frame N+1 after N decodes exactly one frame — no re-walk from the keyframe), so
