@@ -27,23 +27,6 @@ to, or at the end if they connect to nothing.
 ```mermaid
 flowchart TD
 
-
-
-  RING -.->|smooths decode-bound realtime| RTEYE
-
-
-
-
-
-
-
-
-
-
-
-
-
-
   subgraph SVERIFY["Verify first — built, awaiting your eye"]
     RTEYE["✅ Realtime adaptive preview — render-pull rework, owner-accepted:<br/>no longer freezes (one un-superseded render at a time),<br/>fed the real decode cost so the tier drops + the box is honest.<br/>Known limit (documented): dropping res doesn't cut decode, so<br/>decode-bound comps stay a bit choppy until render-ahead (RING) —<br/>Cached is the smooth path there"]
     SETTINGSMAC["✅ Settings reachable on macOS — added to the app menu at Cmd+,<br/>(native menu bar had no Settings item); owner confirmed Cmd+, works"]
@@ -118,6 +101,7 @@ flowchart TD
     GPUSUB --> FRAMEPACE
     CACHEDPLAY --> RING
   end
+  RING -.->|smooths decode-bound realtime| RTEYE
 
   subgraph SENG["Engineering and CI"]
     TYPEDTIME["Typed rational time through eval +<br/>FrameIndex newtype (14 §2)"]
