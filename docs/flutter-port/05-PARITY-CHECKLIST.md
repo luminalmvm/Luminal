@@ -19,11 +19,12 @@ where the row is logic).
 - ☑ Dock: tree model (splits/tabs/panes) + default workspace byte-matching
   `default_layout()` shares — unit-tested; resizable dividers; tab pills with
   the three-state styling; solo panes bare
-- ☐ Dock: drag a tab / bare-pane grip to re-dock (the tree is serialisable;
-  the move ops and the drag interaction arrive together)
-- ◐ Bare-pane affordances: right-click "Pop out into its own window" ☑
-  (surfaces the multi-window notice for now); the corner drag grip waits on
-  the re-dock work above
+- ☑ Dock: drag a tab / bare-pane grip to re-dock — model + interaction, unit-
+  and widget-tested (movePanel/simplify with the every-panel-once invariant; a
+  ghost pill, drop-zone previews and commit-on-release over both shapes)
+- ☑ Bare-pane affordances: right-click "Pop out into its own window" (surfaces
+  the multi-window notice for now); the corner drag grip built (2×3 dot grid,
+  drags the pane exactly like a tab)
 - ☐ Pop out a panel into its own OS window (multi-window; deferred, see 04)
 - ☑ Menu bar: File / Edit / Composition / Window with the full shipped item set
   (engine-backed items dispatch to the stub state and surface a notice)
@@ -43,11 +44,21 @@ where the row is logic).
 - ☐ Sharp/Round: Round cards ☑ (fill, radius, padding, gap, shadow); window
   inset ☑; resize-gap hover/drag tinting ☑
 
-## Phase F1 — bridge (not started)
+## Phase F1 — bridge (in progress)
 
-- ☐ `lumit-bridge` crate; flutter_rust_bridge codegen in CI
-- ☐ Project open/save/import; document snapshot stream; ops dispatch + undo/redo
-- ☐ Project panel live (items, thumbnails, relink, missing badge)
+- ◐ `lumit-bridge` crate ☑ (bridge v0: hand-rolled JSON over a C ABI, loaded
+  over `dart:ffi`; catch_unwind on every export, Rust-owned strings freed via
+  `lumit_bridge_free_string`, single-client `Mutex` state; in-crate tests).
+  flutter_rust_bridge codegen ☐ — deferred until the API surface stabilises
+  (bridge v0 is hand-rolled JSON over C ABI, see 03-ARCHITECTURE §Bridge v0)
+- ◐ Project open/save/snapshot/ops. Live: new project, open (`.lum`), save (to
+  the loaded path), document snapshot (item tree + can_undo/can_redo + path),
+  new composition through the real op/undo path, undo/redo. Not yet: file
+  dialogues (open/save need the file-dialog plugin), import footage, session
+  restore
+- ◐ Project panel live: item tree + type icons (footage/folder/composition/
+  solid) with layer-colour tints and nesting, empty-document hint, hover fill.
+  Not yet: thumbnails, relink, missing badge, selection/drag
 - ☐ Session restore per project path
 
 ## Phase F2 — Viewer (not started)

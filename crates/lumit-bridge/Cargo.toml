@@ -1,0 +1,34 @@
+[package]
+name = "lumit-bridge"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-only"
+
+# A cdylib the Flutter Windows runner loads over dart:ffi, plus an rlib so the
+# in-crate tests (and any future Rust consumer) can link the same code.
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+lumit-core = { path = "../lumit-core" }
+lumit-project = { path = "../lumit-project" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v7", "serde"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+# The bridge is the one crate that cannot inherit the workspace's
+# `unsafe_code = "deny"`: a C ABI over raw pointers is unsafe by construction
+# (docs/flutter-port/03-ARCHITECTURE.md "Bridge v0"). The clippy denies from the
+# workspace are kept, so no-panic/no-unwrap discipline still holds here.
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+
+[lints.rust]
+unsafe_code = "allow"

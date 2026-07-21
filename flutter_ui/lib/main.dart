@@ -4,18 +4,23 @@
 
 import 'package:flutter/widgets.dart';
 
+import 'bridge/bridge.dart';
 import 'shell/shell.dart';
 import 'state/workspace.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
   final workspace = Workspace()..load();
-  runApp(LumitApp(workspace: workspace));
+  // Try the engine bridge; a null result keeps the F0 placeholder behaviour
+  // (the app and every test must work without the library present).
+  final bridge = LumitBridge.tryLoad();
+  runApp(LumitApp(workspace: workspace, bridge: bridge));
 }
 
 class LumitApp extends StatelessWidget {
   final Workspace workspace;
-  const LumitApp({super.key, required this.workspace});
+  final LumitBridge? bridge;
+  const LumitApp({super.key, required this.workspace, this.bridge});
 
   @override
   Widget build(BuildContext context) {
@@ -30,7 +35,7 @@ class LumitApp extends StatelessWidget {
         textDirection: TextDirection.ltr,
         child: ColoredBox(
           color: workspace.theme.surface0,
-          child: LumitShell(workspace: workspace),
+          child: LumitShell(workspace: workspace, bridge: bridge),
         ),
       ),
     );

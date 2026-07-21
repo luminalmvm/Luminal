@@ -9,6 +9,7 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
+  ffi: ^2.1.0
   iconoir_flutter: ^7.11.1
 
 dev_dependencies:

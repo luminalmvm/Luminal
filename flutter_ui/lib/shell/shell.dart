@@ -11,6 +11,7 @@
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 
+import '../bridge/bridge.dart';
 import '../panels/panels.dart';
 import '../state/app_state.dart';
 import '../state/dock.dart';
@@ -24,7 +25,12 @@ import 'splash.dart';
 
 class LumitShell extends StatelessWidget {
   final Workspace workspace;
-  const LumitShell({super.key, required this.workspace});
+
+  /// The engine bridge, when the `lumit_bridge` library loaded (null = the F0
+  /// placeholder build). Threaded down to the shell body's [AppStateStub].
+  final LumitBridge? bridge;
+
+  const LumitShell({super.key, required this.workspace, this.bridge});
 
   @override
   Widget build(BuildContext context) {
@@ -37,7 +43,8 @@ class LumitShell extends StatelessWidget {
         child: Overlay(
           initialEntries: [
             OverlayEntry(
-              builder: (context) => _ShellBody(workspace: workspace),
+              builder: (context) =>
+                  _ShellBody(workspace: workspace, bridge: bridge),
             ),
           ],
         ),
@@ -48,14 +55,15 @@ class LumitShell extends StatelessWidget {
 
 class _ShellBody extends StatefulWidget {
   final Workspace workspace;
-  const _ShellBody({required this.workspace});
+  final LumitBridge? bridge;
+  const _ShellBody({required this.workspace, this.bridge});
 
   @override
   State<_ShellBody> createState() => _ShellBodyState();
 }
 
 class _ShellBodyState extends State<_ShellBody> {
-  final AppStateStub app = AppStateStub();
+  late final AppStateStub app = AppStateStub(bridge: widget.bridge);
   bool settingsOpen = false;
   bool paletteOpen = false;
   bool splashDone = false;
@@ -100,11 +108,11 @@ class _ShellBodyState extends State<_ShellBody> {
 
     bool handled = true;
     if (ctrl && shift && key == LogicalKeyboardKey.keyZ) {
-      app.engine('Redo');
+      app.redo();
     } else if (ctrl && key == LogicalKeyboardKey.keyZ) {
-      app.engine('Undo');
+      app.undo();
     } else if (ctrl && key == LogicalKeyboardKey.keyS) {
-      app.engine('Save');
+      app.save();
     } else if (ctrl && key == LogicalKeyboardKey.comma) {
       setState(() => settingsOpen = true);
     } else if (ctrl && shift && key == LogicalKeyboardKey.keyP) {

@@ -2692,6 +2692,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "lumit-bridge"
+version = "0.1.0"
+dependencies = [
+ "lumit-core",
+ "lumit-project",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "uuid",
+]
+
+[[package]]
 name = "lumit-cache"
 version = "0.1.0"
 dependencies = [

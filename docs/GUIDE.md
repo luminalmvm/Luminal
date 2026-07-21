@@ -2215,8 +2215,32 @@ ported. The first phase rebuilds the *chrome* — theme, settings, dock, menus,
 panels as placeholders — on a pretend engine, so the interface can be judged by
 eye before any bridge work is spent.
 
+**The bridge crate, and how F1 starts it.** The first real Rust↔Dart link is a
+new crate, `crates/lumit-bridge`. It builds into a single shared library (a
+`.dll` on Windows) that the Flutter app loads when it starts. The catch is that
+Dart cannot yet call Rust functions with rich types directly, so this first
+version — "bridge v0" — keeps the conversation deliberately plain: Dart calls a
+handful of C functions (`lumit_bridge_new_project`, `lumit_bridge_snapshot`,
+`lumit_bridge_new_composition`, `lumit_bridge_undo`, and so on), and each one
+answers with a piece of **text in JSON format** describing what happened —
+either `{"ok":true, …the document…}` or `{"ok":false,"error":"a calm sentence"}`.
+Dart reads that text, hands the memory straight back to Rust to free
+(`lumit_bridge_free_string`), and turns the JSON into ordinary Dart objects the
+Project panel can draw. Later, once the set of calls has settled, a code
+generator (`flutter_rust_bridge`) will write this glue for us; hand-writing it
+now keeps the build simple while the shape is still moving. Two promises hold
+whichever way the glue is written: a crash inside Rust can never tip over into
+Dart (every function catches its own panics and reports them as an ordinary
+error), and if the library is missing the app simply runs on its placeholders,
+exactly as it did before the bridge existed — nothing breaks, the Project panel
+just shows its "arrives with the engine bridge" hint again. `lumit-bridge`
+depends only on the engine crates, and nothing depends on it, so it stays a leaf
+that the rest of the project never has to know about.
+
 **Running it.** Install the Flutter SDK (`git clone -b stable
 https://github.com/flutter/flutter`, put its `bin` on PATH — it fetches its own
 Dart on first run; the Windows build also wants the same VS 2022 C++ tools the
 Rust build uses). Then, from `flutter_ui/`: `flutter run -d windows` to launch,
-`flutter test` for the tests, `flutter analyze` for the lint pass.
+`flutter test` for the tests, `flutter analyze` for the lint pass. The bridge
+library builds separately with `cargo build -p lumit-bridge`, which drops
+`lumit_bridge.dll` in `target/debug/` where the Flutter app looks for it.

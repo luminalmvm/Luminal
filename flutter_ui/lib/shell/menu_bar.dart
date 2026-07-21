@@ -34,10 +34,10 @@ class LumitMenuBar extends StatelessWidget {
         children: [
           const SizedBox(width: 4),
           _menu(context, 'File', [
-            _Item('New project', () => app.engine('New project')),
-            _Item('Open project…', () => app.engine('Open project')),
+            _Item('New project', app.newProject),
+            _Item('Open project…', app.openProject),
             _Item('Import footage…', () => app.engine('Import footage')),
-            _Item('Save', () => app.engine('Save')),
+            _Item('Save', app.save),
             _Item.divider(),
             _Item('Export comp…',
                 () => app.engine('Export comp (${workspace.export.defaultPreset.label})')),
@@ -51,11 +51,11 @@ class LumitMenuBar extends StatelessWidget {
             ]),
           ]),
           _menu(context, 'Edit', [
-            _Item('Undo', app.canUndo ? () => app.engine('Undo') : null),
-            _Item('Redo', app.canRedo ? () => app.engine('Redo') : null),
+            _Item('Undo', app.canUndo ? app.undo : null),
+            _Item('Redo', app.canRedo ? app.redo : null),
           ]),
           _menu(context, 'Composition', [
-            _Item('New composition', () => app.engine('New composition')),
+            _Item('New composition', app.newComposition),
             _Item('Add solid layer', () => app.engine('Add solid layer')),
             _Item('Add text layer', () => app.engine('Add text layer')),
             _Item('Add camera layer', () => app.engine('Add camera layer')),

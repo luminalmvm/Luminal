@@ -46,6 +46,35 @@ document lives in Rust. The port keeps one honest boundary:
 - Rule of thumb from 14-ENGINEERING-RULES: typed rational time crosses the
   bridge as `{num, den}` pairs, never as floating seconds.
 
+### Bridge v0
+
+Phase F1 does **not** start with `flutter_rust_bridge`. It starts with **bridge
+v0: a hand-rolled JSON-over-C-ABI seam** — plain `extern "C"` functions in
+`lumit-bridge` that Dart calls over `dart:ffi`, exchanging UTF-8 JSON strings.
+`flutter_rust_bridge` remains the target once the API surface stabilises; v0
+keeps the toolchain simple and testable (no codegen step, no build-runner) while
+the shape of the commands and snapshots is still being found. The parity
+checklist's codegen row stays open until then.
+
+The contract v0 pins, unchanged when codegen replaces it:
+
+- **No panic crosses the boundary.** Every exported function's body runs inside
+  `std::panic::catch_unwind`; a panic becomes an ordinary
+  `{"ok":false,"error":"…"}` reply, never an unwind into Dart
+  (14-ENGINEERING-RULES). Every reply is either `{"ok":true, …}` or
+  `{"ok":false,"error":"…"}`, the error a calm sentence for the status line.
+- **Rust owns the strings.** Each function returns a Rust-allocated,
+  NUL-terminated UTF-8 pointer; Dart copies the bytes out and immediately hands
+  the pointer back to `lumit_bridge_free_string` so Rust frees it. Dart never
+  frees Rust memory itself, and Rust never reads a freed pointer.
+- **One client, one lock.** The engine-side document and its undo store live
+  behind a single process-wide `Mutex` (there is exactly one Flutter window),
+  held only for the duration of one state transition, never across re-entry.
+- **Absent library ⇒ placeholders.** Dart's `LumitBridge.tryLoad()` returns null
+  when the `.dll` cannot be found or bound, and the whole frontend (and every
+  Flutter test) keeps its F0 placeholder behaviour. The bridge is an
+  enhancement, never a hard dependency of the chrome.
+
 ## The Viewer texture path (Phase F2)
 
 Windows first, matching the project's priorities:

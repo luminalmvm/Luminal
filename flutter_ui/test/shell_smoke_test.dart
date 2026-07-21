@@ -6,6 +6,7 @@ import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:lumit_flutter/main.dart';
 import 'package:lumit_flutter/shell/splash.dart';
+import 'package:lumit_flutter/state/dock.dart';
 import 'package:lumit_flutter/state/workspace.dart';
 
 Future<void> pumpApp(WidgetTester tester) async {
@@ -14,6 +15,36 @@ Future<void> pumpApp(WidgetTester tester) async {
   // Let the boot splash play out (it is animation-driven, so settling
   // carries it to completion).
   await tester.pumpAndSettle();
+}
+
+/// Boot the app with a caller-owned workspace, so a test can read the dock
+/// tree back after a drag.
+Future<void> pumpWith(WidgetTester tester, Workspace ws) async {
+  await tester.binding.setSurfaceSize(const Size(1280, 800));
+  await tester.pumpWidget(LumitApp(workspace: ws));
+  await tester.pumpAndSettle();
+}
+
+/// Whether some tab group holds both panels.
+bool _inSameTabs(DockNode node, Panel a, Panel b) => switch (node) {
+      DockPane() => false,
+      DockTabs(:final children) =>
+        {for (final c in children) c.panel}.containsAll({a, b}),
+      DockSplit(:final children) =>
+        children.any((c) => _inSameTabs(c, a, b)),
+    };
+
+/// The split directly holding `panel` as a bare pane, if any.
+DockSplit? _parentSplitOf(DockNode node, Panel panel) {
+  if (node is! DockSplit) return null;
+  for (final c in node.children) {
+    if (c is DockPane && c.panel == panel) return node;
+  }
+  for (final c in node.children) {
+    final found = _parentSplitOf(c, panel);
+    if (found != null) return found;
+  }
+  return null;
 }
 
 void main() {
@@ -92,6 +123,73 @@ void main() {
       find.text('The composition tree arrives in phase F4.'),
       findsOneWidget,
     );
+  });
+
+  testWidgets("a bare pane's grip drags it to stack onto another pane",
+      (tester) async {
+    final ws = Workspace();
+    await pumpWith(tester, ws);
+
+    // The Viewer stub fills its pane on the neutral surround, so its rect is
+    // the pane rect (sharp mode: no padding). The grip sits at the top-right.
+    final surround = ws.theme.viewerSurround;
+    final viewerRect = tester.getRect(
+      find
+          .byWidgetPredicate((w) => w is Container && w.color == surround)
+          .first,
+    );
+    final gripCentre = viewerRect.topRight + const Offset(-8, 8);
+    final timelineCentre = tester.getCenter(
+      find.text('Layer rows, lanes and the graph lens arrive in phase F3.'),
+    );
+
+    expect(_inSameTabs(ws.dock, Panel.viewer, Panel.timeline), isFalse);
+
+    // No pump between down and move: the pane's press claims the active-panel
+    // accent, and rebuilding for it mid-gesture would drop the pointer.
+    final gesture = await tester.startGesture(gripCentre);
+    await gesture.moveTo(timelineCentre);
+    await gesture.up();
+    await tester.pumpAndSettle();
+
+    expect(_inSameTabs(ws.dock, Panel.viewer, Panel.timeline), isTrue,
+        reason: 'the Viewer stacked onto the Timeline into one tab group');
+  });
+
+  testWidgets("a tab pill drags to split off a pane's left edge",
+      (tester) async {
+    final ws = Workspace();
+    await pumpWith(tester, ws);
+
+    final surround = ws.theme.viewerSurround;
+    final viewerRect = tester.getRect(
+      find
+          .byWidgetPredicate((w) => w is Container && w.color == surround)
+          .first,
+    );
+    // A point just inside the Viewer's left edge resolves to a left split.
+    final leftEdge = viewerRect.centerLeft + const Offset(6, 0);
+
+    await tester.ensureVisible(find.text('Hierarchy'));
+    await tester.pumpAndSettle();
+    final pillCentre = tester.getCenter(find.text('Hierarchy'));
+
+    final gesture = await tester.startGesture(pillCentre);
+    await gesture.moveTo(leftEdge);
+    await gesture.up();
+    await tester.pumpAndSettle();
+
+    // Hierarchy left the tab group and now sits as a bare pane just left of
+    // the Viewer in a horizontal split.
+    expect(_inSameTabs(ws.dock, Panel.hierarchy, Panel.project), isFalse);
+    final split = _parentSplitOf(ws.dock, Panel.hierarchy);
+    expect(split, isNotNull);
+    expect(split!.axis, DockAxis.horizontal);
+    final idxH = split.children.indexWhere(
+        (c) => c is DockPane && c.panel == Panel.hierarchy);
+    final idxV = split.children.indexWhere(
+        (c) => c is DockPane && c.panel == Panel.viewer);
+    expect(idxV, idxH + 1, reason: 'Hierarchy sits immediately left of Viewer');
   });
 
   testWidgets('clicking a pane gives it the accent boundary', (tester) async {
