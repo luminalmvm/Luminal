@@ -44,6 +44,16 @@ locally (fmt, clippy `-D warnings`, 638 + 64 GPU tests). Tracked as TF-1..4 / OD
   job failed the whole comp frame). Regression fixture: FLAC + PNG cover.
 - **Project dialogs offer `.lum`, not the pre-rename `kir`** — the first save landed as
   `untitled.lum.kir` (10 §1 was right; the UI filter, outside §10's scan, was the straggler).
+- **Round 2 (same desk day, OD-4..OD-7):** project **session restore** — open comp tabs,
+  fronted comp, playhead, selection persist per project path and apply on open (the Viewer
+  renders immediately instead of parking on the placeholder), twirl states persisted on
+  uuid-keyed egui ids (07 §1.5 row updated below); **precomp audio** — `comp_audio_jobs`
+  walks Precomp layers recursively with spans mapped/clipped and carrier Volumes multiplied
+  through the gain chain, closing 09 §3.3's "nested comps contribute their mixed audio"
+  claim (which never had a row of its own — playback, beat detection and export share the
+  walk), and precomp carriers get the Audio group's Volume row; **audio-only rows draw no
+  eye** (nothing to show or hide); the **per-layer waveform lane rides a live bar drag**
+  (reads `move_edit`, the same preview the bar draws from).
 
 ### Second pass (autonomous, CI-verified on PR #3)
 
@@ -443,7 +453,7 @@ whole documented subsystems are absent.
 | 1.2 | Five highlighted drop zones ("MUST") | Future-by-design | Doc's own v1 note: approximated by egui_tiles | — |
 | 1.3 | Ctrl-drop floating windows; float hosts own splits | Partial | Single-panel pop-out only; no Ctrl gesture, no floating frame tree | — |
 | 1.4 | Workspaces: 4 presets, switcher, Alt+Shift+1…9, user CRUD | Not implemented | Only default layout + Reset ("presets arrive with the panel set", `app_update.rs:754-761`) | — |
-| 1.5 | Persisted per-comp viewer/timeline state, viewer locks, column state | Partial | Dock tree/theme/divider persist; the rest doesn't | — |
+| 1.5 | Persisted per-comp viewer/timeline state, viewer locks, column state | Partial | Dock tree/theme/divider persist; the rest doesn't | ◑ Session restore shipped (OD-4, desk session 2026-07-21): open comp tabs, fronted comp, playhead and selected layer persist per project path (`SavedSession`), twirl-down expansion persists on uuid-keyed egui ids, and a loaded project renders its first frame at once. Viewer locks, column order/visibility and per-comp zoom remain |
 | 2.2 | Viewer bar: magnification dropdown, Ctrl+scroll zoom, Shift+/ fit | Partial/contradicted | Static "Full · Fit" text (`panels.rs:80-109`); zoom is plain scroll (`overlays.rs:494-525`); no dropdown/steps | — |
 | 2.2 | Preview-res dropdown stored per comp | Partial | Dropdown exists (`overlays.rs:603-629`) but is app-state, not per-comp | — |
 | 2.2 | Channel view; transparency grid; wireframe/guides menus; rulers Ctrl+R; ROI; CM badge; degradation badge; bg swatch; click-to-type time | Not implemented | None present (CM is static text) | — |
