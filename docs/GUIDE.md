@@ -2287,6 +2287,24 @@ which is bundled behind an on-by-default switch (the `media` feature); turn it
 off and the app still builds and runs, footage just reads as "unprobed" and no
 frames decode.
 
+**What the bridge carries now (v0.3).** v0.2 could *set* a layer's position or
+opacity but never *read* it back, so the property editors could only show what
+you had changed this session. v0.3 fills that gap and adds the rest of the verbs
+a real editor needs. Now every layer also reports its whole transform — for each
+property, its current value, whether it is animated, and (when animated) its
+keyframes with their frames and easing — plus what it points at (the footage or
+comp it shows, or a solid's colour) and its stack of effects. Each composition
+reports its work area (the in/out span the transport loops). And the frontend
+can now *do* far more, every action going through the same undo machinery the
+egui app uses: add a layer of any kind (solid, text, camera, adjustment,
+sequence), delete or duplicate one, change a composition's settings in one
+undoable step, click the *stopwatch* to start or stop animating a property, add
+or remove or slide keyframes, move the work-area edges, and apply, remove or
+tune effects. The rule stays the same as before: every one of these mirrors
+exactly what the egui frontend does under the hood (the same defaults, the same
+op), so the two front doors can never drift apart, and every reply is still the
+whole document as text (JSON) so the panels just re-read it.
+
 **The Viewer showing real frames, and the scopes reading them (F2).** The Viewer
 now shows actual pictures. It works out which footage the playhead is sitting
 over — the topmost visible footage layer whose span covers the current frame —

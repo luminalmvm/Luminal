@@ -113,6 +113,51 @@ keeps the fields it had):
   first files are small and imported one at a time; the bridge will move probing
   off-thread once the command surface stabilises.
 
+#### Bridge v0.3 — read-back and the ops that unblock the port
+
+v0.3 extends v0.2 without breaking it (the ABI number rises 2 → 3; every reply
+keeps the fields it had). The state transitions split into a second module
+(`crate::edits`) so `crate::state` stays under length; the snapshot builder
+gains the read-back below.
+
+- **Snapshot v3 read-back (additive).** Each layer gains a `transform` block —
+  one entry per property (`anchor_x`…`opacity`) shaped `{value, animated,
+  keys?}`, where `value` is the static value or the value evaluated at layer
+  time 0, and `keys` (only when animated) is `[{frame, value, interp_in,
+  interp_out}]` with the `SideInterp` variant names (`Hold`/`Linear`/`Bezier`)
+  and the keyframe's comp frame. The seeded values (e.g. position at the comp
+  centre, from `lumit-ui`'s `centred_transform`) are already in the read-back,
+  so it *is* the true current value — no separate defaults block. Each layer
+  also gains its identity link (`source_item_id` for footage, `source_comp_id`
+  for precomp, `colour` for a solid — resolved from the `SolidDef` asset) and an
+  `effects` array (`[{id, name, enabled, params:[{name, kind, value}]}]`; scalar
+  and colour params carry an evaluated value, exotic kinds a null). Each comp
+  gains `work_area` as `[in_frame, out_frame]` or null.
+- **Layer lifecycle ops.** `add_solid_layer`, `add_text_layer`,
+  `add_camera_layer`, `add_adjustment_layer`, `add_sequence_layer`,
+  `delete_layer`, `duplicate_layer` — each mirrors the egui add/duplicate/delete
+  path exactly (name, size, colour, span, centred transform), through
+  `AddLayer`/`RemoveLayer` (the solid is one `Batch`: Solids folder + asset +
+  layer).
+- **Comp settings.** `set_comp_settings(comp, name, w, h, fps_num, fps_den,
+  duration_frames)` commits one `SetCompSettings` (the background preserved), so
+  undo is one step — as `confirm_comp_dialog` does.
+- **Keyframes.** `toggle_property_animated` is the stopwatch (seed a key at the
+  playhead on enable, collapse to static on disable); `add_keyframe`,
+  `remove_keyframe`, `shift_keyframes(frames_json, delta)` mirror `upsert_key`,
+  the collapse-on-last-delete, and the lane's `shift_keys_time`. All route
+  through `SetTransformProperty` with the whole animation (coarse + invertible).
+  Frames are comp frames; the bridge maps them to layer-local time the way the
+  egui frontend does (`frame / fps − start_offset`).
+- **Work area.** `set_work_area_edge(comp, frame, is_out)` mirrors the B/N keys
+  (`SetWorkArea`), clearing to null when the span covers the whole comp.
+- **Effects.** `list_effects()` returns the registry (`[{name, label}]` from
+  `lumit_core::fx::BUILTINS`, stateless); `add_effect` (via
+  `instantiate_for_raster`), `remove_effect`, `set_effect_enabled`,
+  `set_effect_param_scalar`, `set_effect_param_colour` all commit
+  `SetLayerEffects`. Point/file/layer param kinds are read-back only in v0.3
+  (no setter yet).
+
 ## The Viewer texture path (Phase F2)
 
 Windows first, matching the project's priorities:

@@ -114,6 +114,30 @@ where the row is logic).
   `edit_layer_span`, `set_transform`, `add_marker` (each one `lumit-core` op, one
   undo step, full snapshot back). Dart pass-throughs refresh the snapshot and
   surface failures on the error tint
+
+## Bridge v0.3 read-back + ops (done, feeds F3/F4)
+
+- ☑ Snapshot v3 (additive, ABI 2→3): each layer carries a `transform` read-back
+  (`{value,animated,keys?}` per property; keys are `{frame,value,interp_in,
+  interp_out}` with the `SideInterp` variant names), its identity link
+  (`source_item_id`/`source_comp_id`/`colour`) and an `effects` array
+  (`{id,name,enabled,params:[{name,kind,value}]}`); each comp carries `work_area`
+  (`[in,out]` frames or null). Typed Dart classes (`BridgeTransform`/
+  `BridgeTransformProperty`/`BridgeKeyframe`/`BridgeEffect`/`BridgeEffectParam`)
+  parse it. `AppStateStub.transformValueFor` reads it, falling back to the
+  session edit map
+- ☑ Layer lifecycle ops: `add_solid_layer`/`add_text_layer`/`add_camera_layer`/
+  `add_adjustment_layer`/`add_sequence_layer`, `delete_layer`, `duplicate_layer`
+  — each mirrors the egui add/duplicate/delete defaults exactly, through
+  `AddLayer`/`RemoveLayer` (solid as one `Batch`)
+- ☑ `set_comp_settings` (one `SetCompSettings`, one undo step, background kept)
+- ☑ Keyframe ops: `toggle_property_animated` (stopwatch), `add_keyframe`,
+  `remove_keyframe`, `shift_keyframes` — mirroring `upsert_key`, delete-collapse
+  and the lane's `shift_keys_time`, all via `SetTransformProperty`
+- ☑ `set_work_area_edge` (the B/N keys, `SetWorkArea`)
+- ☑ Effects: `list_effects` (the `BUILTINS` registry), `add_effect`,
+  `remove_effect`, `set_effect_enabled`, `set_effect_param_scalar`/`_colour`
+  (all `SetLayerEffects`). Point/file/layer param kinds are read-back only
 - ◑ Footage probing on import/open (`media` feature): resolution, rate, frame
   count and status carried in the snapshot; missing files probe to `missing`,
   never an error. Synchronous at this phase; not yet off-thread, no thumbnails
@@ -178,28 +202,29 @@ First slice (2026-07-21):
   reveal the nested comp's layers, click selects a layer by its stable id.
   `hierarchy_panel.dart`, widget-tested. Nesting is resolved by matching the
   precomp layer's *name* against the project's compositions, because snapshot v2
-  tags a precomp only as `kind:"precomp"` and carries no source-comp id (cycle-
-  guarded by name); snapshot v3 should carry the id (then match by id, and
-  comp-scoped selection becomes possible). The full project flowchart / node
-  graph is later.
+  tagged a precomp only as `kind:"precomp"`. Snapshot v3 now carries
+  `source_comp_id` (and `source_item_id`/`colour`), so the panel can match by id
+  and comp-scoped selection becomes possible — a panel adoption still to land.
+  The full project flowchart / node graph is later.
 - ◐ Effect controls: the selected layer's **Transform** rows in the settings-card
   style — Anchor point (x,y), Position (x,y[,z when 3D]), Scale (x,y with a link
   toggle), Rotation, Opacity (and Rotation x/y when 3D), each committing through
   `app.setTransform` (one undo step). `effect_controls_panel.dart`, widget-
-  tested. **Values-on-read pending snapshot v3**: the snapshot carries no current
-  transform values yet, so a box shows the value set this session and an em-dash
-  before any edit, with a one-line hint saying so. Open: effects stacks,
-  keyframes/stopwatches, the linked-scale ratio (the link sets both axes to the
-  same value until value read-back), and commit-on-release for the drag (today's
-  `DragValueField` commits each drag step; typing commits once).
+  tested. **Value read-back now available (v0.3), panel adoption pending**: the
+  snapshot carries each property's current value, and `AppStateStub.
+  transformValueFor(layerId, property)` returns it (falling back to the session
+  edit map). The panel still shows the session map + em-dash until it adopts
+  `transformValueFor`. Open: effects stacks, keyframes/stopwatches (the
+  `toggle_property_animated`/`add_keyframe`/… ops now exist), the linked-scale
+  ratio, and commit-on-release for the drag.
 - ◐ Comp settings: the composition-settings / new-composition dialogue in the
   Settings-window visual style (name, size, frame-rate preset dropdown,
   duration), shown through the app Overlay. `dialogs.dart`, wired from the
-  Composition menu, widget-tested. **UI real, bridge op pending**: New
-  composition commits the *name* through the real `app.newComposition` op; size /
-  frame rate / duration and the whole Composition-settings apply are honestly
-  stubbed (`app.engine('Set composition settings (bridge op pending)')`) until a
-  comp-settings bridge op lands.
+  Composition menu, widget-tested. **UI real; the bridge op now exists (v0.3)**:
+  New composition commits the *name* through `app.newComposition`; the whole
+  Composition-settings apply can now route to `app.setCompSettings(comp, name, w,
+  h, fps_num, fps_den, duration_frames)` (one undo step) — a panel adoption still
+  to land, replacing the stubbed `app.engine(…)`.
 - ☐ Add mask ▸ Rectangle/Ellipse/Star: still routes to `app.engine` (mask ops
   are not in the bridge); the submenu reads correctly.
 

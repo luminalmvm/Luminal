@@ -415,6 +415,138 @@ class AppStateStub extends ChangeNotifier {
     _applyOp(b.addMarker(compId, frame));
   }
 
+  // --- Bridge v0.3 op pass-throughs ---------------------------------------
+  //
+  // Each routes to the engine, refreshes the held snapshot and surfaces any
+  // error in the error tint. With no bridge they are quiet no-ops.
+
+  /// Add a Solid layer to [compId].
+  void addSolidLayer(String compId) => _bridgeOp((b) => b.addSolidLayer(compId));
+
+  /// Add a Text layer to [compId].
+  void addTextLayer(String compId) => _bridgeOp((b) => b.addTextLayer(compId));
+
+  /// Add a Camera layer to [compId].
+  void addCameraLayer(String compId) =>
+      _bridgeOp((b) => b.addCameraLayer(compId));
+
+  /// Add an Adjustment layer to [compId].
+  void addAdjustmentLayer(String compId) =>
+      _bridgeOp((b) => b.addAdjustmentLayer(compId));
+
+  /// Add an (empty) Sequence layer to [compId].
+  void addSequenceLayer(String compId) =>
+      _bridgeOp((b) => b.addSequenceLayer(compId));
+
+  /// Delete a layer from its composition.
+  void deleteLayer(String compId, String layerId) =>
+      _bridgeOp((b) => b.deleteLayer(compId, layerId));
+
+  /// Duplicate a layer (a copy above the original).
+  void duplicateLayer(String compId, String layerId) =>
+      _bridgeOp((b) => b.duplicateLayer(compId, layerId));
+
+  /// Edit a composition's settings as one undo step.
+  void setCompSettings(String compId, String name, int width, int height,
+          int fpsNum, int fpsDen, int durationFrames) =>
+      _bridgeOp((b) => b.setCompSettings(
+          compId, name, width, height, fpsNum, fpsDen, durationFrames));
+
+  /// The stopwatch: toggle a transform property's animation at [frame].
+  void togglePropertyAnimated(
+          String compId, String layerId, String property, int frame) =>
+      _bridgeOp((b) => b.togglePropertyAnimated(compId, layerId, property, frame));
+
+  /// Insert or replace a transform keyframe at [frame] with [value].
+  void addKeyframe(
+      String compId, String layerId, String property, int frame, double value) {
+    transformEdits['$layerId/$property'] = value;
+    _bridgeOp((b) => b.addKeyframe(compId, layerId, property, frame, value));
+  }
+
+  /// Remove the transform keyframe at [frame].
+  void removeKeyframe(String compId, String layerId, String property, int frame) =>
+      _bridgeOp((b) => b.removeKeyframe(compId, layerId, property, frame));
+
+  /// Slide the transform keyframes at comp [frames] by [delta] frames.
+  void shiftKeyframes(String compId, String layerId, String property,
+          List<int> frames, int delta) =>
+      _bridgeOp((b) => b.shiftKeyframes(compId, layerId, property, frames, delta));
+
+  /// Set one work-area edge to the playhead [frame] ([isOut] picks the out
+  /// edge).
+  void setWorkAreaEdge(String compId, int frame, bool isOut) =>
+      _bridgeOp((b) => b.setWorkAreaEdge(compId, frame, isOut));
+
+  /// The built-in effect registry (empty without a bridge).
+  List<BridgeEffectInfo> listEffects() => bridge?.listEffects() ?? const [];
+
+  /// Apply a built-in effect (by its match name) to a layer.
+  void addEffect(String compId, String layerId, String effectName) =>
+      _bridgeOp((b) => b.addEffect(compId, layerId, effectName));
+
+  /// Remove an effect instance from a layer.
+  void removeEffect(String compId, String layerId, String effectId) =>
+      _bridgeOp((b) => b.removeEffect(compId, layerId, effectId));
+
+  /// Enable or bypass an effect instance.
+  void setEffectEnabled(
+          String compId, String layerId, String effectId, bool enabled) =>
+      _bridgeOp((b) => b.setEffectEnabled(compId, layerId, effectId, enabled));
+
+  /// Set a scalar (Float) effect parameter to a static [value].
+  void setEffectParamScalar(String compId, String layerId, String effectId,
+          String paramName, double value) =>
+      _bridgeOp((b) =>
+          b.setEffectParamScalar(compId, layerId, effectId, paramName, value));
+
+  /// Set a Colour effect parameter to a static scene-linear RGBA.
+  void setEffectParamColour(String compId, String layerId, String effectId,
+          String paramName, double r, double g, double b, double a) =>
+      _bridgeOp((bridge) => bridge.setEffectParamColour(
+          compId, layerId, effectId, paramName, r, g, b, a));
+
+  /// Run [op] against the bridge (a quiet no-op without one), applying its
+  /// reply the same way [setLayerSwitch] and friends do.
+  void _bridgeOp(BridgeReply Function(DocumentBridge b) op) {
+    final b = bridge;
+    if (b == null) return;
+    _applyOp(op(b));
+  }
+
+  /// The current value of [layerId]'s transform [property]: the snapshot v3
+  /// read-back when it is present, falling back to the session edit map (and
+  /// null before any edit). The effect-controls panel adopts this so it shows
+  /// true engine values once read-back lands, not only this session's edits.
+  double? transformValueFor(String layerId, String property) {
+    final snap = snapshot;
+    if (snap != null) {
+      final layer = _findLayer(snap, layerId);
+      final prop = layer?.transform?[property];
+      if (prop != null) return prop.value;
+    }
+    return transformEdits['$layerId/$property'];
+  }
+
+  /// Find a layer by its id across every composition in [snap], or null.
+  BridgeLayer? _findLayer(BridgeSnapshot snap, String layerId) {
+    BridgeLayer? search(List<BridgeItem> items) {
+      for (final item in items) {
+        final comp = item.comp;
+        if (comp != null) {
+          for (final l in comp.layers) {
+            if (l.id == layerId) return l;
+          }
+        }
+        final nested = search(item.children);
+        if (nested != null) return nested;
+      }
+      return null;
+    }
+
+    return search(snap.items);
+  }
+
   /// Decode one footage frame for the Viewer's CPU path, or null when there is
   /// no bridge or the frame cannot be decoded.
   DecodedFrame? decodeFrame(String itemId, int frame) =>

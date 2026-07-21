@@ -94,6 +94,66 @@ class _TimelineFake implements DocumentBridge {
   @override
   BridgeReply addMarker(String compId, int frame) => _op('marker:$compId@$frame');
   @override
+  BridgeReply addSolidLayer(String compId) => _op('add_solid:$compId');
+  @override
+  BridgeReply addTextLayer(String compId) => _op('add_text:$compId');
+  @override
+  BridgeReply addCameraLayer(String compId) => _op('add_camera:$compId');
+  @override
+  BridgeReply addAdjustmentLayer(String compId) => _op('add_adjustment:$compId');
+  @override
+  BridgeReply addSequenceLayer(String compId) => _op('add_sequence:$compId');
+  @override
+  BridgeReply deleteLayer(String compId, String layerId) =>
+      _op('delete_layer:$compId/$layerId');
+  @override
+  BridgeReply duplicateLayer(String compId, String layerId) =>
+      _op('duplicate_layer:$compId/$layerId');
+  @override
+  BridgeReply setCompSettings(String compId, String name, int width, int height,
+          int fpsNum, int fpsDen, int durationFrames) =>
+      _op('comp_settings:$compId');
+  @override
+  BridgeReply togglePropertyAnimated(
+          String compId, String layerId, String property, int frame) =>
+      _op('stopwatch:$compId/$layerId/$property@$frame');
+  @override
+  BridgeReply addKeyframe(String compId, String layerId, String property,
+          int frame, double value) =>
+      _op('add_key:$compId/$layerId/$property@$frame=$value');
+  @override
+  BridgeReply removeKeyframe(
+          String compId, String layerId, String property, int frame) =>
+      _op('remove_key:$compId/$layerId/$property@$frame');
+  @override
+  BridgeReply shiftKeyframes(String compId, String layerId, String property,
+          List<int> frames, int delta) =>
+      _op('shift_keys:$compId/$layerId/$property+$delta');
+  @override
+  BridgeReply setWorkAreaEdge(String compId, int frame, bool isOut) =>
+      _op('work_area:$compId@$frame/out=$isOut');
+  @override
+  List<BridgeEffectInfo> listEffects() => const [];
+  @override
+  BridgeReply addEffect(String compId, String layerId, String effectName) =>
+      _op('add_effect:$compId/$layerId/$effectName');
+  @override
+  BridgeReply removeEffect(String compId, String layerId, String effectId) =>
+      _op('remove_effect:$compId/$layerId/$effectId');
+  @override
+  BridgeReply setEffectEnabled(
+          String compId, String layerId, String effectId, bool enabled) =>
+      _op('effect_enabled:$compId/$layerId/$effectId=$enabled');
+  @override
+  BridgeReply setEffectParamScalar(String compId, String layerId,
+          String effectId, String paramName, double value) =>
+      _op('effect_scalar:$compId/$layerId/$effectId/$paramName=$value');
+  @override
+  BridgeReply setEffectParamColour(String compId, String layerId,
+          String effectId, String paramName, double r, double g, double b,
+          double a) =>
+      _op('effect_colour:$compId/$layerId/$effectId/$paramName');
+  @override
   DecodedFrame? decodeFrame(String itemId, int frame) => null;
 }
 

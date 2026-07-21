@@ -55,10 +55,17 @@ unsafe fn c_str_to_string(ptr: *const c_char) -> Option<String> {
     CStr::from_ptr(ptr).to_str().ok().map(str::to_owned)
 }
 
-/// `{"ok":true,"version":"…","abi":2}`.
+/// `{"ok":true,"version":"…","abi":3}`.
 #[no_mangle]
 pub extern "C" fn lumit_bridge_version() -> *mut c_char {
     guard(state::version)
+}
+
+/// The built-in effect registry as `{"ok":true,"effects":[{"name","label"}]}` —
+/// stateless (does not touch the document).
+#[no_mangle]
+pub extern "C" fn lumit_bridge_list_effects() -> *mut c_char {
+    guard(crate::edits::list_effects)
 }
 
 /// Discard the current document and start an empty one. Returns a fresh snapshot.
@@ -232,6 +239,421 @@ pub unsafe extern "C" fn lumit_bridge_add_marker(
     guard(move || with_bridge(|b| state::add_marker(b, &comp, frame)))
 }
 
+// ---------------------------------------------------------------------------
+// Bridge v0.3 ops (crate::edits). Each guards its body, routes through the one
+// shared bridge, and returns the refreshed snapshot (or a calm error reply).
+// ---------------------------------------------------------------------------
+
+/// Add a Solid layer (a white, comp-sized solid asset) to `comp_id`.
+///
+/// # Safety
+/// `comp_id` must be null or a valid NUL-terminated UTF-8 C string.
+#[no_mangle]
+pub unsafe extern "C" fn lumit_bridge_add_solid_layer(comp_id: *const c_char) -> *mut c_char {
+    let Some(comp) = c_str_to_string(comp_id) else {
+        return to_c_string(err_json(
+            "add solid layer: the comp id was null or not valid UTF-8",
+        ));
+    };
+    guard(move || with_bridge(|b| crate::edits::add_solid_layer(b, &comp)))
+}
+
+/// Add a Text layer (the "Text" starter document) to `comp_id`.
+///
+/// # Safety
+/// `comp_id` must be null or a valid NUL-terminated UTF-8 C string.
+#[no_mangle]
+pub unsafe extern "C" fn lumit_bridge_add_text_layer(comp_id: *const c_char) -> *mut c_char {
+    let Some(comp) = c_str_to_string(comp_id) else {
+        return to_c_string(err_json(
+            "add text layer: the comp id was null or not valid UTF-8",
+        ));
+    };
+    guard(move || with_bridge(|b| crate::edits::add_text_layer(b, &comp)))
+}
+
+/// Add a Camera layer to `comp_id`.
+///
+/// # Safety
+/// `comp_id` must be null or a valid NUL-terminated UTF-8 C string.
+#[no_mangle]
+pub unsafe extern "C" fn lumit_bridge_add_camera_layer(comp_id: *const c_char) -> *mut c_char {
+    let Some(comp) = c_str_to_string(comp_id) else {
+        return to_c_string(err_json(
+            "add camera layer: the comp id was null or not valid UTF-8",
+        ));
+    };
+    guard(move || with_bridge(|b| crate::edits::add_camera_layer(b, &comp)))
+}
+
+/// Add an Adjustment layer to `comp_id`.
+///
+/// # Safety
+/// `comp_id` must be null or a valid NUL-terminated UTF-8 C string.
+#[no_mangle]
+pub unsafe extern "C" fn lumit_bridge_add_adjustment_layer(comp_id: *const c_char) -> *mut c_char {
+    let Some(comp) = c_str_to_string(comp_id) else {
+        return to_c_string(err_json(
+            "add adjustment layer: the comp id was null or not valid UTF-8",
+        ));
+    };
+    guard(move || with_bridge(|b| crate::edits::add_adjustment_layer(b, &comp)))
+}
+
+/// Add an (empty) Sequence layer to `comp_id`.
+///
+/// # Safety
+/// `comp_id` must be null or a valid NUL-terminated UTF-8 C string.
+#[no_mangle]
+pub unsafe extern "C" fn lumit_bridge_add_sequence_layer(comp_id: *const c_char) -> *mut c_char {
+    let Some(comp) = c_str_to_string(comp_id) else {
+        return to_c_string(err_json(
+            "add sequence layer: the comp id was null or not valid UTF-8",
+        ));
+    };
+    guard(move || with_bridge(|b| crate::edits::add_sequence_layer(b, &comp)))
+}
+
+/// Delete a layer from its composition.
+///
+/// # Safety
+/// The two string pointers must each be null or a valid NUL-terminated UTF-8 C
+/// string alive for the call.
+#[no_mangle]
+pub unsafe extern "C" fn lumit_bridge_delete_layer(
+    comp_id: *const c_char,
+    layer_id: *const c_char,
+) -> *mut c_char {
+    let (Some(comp), Some(layer)) = (c_str_to_string(comp_id), c_str_to_string(layer_id)) else {
+        return to_c_string(err_json(
+            "delete layer: an argument was null or not valid UTF-8",
+        ));
+    };
+    guard(move || with_bridge(|b| crate::edits::delete_layer(b, &comp, &layer)))
+}
+
+/// Duplicate a layer (a copy above the original, with a fresh id).
+///
+/// # Safety
+/// The two string pointers must each be null or a valid NUL-terminated UTF-8 C
+/// string alive for the call.
+#[no_mangle]
+pub unsafe extern "C" fn lumit_bridge_duplicate_layer(
+    comp_id: *const c_char,
+    layer_id: *const c_char,
+) -> *mut c_char {
+    let (Some(comp), Some(layer)) = (c_str_to_string(comp_id), c_str_to_string(layer_id)) else {
+        return to_c_string(err_json(
+            "duplicate layer: an argument was null or not valid UTF-8",
+        ));
+    };
+    guard(move || with_bridge(|b| crate::edits::duplicate_layer(b, &comp, &layer)))
+}
+
+/// Edit a composition's settings (name, size, rate, duration in frames) as one
+/// undo step; the background is preserved.
+///
+/// # Safety
+/// `comp_id` and `name` must each be null or a valid NUL-terminated UTF-8 C
+/// string alive for the call.
+#[no_mangle]
+pub unsafe extern "C" fn lumit_bridge_set_comp_settings(
+    comp_id: *const c_char,
+    name: *const c_char,
+    width: u32,
+    height: u32,
+    fps_num: i64,
+    fps_den: i64,
+    duration_frames: i64,
+) -> *mut c_char {
+    let (Some(comp), Some(name)) = (c_str_to_string(comp_id), c_str_to_string(name)) else {
+        return to_c_string(err_json(
+            "set comp settings: an argument was null or not valid UTF-8",
+        ));
+    };
+    guard(move || {
+        with_bridge(|b| {
+            crate::edits::set_comp_settings(
+                b,
+                &comp,
+                &name,
+                width,
+                height,
+                fps_num,
+                fps_den,
+                duration_frames,
+            )
+        })
+    })
+}
+
+/// The stopwatch: toggle a transform property's animation at the playhead
+/// `frame` (seed a key on enable, collapse to static on disable).
+///
+/// # Safety
+/// The three string pointers must each be null or a valid NUL-terminated UTF-8
+/// C string alive for the call.
+#[no_mangle]
+pub unsafe extern "C" fn lumit_bridge_toggle_property_animated(
+    comp_id: *const c_char,
+    layer_id: *const c_char,
+    property: *const c_char,
+    frame: i64,
+) -> *mut c_char {
+    let (Some(comp), Some(layer), Some(property)) = (
+        c_str_to_string(comp_id),
+        c_str_to_string(layer_id),
+        c_str_to_string(property),
+    ) else {
+        return to_c_string(err_json(
+            "toggle property animated: an argument was null or not valid UTF-8",
+        ));
+    };
+    guard(move || {
+        with_bridge(|b| crate::edits::toggle_property_animated(b, &comp, &layer, &property, frame))
+    })
+}
+
+/// Insert or replace a transform keyframe at the playhead `frame` with `value`.
+///
+/// # Safety
+/// The three string pointers must each be null or a valid NUL-terminated UTF-8
+/// C string alive for the call.
+#[no_mangle]
+pub unsafe extern "C" fn lumit_bridge_add_keyframe(
+    comp_id: *const c_char,
+    layer_id: *const c_char,
+    property: *const c_char,
+    frame: i64,
+    value: f64,
+) -> *mut c_char {
+    let (Some(comp), Some(layer), Some(property)) = (
+        c_str_to_string(comp_id),
+        c_str_to_string(layer_id),
+        c_str_to_string(property),
+    ) else {
+        return to_c_string(err_json(
+            "add keyframe: an argument was null or not valid UTF-8",
+        ));
+    };
+    guard(move || {
+        with_bridge(|b| crate::edits::add_keyframe(b, &comp, &layer, &property, frame, value))
+    })
+}
+
+/// Remove the transform keyframe at the playhead `frame` (collapses to static
+/// when it was the last key).
+///
+/// # Safety
+/// The three string pointers must each be null or a valid NUL-terminated UTF-8
+/// C string alive for the call.
+#[no_mangle]
+pub unsafe extern "C" fn lumit_bridge_remove_keyframe(
+    comp_id: *const c_char,
+    layer_id: *const c_char,
+    property: *const c_char,
+    frame: i64,
+) -> *mut c_char {
+    let (Some(comp), Some(layer), Some(property)) = (
+        c_str_to_string(comp_id),
+        c_str_to_string(layer_id),
+        c_str_to_string(property),
+    ) else {
+        return to_c_string(err_json(
+            "remove keyframe: an argument was null or not valid UTF-8",
+        ));
+    };
+    guard(move || {
+        with_bridge(|b| crate::edits::remove_keyframe(b, &comp, &layer, &property, frame))
+    })
+}
+
+/// Slide the transform keyframes at comp `frames_json` (a JSON int array) by
+/// `delta` frames.
+///
+/// # Safety
+/// The four string pointers must each be null or a valid NUL-terminated UTF-8 C
+/// string alive for the call.
+#[no_mangle]
+pub unsafe extern "C" fn lumit_bridge_shift_keyframes(
+    comp_id: *const c_char,
+    layer_id: *const c_char,
+    property: *const c_char,
+    frames_json: *const c_char,
+    delta: i64,
+) -> *mut c_char {
+    let (Some(comp), Some(layer), Some(property), Some(frames)) = (
+        c_str_to_string(comp_id),
+        c_str_to_string(layer_id),
+        c_str_to_string(property),
+        c_str_to_string(frames_json),
+    ) else {
+        return to_c_string(err_json(
+            "shift keyframes: an argument was null or not valid UTF-8",
+        ));
+    };
+    guard(move || {
+        with_bridge(|b| crate::edits::shift_keyframes(b, &comp, &layer, &property, &frames, delta))
+    })
+}
+
+/// Set one work-area edge to the playhead `frame` (`is_out` picks the out edge).
+///
+/// # Safety
+/// `comp_id` must be null or a valid NUL-terminated UTF-8 C string alive for the
+/// call.
+#[no_mangle]
+pub unsafe extern "C" fn lumit_bridge_set_work_area_edge(
+    comp_id: *const c_char,
+    frame: i64,
+    is_out: bool,
+) -> *mut c_char {
+    let Some(comp) = c_str_to_string(comp_id) else {
+        return to_c_string(err_json(
+            "set work area edge: the comp id was null or not valid UTF-8",
+        ));
+    };
+    guard(move || with_bridge(|b| crate::edits::set_work_area_edge(b, &comp, frame, is_out)))
+}
+
+/// Apply a built-in effect (by its match name) to a layer.
+///
+/// # Safety
+/// The three string pointers must each be null or a valid NUL-terminated UTF-8
+/// C string alive for the call.
+#[no_mangle]
+pub unsafe extern "C" fn lumit_bridge_add_effect(
+    comp_id: *const c_char,
+    layer_id: *const c_char,
+    effect_name: *const c_char,
+) -> *mut c_char {
+    let (Some(comp), Some(layer), Some(name)) = (
+        c_str_to_string(comp_id),
+        c_str_to_string(layer_id),
+        c_str_to_string(effect_name),
+    ) else {
+        return to_c_string(err_json(
+            "add effect: an argument was null or not valid UTF-8",
+        ));
+    };
+    guard(move || with_bridge(|b| crate::edits::add_effect(b, &comp, &layer, &name)))
+}
+
+/// Remove an effect instance from a layer by its id.
+///
+/// # Safety
+/// The three string pointers must each be null or a valid NUL-terminated UTF-8
+/// C string alive for the call.
+#[no_mangle]
+pub unsafe extern "C" fn lumit_bridge_remove_effect(
+    comp_id: *const c_char,
+    layer_id: *const c_char,
+    effect_id: *const c_char,
+) -> *mut c_char {
+    let (Some(comp), Some(layer), Some(effect)) = (
+        c_str_to_string(comp_id),
+        c_str_to_string(layer_id),
+        c_str_to_string(effect_id),
+    ) else {
+        return to_c_string(err_json(
+            "remove effect: an argument was null or not valid UTF-8",
+        ));
+    };
+    guard(move || with_bridge(|b| crate::edits::remove_effect(b, &comp, &layer, &effect)))
+}
+
+/// Enable or bypass an effect instance.
+///
+/// # Safety
+/// The three string pointers must each be null or a valid NUL-terminated UTF-8
+/// C string alive for the call.
+#[no_mangle]
+pub unsafe extern "C" fn lumit_bridge_set_effect_enabled(
+    comp_id: *const c_char,
+    layer_id: *const c_char,
+    effect_id: *const c_char,
+    enabled: bool,
+) -> *mut c_char {
+    let (Some(comp), Some(layer), Some(effect)) = (
+        c_str_to_string(comp_id),
+        c_str_to_string(layer_id),
+        c_str_to_string(effect_id),
+    ) else {
+        return to_c_string(err_json(
+            "set effect enabled: an argument was null or not valid UTF-8",
+        ));
+    };
+    guard(move || {
+        with_bridge(|b| crate::edits::set_effect_enabled(b, &comp, &layer, &effect, enabled))
+    })
+}
+
+/// Set a scalar (Float) effect parameter to a static `value`.
+///
+/// # Safety
+/// The four string pointers must each be null or a valid NUL-terminated UTF-8 C
+/// string alive for the call.
+#[no_mangle]
+pub unsafe extern "C" fn lumit_bridge_set_effect_param_scalar(
+    comp_id: *const c_char,
+    layer_id: *const c_char,
+    effect_id: *const c_char,
+    param_name: *const c_char,
+    value: f64,
+) -> *mut c_char {
+    let (Some(comp), Some(layer), Some(effect), Some(param)) = (
+        c_str_to_string(comp_id),
+        c_str_to_string(layer_id),
+        c_str_to_string(effect_id),
+        c_str_to_string(param_name),
+    ) else {
+        return to_c_string(err_json(
+            "set effect param: an argument was null or not valid UTF-8",
+        ));
+    };
+    guard(move || {
+        with_bridge(|b| {
+            crate::edits::set_effect_param_scalar(b, &comp, &layer, &effect, &param, value)
+        })
+    })
+}
+
+/// Set a Colour effect parameter to a static scene-linear RGBA.
+///
+/// # Safety
+/// The four string pointers must each be null or a valid NUL-terminated UTF-8 C
+/// string alive for the call.
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn lumit_bridge_set_effect_param_colour(
+    comp_id: *const c_char,
+    layer_id: *const c_char,
+    effect_id: *const c_char,
+    param_name: *const c_char,
+    r: f64,
+    g: f64,
+    b: f64,
+    a: f64,
+) -> *mut c_char {
+    let (Some(comp), Some(layer), Some(effect), Some(param)) = (
+        c_str_to_string(comp_id),
+        c_str_to_string(layer_id),
+        c_str_to_string(effect_id),
+        c_str_to_string(param_name),
+    ) else {
+        return to_c_string(err_json(
+            "set effect param: an argument was null or not valid UTF-8",
+        ));
+    };
+    guard(move || {
+        with_bridge(|bridge| {
+            crate::edits::set_effect_param_colour(
+                bridge, &comp, &layer, &effect, &param, r, g, b, a,
+            )
+        })
+    })
+}
+
 /// Decode one footage frame to tightly-packed RGBA8. On success returns a
 /// Rust-owned buffer and writes its width/height/length into the out-pointers;
 /// on any failure returns null and sets the out-pointers to 0. The buffer must
@@ -366,7 +788,7 @@ mod tests {
         assert!(!ptr.is_null());
         let copied = unsafe { CStr::from_ptr(ptr) }.to_str().unwrap().to_owned();
         assert_eq!(parse(&copied)["ok"], json!(true));
-        assert_eq!(parse(&copied)["abi"], json!(2));
+        assert_eq!(parse(&copied)["abi"], json!(3));
         unsafe { lumit_bridge_free_string(ptr) };
 
         let snap_ptr = lumit_bridge_snapshot();

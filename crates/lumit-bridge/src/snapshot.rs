@@ -16,11 +16,34 @@
 
 use crate::media::MediaCache;
 use crate::state::Bridge;
-use lumit_core::model::{Composition, Document, Layer, LayerKind, ProjectItem};
-use lumit_core::time::Rational;
+use lumit_core::anim::{Animation, Keyframe, Property, SideInterp};
+use lumit_core::model::{
+    Composition, Document, EffectInstance, EffectValue, Layer, LayerKind, LinearColour,
+    ProjectItem, TransformProp,
+};
+use lumit_core::time::{CompTime, Rational};
 use serde_json::{json, Value};
 use std::collections::HashSet;
 use uuid::Uuid;
+
+/// The transform properties the read-back exposes, in a stable order, paired
+/// with their snake_case names (the same vocabulary `set_transform` and the
+/// keyframe ops speak). `position` seeds to the comp centre for a fresh layer
+/// (`lumit-ui`'s `centred_transform`), so the read-back `value` already carries
+/// that true current value — no separate defaults block is needed.
+const TRANSFORM_PROPS: &[(&str, TransformProp)] = &[
+    ("anchor_x", TransformProp::AnchorX),
+    ("anchor_y", TransformProp::AnchorY),
+    ("position_x", TransformProp::PositionX),
+    ("position_y", TransformProp::PositionY),
+    ("position_z", TransformProp::PositionZ),
+    ("scale_x", TransformProp::ScaleX),
+    ("scale_y", TransformProp::ScaleY),
+    ("rotation", TransformProp::Rotation),
+    ("rotation_x", TransformProp::RotationX),
+    ("rotation_y", TransformProp::RotationY),
+    ("opacity", TransformProp::Opacity),
+];
 
 /// The document tree as the Project panel reads it, plus the v2 detail. Walks
 /// [`Document::root_items`] and nests each folder's children, so the JSON mirrors
@@ -73,7 +96,7 @@ fn item_value(
     });
     match item {
         ProjectItem::Composition(c) => {
-            obj["comp"] = comp_value(c);
+            obj["comp"] = comp_value(doc, c);
         }
         ProjectItem::Footage(f) => {
             let (status, detail) = media.snapshot_for(f.id);
@@ -96,9 +119,11 @@ fn item_kind(item: &ProjectItem) -> &'static str {
     }
 }
 
-/// A composition's v2 detail: size, frame rate (as the model stores it,
-/// `{num, den}`), the derived frame count, every layer, and the marker frames.
-fn comp_value(c: &Composition) -> Value {
+/// A composition's v2 detail plus the v0.3 `work_area`: size, frame rate (as
+/// the model stores it, `{num, den}`), the derived frame count, every layer, the
+/// marker frames, and the work-area span as `[in_frame, out_frame]` (or null
+/// for the full comp).
+fn comp_value(doc: &Document, c: &Composition) -> Value {
     // FrameRate serialises to `{"num":…,"den":…}` — exactly what Dart expects,
     // and exact (no f64 rounding of the rate itself).
     let fps = serde_json::to_value(c.frame_rate).unwrap_or(json!({ "num": 0, "den": 1 }));
@@ -106,7 +131,7 @@ fn comp_value(c: &Composition) -> Value {
         .layers
         .iter()
         .enumerate()
-        .map(|(index, l)| layer_value(c, index, l))
+        .map(|(index, l)| layer_value(doc, c, index, l))
         .collect();
     // Markers as comp-frame indices (the frame containing each marker's time).
     let markers: Vec<i64> = c
@@ -114,6 +139,12 @@ fn comp_value(c: &Composition) -> Value {
         .iter()
         .map(|m| c.frame_rate.frame_at(m.time))
         .collect();
+    // Work area as `[in_frame, out_frame]`, or null when the comp has none
+    // (the whole span plays). The B/N keys set it via `set_work_area_edge`.
+    let work_area = match c.work_area {
+        Some((a, b)) => json!([c.frame_rate.frame_at(a), c.frame_rate.frame_at(b)]),
+        None => Value::Null,
+    };
     json!({
         "width": c.width,
         "height": c.height,
@@ -121,15 +152,18 @@ fn comp_value(c: &Composition) -> Value {
         "frame_count": comp_frame_count(c),
         "layers": layers,
         "markers": markers,
+        "work_area": work_area,
     })
 }
 
-/// One layer's v2 detail. `in_frame`/`out_frame` are the comp frames containing
-/// the layer's in/out points (derived from the comp's own rate); `switches`
-/// mirrors the model's [`lumit_core::model::Switches`] field names verbatim.
-fn layer_value(c: &Composition, index: usize, l: &Layer) -> Value {
+/// One layer's v2 detail plus the v0.3 read-back: `in_frame`/`out_frame` are the
+/// comp frames containing the layer's in/out points; `switches` mirrors the
+/// model's [`lumit_core::model::Switches`] field names verbatim; `transform`
+/// carries every property's current value and keyframes; and the identity links
+/// (`source_item_id`, `source_comp_id`, `colour`) name what a layer references.
+fn layer_value(doc: &Document, c: &Composition, index: usize, l: &Layer) -> Value {
     let switches = serde_json::to_value(l.switches).unwrap_or(json!({}));
-    json!({
+    let mut obj = json!({
         "id": l.id.to_string(),
         "index": index,
         "name": l.name,
@@ -138,7 +172,135 @@ fn layer_value(c: &Composition, index: usize, l: &Layer) -> Value {
         "out_frame": c.frame_rate.frame_at(l.out_point),
         "label": l.label,
         "switches": switches,
+        "transform": transform_value(c, l),
+        "effects": effects_value(l),
+    });
+    // Identity links, mirroring the real `LayerKind` variant fields.
+    match &l.kind {
+        LayerKind::Footage { item, .. } => {
+            obj["source_item_id"] = json!(item.to_string());
+        }
+        LayerKind::Precomp { comp } => {
+            obj["source_comp_id"] = json!(comp.to_string());
+        }
+        LayerKind::Solid { def } => {
+            if let Some(solid) = doc.solid(*def) {
+                let LinearColour([r, g, b, a]) = solid.colour;
+                obj["colour"] = json!([r, g, b, a]);
+            }
+        }
+        _ => {}
+    }
+    obj
+}
+
+/// A layer's whole transform as `{ prop: {value, animated, keys?} }`, one entry
+/// per [`TRANSFORM_PROPS`] name. See [`property_value`] for a property's shape.
+fn transform_value(c: &Composition, l: &Layer) -> Value {
+    let mut map = serde_json::Map::new();
+    for (name, prop) in TRANSFORM_PROPS {
+        map.insert(
+            (*name).to_owned(),
+            property_value(c, l, l.transform.get(*prop)),
+        );
+    }
+    Value::Object(map)
+}
+
+/// One property's read-back: its current `value` (the static value, or the
+/// value evaluated at layer time 0 when keyframed), whether it is `animated`,
+/// and — only when animated — its `keys`. Mirrors `lumit-core`'s
+/// [`Property`]/[`Animation`] faithfully.
+fn property_value(c: &Composition, l: &Layer, p: &Property) -> Value {
+    let value = p.value_at(0.0);
+    match &p.animation {
+        Animation::Keyframed(keys) if !keys.is_empty() => {
+            let keys: Vec<Value> = keys.iter().map(|k| keyframe_value(c, l, k)).collect();
+            json!({ "value": value, "animated": true, "keys": keys })
+        }
+        _ => json!({ "value": value, "animated": false }),
+    }
+}
+
+/// One keyframe as `{frame, value, interp_in, interp_out}`. The keyframe time is
+/// layer-local; the reported `frame` is the comp frame it lands on (layer time
+/// plus the layer's start offset, then the comp's own rate), so the Timeline
+/// draws it under the right column. `interp_in`/`interp_out` are the
+/// [`SideInterp`] variant names.
+fn keyframe_value(c: &Composition, l: &Layer, k: &Keyframe) -> Value {
+    let comp_time = k
+        .time
+        .checked_add(l.start_offset.0)
+        .map(CompTime)
+        .unwrap_or(CompTime(k.time));
+    json!({
+        "frame": c.frame_rate.frame_at(comp_time),
+        "value": k.value,
+        "interp_in": side_interp_name(k.interp_in),
+        "interp_out": side_interp_name(k.interp_out),
     })
+}
+
+/// The [`SideInterp`] variant name (the interp vocabulary the graph editor will
+/// speak). `Bezier`'s speed/influence are not surfaced in v0.3 (no graph editor
+/// yet); the variant name is enough for the Timeline's key glyphs.
+fn side_interp_name(s: SideInterp) -> &'static str {
+    match s {
+        SideInterp::Hold => "Hold",
+        SideInterp::Linear => "Linear",
+        SideInterp::Bezier { .. } => "Bezier",
+    }
+}
+
+/// A layer's effect stack as `[{id, name, enabled, params}]` (v0.3). `name` is
+/// the effect's stable match name; each param carries its `kind` tag and a
+/// read-back `value` (scalar/colour evaluated at layer time 0, enums/bools as
+/// stored). Exotic kinds carry a null value — the Dart side shows the row but
+/// leaves the control to a later phase.
+fn effects_value(l: &Layer) -> Value {
+    let effects: Vec<Value> = l.effects.iter().map(effect_value).collect();
+    Value::Array(effects)
+}
+
+fn effect_value(e: &EffectInstance) -> Value {
+    let params: Vec<Value> = e
+        .params
+        .iter()
+        .map(|p| {
+            let (kind, value) = effect_param_kind_value(&p.value);
+            json!({ "name": p.id, "kind": kind, "value": value })
+        })
+        .collect();
+    json!({
+        "id": e.id.to_string(),
+        "name": e.effect.match_name,
+        "enabled": e.enabled,
+        "params": params,
+    })
+}
+
+/// A parameter's `(kind, value)` pair for the read-back. Scalars and colours
+/// evaluate at layer time 0; enums/bools/seeds read their stored value; the
+/// point/file/layer kinds report their tag with a null value (no editor yet).
+fn effect_param_kind_value(v: &EffectValue) -> (&'static str, Value) {
+    match v {
+        EffectValue::Float(p) => ("scalar", json!(p.value_at(0.0))),
+        EffectValue::Colour(ch) => (
+            "colour",
+            json!([
+                ch[0].value_at(0.0),
+                ch[1].value_at(0.0),
+                ch[2].value_at(0.0),
+                ch[3].value_at(0.0),
+            ]),
+        ),
+        EffectValue::Choice(i) => ("enum", json!(i)),
+        EffectValue::Bool(b) => ("bool", json!(b)),
+        EffectValue::Seed(s) => ("seed", json!(s)),
+        EffectValue::Point(x, y) => ("point", json!([x.value_at(0.0), y.value_at(0.0)])),
+        EffectValue::File(_) => ("file", Value::Null),
+        EffectValue::Layer(_) => ("layer", Value::Null),
+    }
 }
 
 /// The layer-kind tag, mirroring the [`LayerKind`] variant names.
@@ -267,6 +429,60 @@ mod tests {
         // Markers are comp-frame indices: 2 s → frame 120.
         assert_eq!(comp_block["markers"], json!([120]));
         assert!(bridge.store.can_undo());
+    }
+
+    /// Snapshot v3: a footage layer carries its transform read-back (each
+    /// property `{value, animated}`, the position seeded to the comp centre) and
+    /// its `source_item_id`; the comp carries `work_area` (null here). Built
+    /// through the real store so the JSON is exactly what the bridge emits.
+    #[test]
+    fn layer_carries_transform_readback_and_identity_link() {
+        let item = Uuid::now_v7();
+        let mut layer = sample_layer("clip", ct(0), ct(5));
+        layer.kind = LayerKind::Footage { item, retime: None };
+        // Seed position at the comp centre, as `centred_transform` would.
+        layer.transform.position_x = lumit_core::anim::Property::fixed(960.0);
+        layer.transform.position_y = lumit_core::anim::Property::fixed(540.0);
+        let comp = Composition {
+            id: Uuid::now_v7(),
+            name: "Scene".into(),
+            width: 1920,
+            height: 1080,
+            frame_rate: FrameRate::new(60, 1).unwrap(),
+            duration: Duration(Rational::new(5, 1).unwrap()),
+            background: LinearColour::BLACK,
+            work_area: None,
+            layers: vec![layer],
+            markers: Vec::new(),
+            motion_blur: MotionBlur::default(),
+            extra: serde_json::Map::new(),
+        };
+        let store = DocumentStore::new(Document::new());
+        store
+            .commit(Op::AddItem {
+                index: 0,
+                item: Box::new(ProjectItem::Composition(comp)),
+            })
+            .unwrap();
+        let bridge = Bridge {
+            store,
+            path: None,
+            media: MediaCache::default(),
+        };
+        let snap = snapshot_value(&bridge);
+        let l = &snap["items"][0]["comp"]["layers"][0];
+        // Identity link and the effects array (empty here).
+        assert_eq!(l["source_item_id"], json!(item.to_string()));
+        assert_eq!(l["effects"], json!([]));
+        // Transform read-back: position reads back the seeded centre, static.
+        let tr = &l["transform"];
+        assert_eq!(tr["position_x"]["value"], json!(960.0));
+        assert_eq!(tr["position_x"]["animated"], json!(false));
+        assert!(tr["position_x"].get("keys").is_none(), "static has no keys");
+        assert_eq!(tr["opacity"]["value"], json!(100.0));
+        assert_eq!(tr["scale_x"]["value"], json!(100.0));
+        // Work area is null (full comp).
+        assert_eq!(snap["items"][0]["comp"]["work_area"], Value::Null);
     }
 
     /// A footage item without a cache entry reports status "unprobed" and no

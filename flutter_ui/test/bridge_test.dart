@@ -126,6 +126,78 @@ class _FakeBridge implements DocumentBridge {
       _op('marker:$compId@$frame');
 
   @override
+  BridgeReply addSolidLayer(String compId) => _op('add_solid:$compId');
+  @override
+  BridgeReply addTextLayer(String compId) => _op('add_text:$compId');
+  @override
+  BridgeReply addCameraLayer(String compId) => _op('add_camera:$compId');
+  @override
+  BridgeReply addAdjustmentLayer(String compId) => _op('add_adjustment:$compId');
+  @override
+  BridgeReply addSequenceLayer(String compId) => _op('add_sequence:$compId');
+
+  @override
+  BridgeReply deleteLayer(String compId, String layerId) =>
+      _op('delete_layer:$compId/$layerId');
+  @override
+  BridgeReply duplicateLayer(String compId, String layerId) =>
+      _op('duplicate_layer:$compId/$layerId');
+
+  @override
+  BridgeReply setCompSettings(String compId, String name, int width, int height,
+          int fpsNum, int fpsDen, int durationFrames) =>
+      _op('comp_settings:$compId/$name/${width}x$height@$fpsNum/$fpsDen'
+          '#$durationFrames');
+
+  @override
+  BridgeReply togglePropertyAnimated(
+          String compId, String layerId, String property, int frame) =>
+      _op('stopwatch:$compId/$layerId/$property@$frame');
+
+  @override
+  BridgeReply addKeyframe(String compId, String layerId, String property,
+          int frame, double value) =>
+      _op('add_key:$compId/$layerId/$property@$frame=$value');
+
+  @override
+  BridgeReply removeKeyframe(
+          String compId, String layerId, String property, int frame) =>
+      _op('remove_key:$compId/$layerId/$property@$frame');
+
+  @override
+  BridgeReply shiftKeyframes(String compId, String layerId, String property,
+          List<int> frames, int delta) =>
+      _op('shift_keys:$compId/$layerId/$property/$frames+$delta');
+
+  @override
+  BridgeReply setWorkAreaEdge(String compId, int frame, bool isOut) =>
+      _op('work_area:$compId@$frame/out=$isOut');
+
+  @override
+  List<BridgeEffectInfo> listEffects() =>
+      const [BridgeEffectInfo(name: 'blur', label: 'Blur')];
+
+  @override
+  BridgeReply addEffect(String compId, String layerId, String effectName) =>
+      _op('add_effect:$compId/$layerId/$effectName');
+  @override
+  BridgeReply removeEffect(String compId, String layerId, String effectId) =>
+      _op('remove_effect:$compId/$layerId/$effectId');
+  @override
+  BridgeReply setEffectEnabled(
+          String compId, String layerId, String effectId, bool enabled) =>
+      _op('effect_enabled:$compId/$layerId/$effectId=$enabled');
+  @override
+  BridgeReply setEffectParamScalar(String compId, String layerId,
+          String effectId, String paramName, double value) =>
+      _op('effect_scalar:$compId/$layerId/$effectId/$paramName=$value');
+  @override
+  BridgeReply setEffectParamColour(String compId, String layerId,
+          String effectId, String paramName, double r, double g, double b,
+          double a) =>
+      _op('effect_colour:$compId/$layerId/$effectId/$paramName=$r,$g,$b,$a');
+
+  @override
   DecodedFrame? decodeFrame(String itemId, int frame) {
     decoded.add('$itemId@$frame');
     return decodeResult;
@@ -549,6 +621,200 @@ void main() {
       expect(frame, isNotNull);
       expect(frame!.width, 2);
       expect(frame.rgba.length, 8);
+    });
+  });
+
+  group('Snapshot v3 parsing', () {
+    // A comp with one footage layer carrying the transform read-back (opacity
+    // keyframed, position static), its identity link, and an effect; plus the
+    // comp's work area. The exact shape the Rust bridge v0.3 emits.
+    const json = '''
+    {
+      "ok": true,
+      "items": [
+        {
+          "id": "c1", "name": "Scene", "kind": "composition", "children": [],
+          "comp": {
+            "width": 1920, "height": 1080,
+            "fps": {"num": 60, "den": 1}, "frame_count": 300,
+            "work_area": [30, 121],
+            "markers": [],
+            "layers": [
+              {
+                "id": "l0", "index": 0, "name": "clip", "kind": "footage",
+                "in_frame": 0, "out_frame": 300, "label": 0,
+                "switches": {},
+                "source_item_id": "item-7",
+                "transform": {
+                  "position_x": {"value": 960.0, "animated": false},
+                  "opacity": {
+                    "value": 100.0, "animated": true,
+                    "keys": [
+                      {"frame": 0, "value": 100.0,
+                       "interp_in": "Linear", "interp_out": "Linear"},
+                      {"frame": 60, "value": 0.0,
+                       "interp_in": "Bezier", "interp_out": "Hold"}
+                    ]
+                  }
+                },
+                "effects": [
+                  {
+                    "id": "e1", "name": "blur", "enabled": true,
+                    "params": [
+                      {"name": "radius", "kind": "scalar", "value": 8.0},
+                      {"name": "tint", "kind": "colour",
+                       "value": [1.0, 0.0, 0.0, 1.0]}
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "can_undo": true, "can_redo": false, "path": null
+    }''';
+
+    test('the transform read-back parses values and keyframes', () {
+      final layer = BridgeReply.parse(json).snapshot!.items[0].comp!.layers[0];
+      final tr = layer.transform!;
+      expect(tr['position_x']!.value, 960.0);
+      expect(tr['position_x']!.animated, isFalse);
+      final opacity = tr['opacity']!;
+      expect(opacity.animated, isTrue);
+      expect(opacity.keys.length, 2);
+      expect(opacity.keys[0].frame, 0);
+      expect(opacity.keys[0].interpIn, 'Linear');
+      expect(opacity.keys[1].frame, 60);
+      expect(opacity.keys[1].value, 0.0);
+      expect(opacity.keys[1].interpIn, 'Bezier');
+      expect(opacity.keys[1].interpOut, 'Hold');
+    });
+
+    test('identity links, effects and work area parse', () {
+      final snap = BridgeReply.parse(json).snapshot!;
+      final comp = snap.items[0].comp!;
+      expect(comp.workArea, [30, 121]);
+      final layer = comp.layers[0];
+      expect(layer.sourceItemId, 'item-7');
+      expect(layer.sourceCompId, isNull);
+      expect(layer.effects.length, 1);
+      final effect = layer.effects[0];
+      expect(effect.id, 'e1');
+      expect(effect.name, 'blur');
+      expect(effect.enabled, isTrue);
+      expect(effect.params[0].name, 'radius');
+      expect(effect.params[0].kind, 'scalar');
+      expect(effect.params[0].value, 8.0);
+      expect(effect.params[1].kind, 'colour');
+      expect(effect.params[1].value, [1.0, 0.0, 0.0, 1.0]);
+    });
+
+    test('a solid layer parses its colour; missing v3 fields degrade to null',
+        () {
+      final snap = BridgeReply.parse(
+        '{"ok":true,"items":[{"id":"c","name":"C","kind":"composition",'
+        '"children":[],"comp":{"width":1,"height":1,"fps":{"num":1,"den":1},'
+        '"frame_count":1,"work_area":null,"markers":[],"layers":[{"id":"l",'
+        '"index":0,"name":"n","kind":"solid","in_frame":0,"out_frame":1,'
+        '"label":0,"switches":{},"colour":[0.5,0.25,0.75,1.0]}]}}],'
+        '"can_undo":false,"can_redo":false,"path":null}',
+      ).snapshot!;
+      final comp = snap.items[0].comp!;
+      expect(comp.workArea, isNull);
+      final layer = comp.layers[0];
+      expect(layer.colour, [0.5, 0.25, 0.75, 1.0]);
+      // No transform/effects fields present: transform is null, effects empty.
+      expect(layer.transform, isNull);
+      expect(layer.effects, isEmpty);
+    });
+  });
+
+  group('AppStateStub v3 op pass-throughs (fake bridge)', () {
+    test('the lifecycle/keyframe/effect ops route to the bridge', () {
+      final fake = _FakeBridge()..newComposition('Scene');
+      final app = AppStateStub(bridge: fake);
+      app.addSolidLayer('c1');
+      app.addTextLayer('c1');
+      app.deleteLayer('c1', 'l0');
+      app.duplicateLayer('c1', 'l0');
+      app.setCompSettings('c1', 'Retitled', 1280, 720, 24, 1, 48);
+      app.togglePropertyAnimated('c1', 'l0', 'opacity', 30);
+      app.addKeyframe('c1', 'l0', 'rotation', 60, 90.0);
+      app.removeKeyframe('c1', 'l0', 'rotation', 60);
+      app.shiftKeyframes('c1', 'l0', 'rotation', [60], 30);
+      app.setWorkAreaEdge('c1', 120, true);
+      app.addEffect('c1', 'l0', 'blur');
+      app.setEffectEnabled('c1', 'l0', 'e1', false);
+      app.setEffectParamScalar('c1', 'l0', 'e1', 'radius', 8.0);
+      app.setEffectParamColour('c1', 'l0', 'e1', 'tint', 1.0, 0.0, 0.0, 1.0);
+      app.removeEffect('c1', 'l0', 'e1');
+      expect(fake.ops, [
+        'add_solid:c1',
+        'add_text:c1',
+        'delete_layer:c1/l0',
+        'duplicate_layer:c1/l0',
+        'comp_settings:c1/Retitled/1280x720@24/1#48',
+        'stopwatch:c1/l0/opacity@30',
+        'add_key:c1/l0/rotation@60=90.0',
+        'remove_key:c1/l0/rotation@60',
+        'shift_keys:c1/l0/rotation/[60]+30',
+        'work_area:c1@120/out=true',
+        'add_effect:c1/l0/blur',
+        'effect_enabled:c1/l0/e1=false',
+        'effect_scalar:c1/l0/e1/radius=8.0',
+        'effect_colour:c1/l0/e1/tint=1.0,0.0,0.0,1.0',
+        'remove_effect:c1/l0/e1',
+      ]);
+      expect(app.errorNotice, isNull);
+    });
+
+    test('listEffects passes through to the bridge', () {
+      final fake = _FakeBridge();
+      final app = AppStateStub(bridge: fake);
+      final effects = app.listEffects();
+      expect(effects.length, 1);
+      expect(effects.single.name, 'blur');
+      expect(effects.single.label, 'Blur');
+    });
+
+    test('a v3 op failure surfaces on the error tint', () {
+      final fake = _FakeBridge()..newComposition('Scene');
+      final app = AppStateStub(bridge: fake);
+      fake.nextOpError = 'add effect: unknown effect';
+      app.addEffect('c1', 'l0', 'nope');
+      expect(app.errorNotice, 'add effect: unknown effect');
+    });
+
+    test('the v3 ops are quiet no-ops without a bridge', () {
+      final app = AppStateStub();
+      app.addSolidLayer('c');
+      app.deleteLayer('c', 'l');
+      app.addKeyframe('c', 'l', 'opacity', 0, 1.0);
+      app.setWorkAreaEdge('c', 0, false);
+      app.addEffect('c', 'l', 'blur');
+      expect(app.listEffects(), isEmpty);
+      expect(app.errorNotice, isNull);
+    });
+
+    test('transformValueFor reads the snapshot, then the session map', () {
+      final fake = _FakeBridge();
+      final app = AppStateStub(bridge: fake);
+      // No snapshot layer yet: falls back to the session edit map (null first).
+      expect(app.transformValueFor('l0', 'opacity'), isNull);
+      app.setTransform('c1', 'l0', 'opacity', 42.0);
+      expect(app.transformValueFor('l0', 'opacity'), 42.0);
+      // A snapshot read-back wins over the session map.
+      app.snapshot = BridgeReply.parse(
+        '{"ok":true,"items":[{"id":"c1","name":"S","kind":"composition",'
+        '"children":[],"comp":{"width":1,"height":1,"fps":{"num":1,"den":1},'
+        '"frame_count":1,"work_area":null,"markers":[],"layers":[{"id":"l0",'
+        '"index":0,"name":"n","kind":"solid","in_frame":0,"out_frame":1,'
+        '"label":0,"switches":{},"transform":{"opacity":{"value":73.0,'
+        '"animated":false}}}]}}],"can_undo":false,"can_redo":false,'
+        '"path":null}',
+      ).snapshot;
+      expect(app.transformValueFor('l0', 'opacity'), 73.0);
     });
   });
 }

@@ -36,15 +36,19 @@
 //!
 //! The crate is split so no one file grows unwieldy (owner's file-length
 //! preference):
-//! - [`state`] — the shared engine state and every pure state transition
-//!   (`String → String` JSON in, JSON out); this is where the ops live.
+//! - [`state`] — the shared engine state and the v0.1/v0.2 state transitions
+//!   (`String → String` JSON in, JSON out); this is where the core ops live.
+//! - [`edits`] — the v0.3 edit ops: layer lifecycle, comp settings, keyframes,
+//!   the work area and effects, split out to keep [`state`] under length.
 //! - [`snapshot`] — turning a [`lumit_core::model::Document`] into the snapshot
-//!   JSON the panels read (snapshot v2: comps, layers, switches, markers, media).
+//!   JSON the panels read (snapshot v3 adds the transform read-back, identity
+//!   links, the work area and the effect stack to v2's comps/layers/media).
 //! - [`media`] — probing footage and decoding frames, gated behind the `media`
 //!   feature; plain-data probe results that the snapshot embeds either way.
 //! - [`ffi`] — the `extern "C"` surface: pointer marshalling, `catch_unwind`
 //!   guards, and the string/buffer ownership contracts.
 
+mod edits;
 mod ffi;
 mod media;
 mod snapshot;
@@ -55,11 +59,13 @@ use serde_json::json;
 /// The C ABI generation. Bumped only when the exported function set or the JSON
 /// shapes change incompatibly, so Dart can refuse a mismatched library.
 ///
-/// v2 (this build) adds the composition/layer/media detail to the snapshot and
-/// the layer/transform/marker ops; the additions are all *additive*, so a v1
-/// Dart client still reads every field it knew, but the ABI number rises so a
-/// client that needs the new calls can insist on them.
-pub(crate) const ABI_VERSION: u32 = 2;
+/// v2 added the composition/layer/media detail to the snapshot and the
+/// layer/transform/marker ops. v3 (this build) adds the transform read-back,
+/// identity links, work area and effect stack to the snapshot, plus the layer
+/// lifecycle, comp-settings, keyframe, work-area and effect ops. Every addition
+/// is *additive*, so an older Dart client still reads every field it knew, but
+/// the ABI number rises so a client that needs the new calls can insist on them.
+pub(crate) const ABI_VERSION: u32 = 3;
 
 /// `{"ok":false,"error":"…"}`. serde escapes any control character, so the
 /// resulting string never carries an interior NUL and always makes a `CString`.

@@ -62,7 +62,7 @@ pub(crate) fn with_bridge<R>(f: impl FnOnce(&mut Bridge) -> R) -> R {
     f(&mut guard)
 }
 
-/// `{"ok":true,"version":"…","abi":2}` — stateless.
+/// `{"ok":true,"version":"…","abi":3}` — stateless.
 pub(crate) fn version() -> String {
     json!({
         "ok": true,
@@ -423,19 +423,8 @@ pub(crate) fn set_transform(
         Ok(pair) => pair,
         Err(e) => return err_json(format!("set transform: {e}")),
     };
-    let prop = match property {
-        "anchor_x" => TransformProp::AnchorX,
-        "anchor_y" => TransformProp::AnchorY,
-        "position_x" => TransformProp::PositionX,
-        "position_y" => TransformProp::PositionY,
-        "position_z" => TransformProp::PositionZ,
-        "scale_x" => TransformProp::ScaleX,
-        "scale_y" => TransformProp::ScaleY,
-        "rotation" => TransformProp::Rotation,
-        "rotation_x" => TransformProp::RotationX,
-        "rotation_y" => TransformProp::RotationY,
-        "opacity" => TransformProp::Opacity,
-        other => return err_json(format!("set transform: unknown property '{other}'")),
+    let Some(prop) = parse_transform_prop(property) else {
+        return err_json(format!("set transform: unknown property '{property}'"));
     };
     commit(
         bridge,
@@ -493,8 +482,9 @@ fn footage_pathbuf(f: &FootageItem) -> PathBuf {
 }
 
 /// Commit `op`, returning the refreshed snapshot on success or a calm error
-/// reply prefixed with `ctx` on failure.
-fn commit(bridge: &mut Bridge, op: Op, ctx: &str) -> String {
+/// reply prefixed with `ctx` on failure. Shared with the v0.3 edit ops in
+/// [`crate::edits`], so every mutation refreshes the snapshot the same way.
+pub(crate) fn commit(bridge: &mut Bridge, op: Op, ctx: &str) -> String {
     match bridge.store.commit(op) {
         Ok(_) => snapshot(bridge),
         Err(e) => err_json(format!("{ctx}: {e}")),
@@ -502,11 +492,32 @@ fn commit(bridge: &mut Bridge, op: Op, ctx: &str) -> String {
 }
 
 /// Parse a composition id and a layer id together, with a shared calm message.
-fn parse_comp_layer(comp_id: &str, layer_id: &str) -> Result<(Uuid, Uuid), String> {
+pub(crate) fn parse_comp_layer(comp_id: &str, layer_id: &str) -> Result<(Uuid, Uuid), String> {
     let comp =
         Uuid::parse_str(comp_id).map_err(|_| "composition id is not a valid UUID".to_owned())?;
     let layer = Uuid::parse_str(layer_id).map_err(|_| "layer id is not a valid UUID".to_owned())?;
     Ok((comp, layer))
+}
+
+/// Map a snake_case transform-property name to its [`TransformProp`]. The names
+/// mirror [`TransformProp`] exactly (`anchor_x`…`opacity`) and are the same set
+/// [`set_transform`] accepts; shared with [`crate::edits`] so the read-back,
+/// the setter and the keyframe ops all speak one vocabulary.
+pub(crate) fn parse_transform_prop(property: &str) -> Option<TransformProp> {
+    Some(match property {
+        "anchor_x" => TransformProp::AnchorX,
+        "anchor_y" => TransformProp::AnchorY,
+        "position_x" => TransformProp::PositionX,
+        "position_y" => TransformProp::PositionY,
+        "position_z" => TransformProp::PositionZ,
+        "scale_x" => TransformProp::ScaleX,
+        "scale_y" => TransformProp::ScaleY,
+        "rotation" => TransformProp::Rotation,
+        "rotation_x" => TransformProp::RotationX,
+        "rotation_y" => TransformProp::RotationY,
+        "opacity" => TransformProp::Opacity,
+        _ => return None,
+    })
 }
 
 /// Probe every footage item not already in the cache (synchronous, `media`
@@ -611,7 +622,7 @@ mod tests {
         let v = parse(&version());
         assert_eq!(v["ok"], json!(true));
         assert_eq!(v["abi"], json!(crate::ABI_VERSION));
-        assert_eq!(v["abi"], json!(2));
+        assert_eq!(v["abi"], json!(3));
     }
 
     #[test]

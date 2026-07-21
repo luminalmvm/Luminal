@@ -90,6 +90,63 @@ class _FakeBridge implements DocumentBridge {
   @override
   BridgeReply addMarker(String compId, int frame) => _snap();
   @override
+  BridgeReply addSolidLayer(String compId) => _snap();
+  @override
+  BridgeReply addTextLayer(String compId) => _snap();
+  @override
+  BridgeReply addCameraLayer(String compId) => _snap();
+  @override
+  BridgeReply addAdjustmentLayer(String compId) => _snap();
+  @override
+  BridgeReply addSequenceLayer(String compId) => _snap();
+  @override
+  BridgeReply deleteLayer(String compId, String layerId) => _snap();
+  @override
+  BridgeReply duplicateLayer(String compId, String layerId) => _snap();
+  @override
+  BridgeReply setCompSettings(String compId, String name, int width, int height,
+          int fpsNum, int fpsDen, int durationFrames) =>
+      _snap();
+  @override
+  BridgeReply togglePropertyAnimated(
+          String compId, String layerId, String property, int frame) =>
+      _snap();
+  @override
+  BridgeReply addKeyframe(String compId, String layerId, String property,
+          int frame, double value) =>
+      _snap();
+  @override
+  BridgeReply removeKeyframe(
+          String compId, String layerId, String property, int frame) =>
+      _snap();
+  @override
+  BridgeReply shiftKeyframes(String compId, String layerId, String property,
+          List<int> frames, int delta) =>
+      _snap();
+  @override
+  BridgeReply setWorkAreaEdge(String compId, int frame, bool isOut) => _snap();
+  @override
+  List<BridgeEffectInfo> listEffects() => const [];
+  @override
+  BridgeReply addEffect(String compId, String layerId, String effectName) =>
+      _snap();
+  @override
+  BridgeReply removeEffect(String compId, String layerId, String effectId) =>
+      _snap();
+  @override
+  BridgeReply setEffectEnabled(
+          String compId, String layerId, String effectId, bool enabled) =>
+      _snap();
+  @override
+  BridgeReply setEffectParamScalar(String compId, String layerId,
+          String effectId, String paramName, double value) =>
+      _snap();
+  @override
+  BridgeReply setEffectParamColour(String compId, String layerId,
+          String effectId, String paramName, double r, double g, double b,
+          double a) =>
+      _snap();
+  @override
   DecodedFrame? decodeFrame(String itemId, int frame) => null;
 }
 

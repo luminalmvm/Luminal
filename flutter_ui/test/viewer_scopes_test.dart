@@ -57,6 +57,58 @@ class _FrameBridge implements DocumentBridge {
       BridgeReply.ok(snap);
   @override
   BridgeReply addMarker(String c, int f) => BridgeReply.ok(snap);
+  @override
+  BridgeReply addSolidLayer(String c) => BridgeReply.ok(snap);
+  @override
+  BridgeReply addTextLayer(String c) => BridgeReply.ok(snap);
+  @override
+  BridgeReply addCameraLayer(String c) => BridgeReply.ok(snap);
+  @override
+  BridgeReply addAdjustmentLayer(String c) => BridgeReply.ok(snap);
+  @override
+  BridgeReply addSequenceLayer(String c) => BridgeReply.ok(snap);
+  @override
+  BridgeReply deleteLayer(String c, String l) => BridgeReply.ok(snap);
+  @override
+  BridgeReply duplicateLayer(String c, String l) => BridgeReply.ok(snap);
+  @override
+  BridgeReply setCompSettings(
+          String c, String n, int w, int h, int fn, int fd, int df) =>
+      BridgeReply.ok(snap);
+  @override
+  BridgeReply togglePropertyAnimated(String c, String l, String p, int f) =>
+      BridgeReply.ok(snap);
+  @override
+  BridgeReply addKeyframe(String c, String l, String p, int f, double v) =>
+      BridgeReply.ok(snap);
+  @override
+  BridgeReply removeKeyframe(String c, String l, String p, int f) =>
+      BridgeReply.ok(snap);
+  @override
+  BridgeReply shiftKeyframes(
+          String c, String l, String p, List<int> frames, int delta) =>
+      BridgeReply.ok(snap);
+  @override
+  BridgeReply setWorkAreaEdge(String c, int f, bool isOut) =>
+      BridgeReply.ok(snap);
+  @override
+  List<BridgeEffectInfo> listEffects() => const [];
+  @override
+  BridgeReply addEffect(String c, String l, String e) => BridgeReply.ok(snap);
+  @override
+  BridgeReply removeEffect(String c, String l, String e) =>
+      BridgeReply.ok(snap);
+  @override
+  BridgeReply setEffectEnabled(String c, String l, String e, bool enabled) =>
+      BridgeReply.ok(snap);
+  @override
+  BridgeReply setEffectParamScalar(
+          String c, String l, String e, String p, double v) =>
+      BridgeReply.ok(snap);
+  @override
+  BridgeReply setEffectParamColour(String c, String l, String e, String p,
+          double r, double g, double b, double a) =>
+      BridgeReply.ok(snap);
 }
 
 // --- Builders --------------------------------------------------------------
