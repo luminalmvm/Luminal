@@ -108,13 +108,22 @@ class _CacheEntry {
 /// The shared CPU frame source. Lives on [AppStateStub] so the Viewer and the
 /// Scopes panel read the same decoded pixels through one notifier.
 ///
-/// It listens to the app: whenever the playhead (or document) changes it
-/// re-resolves the preview and, if the wanted frame is not already cached,
-/// decodes exactly one frame — the per-tick throttle. Decoding is synchronous
-/// (the bridge FFI call), but turning bytes into a `ui.Image` is async, so a
-/// listener is notified when the image lands.
+/// It listens to the app's fine-grained [AppStateStub.playheadFrame] notifier
+/// (and the big document notifier): whenever the playhead or the document
+/// changes it re-resolves the preview and, if the wanted frame is not already
+/// cached, asks the [FrameRenderer] for exactly one frame — the per-tick
+/// throttle. The heavy render/decode runs OFF the UI isolate when an
+/// [IsolateFrameRenderer] is supplied (the perf pass, K-176 — the UI thread
+/// must never render a frame, docs/14 and K-017); a [SynchronousFrameRenderer]
+/// keeps the old inline behaviour for tests and the placeholder build. Turning
+/// the returned bytes into a `ui.Image` is always async, so a listener is
+/// notified when the image lands. Latest-wins: at most one render is in flight,
+/// and a newer wanted frame supersedes the queued one — the last real picture
+/// stays on screen while a newer frame is in flight (never blank, the K-130
+/// scope-hold idea applied to the Viewer).
 class PreviewSource extends ChangeNotifier {
   final AppStateStub app;
+  final FrameRenderer _renderer;
 
   /// Small most-recently-used cache of decoded frames (keyed `itemId@frame`).
   static const int _cacheLimit = 8;
@@ -124,12 +133,26 @@ class PreviewSource extends ChangeNotifier {
   ui.Image? _image;
   DecodedFrame? _displayedFrame;
   int _generation = 0;
+
+  /// The key of the render/decode (or its follow-on image decode) in flight, or
+  /// null when nothing is pending. Enforces at-most-one-in-flight (latest-wins).
   String? _pendingKey;
+
+  /// Set when the wanted frame changed while a render was in flight; a re-resolve
+  /// runs once that render (and its image decode) completes — the "supersede the
+  /// queued request" half of latest-wins.
+  bool _wantedDirty = false;
+
+  /// A monotonic request sequence handed to the renderer as its `generation`, so
+  /// the worker can drop a superseded request at the isolate boundary too.
+  int _seq = 0;
   bool _disposed = false;
   bool _compActive = false;
 
-  PreviewSource(this.app) {
+  PreviewSource(this.app, {FrameRenderer? renderer})
+      : _renderer = renderer ?? SynchronousFrameRenderer(app) {
     app.addListener(_onAppChanged);
+    app.playheadFrame.addListener(_onAppChanged);
     _resolveAndDecode();
   }
 
@@ -169,20 +192,16 @@ class PreviewSource extends ChangeNotifier {
   }
 
   /// Ask the engine for the whole composited comp frame. Returns true when this
-  /// path owns the frame (a cache hit, a decode kicked off, or a decode already
-  /// in flight); false when the engine cannot render it, so the caller falls
-  /// back to the single-layer path. When it owns the frame there is no
-  /// single-layer [target] (the comp frame carries any missing-layer slate
-  /// itself) and [compActive] is set.
+  /// path owns the frame (a cache hit, a render kicked off, or one already in
+  /// flight); false only when the comp path is not applicable at all (no front
+  /// comp, or a renderer without the comp-render capability). A render that
+  /// COMES BACK null (no GPU adapter, a transient failure) falls back to the
+  /// single-layer path from inside the async reply, holding the last picture.
+  /// When it owns the frame there is no single-layer [target] (the comp frame
+  /// carries any missing-layer slate itself) and [compActive] is set.
   bool _resolveAndDecodeComp() {
-    final bridge = app.bridge;
     final compId = app.frontCompIdResolved;
-    // A bridge without the comp-render capability, or no front comp: decline.
-    // (CompRenderBridge is a separate interface, not a subtype of DocumentBridge,
-    // so bind it through an explicit cast the `is!` guard has already made safe.)
-    if (compId == null || bridge is! CompRenderBridge) return false;
-    final render = bridge as CompRenderBridge;
-    if (!render.supportsCompRender) return false;
+    if (compId == null || !_renderer.supportsCompRender) return false;
     final frame = app.previewFrame;
     final key = 'comp:$compId@$frame';
 
@@ -201,20 +220,38 @@ class PreviewSource extends ChangeNotifier {
       return true;
     }
 
-    // A decode already in flight for this comp frame: this path still owns it.
-    if (_pendingKey == key) return true;
-
-    final rendered = render.renderCompFrame(compId, frame, 1.0);
-    if (rendered == null || rendered.width == 0 || rendered.height == 0) {
-      // The engine could not composite this frame (no adapter, or a transient
-      // failure): let the single-layer path try, holding the last picture.
-      return false;
+    // Something already in flight: remember to re-resolve when it lands, and
+    // hold the last picture. The comp path still owns the frame.
+    if (_pendingKey != null) {
+      _wantedDirty = true;
+      return true;
     }
-    _enterComp();
-    _startImageDecode(key, rendered);
-    // The last picture stays on screen until the comp image lands; notify so the
-    // Viewer reflects the mode change (target cleared) immediately.
-    notifyListeners();
+
+    // Issue the composited-comp render off the UI isolate. Latest-wins: this is
+    // the only request in flight until its reply arrives.
+    _pendingKey = key;
+    var settled = false;
+    _renderer.requestComp(compId, frame, 1.0, ++_seq, (rendered) {
+      settled = true;
+      if (_disposed) return;
+      _pendingKey = null;
+      if (rendered == null || rendered.width == 0 || rendered.height == 0) {
+        // The engine could not composite this frame: fall back to single-layer,
+        // holding the last picture.
+        _resolveAndDecodeSingleLayer();
+        _drainWanted();
+        return;
+      }
+      _enterComp();
+      _startImageDecode(key, rendered);
+      _drainWanted();
+    });
+    if (!settled) {
+      // An off-thread render is genuinely pending: enter comp mode and keep the
+      // last picture on screen until the composited frame lands (never blank).
+      _enterComp();
+      notifyListeners();
+    }
     return true;
   }
 
@@ -255,18 +292,37 @@ class PreviewSource extends ChangeNotifier {
       return;
     }
 
-    // At most one decode is in flight for a given key.
-    if (_pendingKey == key) return;
-
-    final decoded = app.decodeFrame(target.item.id, target.sourceFrame);
-    if (decoded == null) {
-      // Decode failed for this frame: hold the last picture/trace rather than
-      // blanking (the file is fine — this frame just isn't ready).
+    // At most one render/decode is in flight: hold the last picture and
+    // re-resolve when the in-flight one completes.
+    if (_pendingKey != null) {
+      _wantedDirty = true;
       return;
     }
-    if (decoded.width == 0 || decoded.height == 0) return;
 
-    _startImageDecode(key, decoded);
+    // Decode the one footage frame off the UI isolate.
+    _pendingKey = key;
+    _renderer.requestDecode(target.item.id, target.sourceFrame, ++_seq,
+        (decoded) {
+      if (_disposed) return;
+      _pendingKey = null;
+      if (decoded == null || decoded.width == 0 || decoded.height == 0) {
+        // Decode failed / not ready: hold the last picture/trace rather than
+        // blanking (the file is fine — this frame just isn't ready).
+        _drainWanted();
+        return;
+      }
+      _startImageDecode(key, decoded);
+      _drainWanted();
+    });
+  }
+
+  /// Re-resolve when a frame changed while a render was in flight, once nothing
+  /// is pending — the "supersede the queued request" half of latest-wins.
+  void _drainWanted() {
+    if (_wantedDirty && _pendingKey == null && !_disposed) {
+      _wantedDirty = false;
+      _resolveAndDecode();
+    }
   }
 
   /// Enter composited-comp mode: no single-layer target (the comp frame is
@@ -297,6 +353,8 @@ class PreviewSource extends ChangeNotifier {
         _displayedFrame = decoded;
         _generation++;
         notifyListeners();
+        // A newer frame may have been wanted while the image decoded; pick it up.
+        _drainWanted();
       },
     );
   }
@@ -321,10 +379,73 @@ class PreviewSource extends ChangeNotifier {
   void dispose() {
     _disposed = true;
     app.removeListener(_onAppChanged);
+    app.playheadFrame.removeListener(_onAppChanged);
+    _renderer.dispose();
     for (final entry in _cache.values) {
       entry.image.dispose();
     }
     _cache.clear();
     super.dispose();
   }
+}
+
+/// The seam the [PreviewSource] renders through. Implementations perform the
+/// heavy engine render/decode; a [SynchronousFrameRenderer] does it inline on
+/// the UI isolate (tests, the placeholder build), an [IsolateFrameRenderer]
+/// hands it to a long-lived worker isolate so the UI thread never blocks on a
+/// full comp render + readback (the perf pass, K-176). Every method is a
+/// request→callback so the isolate implementation can honour latest-wins.
+abstract class FrameRenderer {
+  /// Whether the whole-comp render path is available (mirrors
+  /// [CompRenderBridge.supportsCompRender]). Cheap and safe on the UI isolate —
+  /// it is only a symbol-presence check, never a render.
+  bool get supportsCompRender;
+
+  /// Render the whole composited comp [compId] at [frame], scaled by [scale].
+  /// [generation] tags the request so a stale reply can be dropped. [onFrame]
+  /// receives the decoded RGBA frame, or null when the engine cannot composite
+  /// it (no adapter / a transient failure).
+  void requestComp(String compId, int frame, double scale, int generation,
+      void Function(DecodedFrame?) onFrame);
+
+  /// Decode one footage frame [frame] of item [itemId] (the single-layer
+  /// fallback). [onFrame] receives the frame, or null on failure.
+  void requestDecode(String itemId, int frame, int generation,
+      void Function(DecodedFrame?) onFrame);
+
+  /// Release any worker/isolate the renderer owns.
+  void dispose();
+}
+
+/// The inline renderer: it calls the bridge on the UI isolate and invokes the
+/// callback synchronously, so widget tests stay deterministic (the fake bridge
+/// answers within the same call stack, exactly as before the perf pass). Used
+/// whenever no [IsolateFrameRenderer] is injected.
+class SynchronousFrameRenderer implements FrameRenderer {
+  final AppStateStub app;
+  SynchronousFrameRenderer(this.app);
+
+  @override
+  bool get supportsCompRender {
+    final b = app.bridge;
+    return b is CompRenderBridge && (b as CompRenderBridge).supportsCompRender;
+  }
+
+  @override
+  void requestComp(String compId, int frame, double scale, int generation,
+      void Function(DecodedFrame?) onFrame) {
+    final b = app.bridge;
+    onFrame(b is CompRenderBridge
+        ? (b as CompRenderBridge).renderCompFrame(compId, frame, scale)
+        : null);
+  }
+
+  @override
+  void requestDecode(String itemId, int frame, int generation,
+      void Function(DecodedFrame?) onFrame) {
+    onFrame(app.decodeFrame(itemId, frame));
+  }
+
+  @override
+  void dispose() {}
 }

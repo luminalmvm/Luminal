@@ -1499,19 +1499,33 @@ class LumitBridge implements DocumentBridge, CompRenderBridge {
     }
   }
 
+  /// The filesystem path the library was actually opened from, when a candidate
+  /// path (not the bare OS-resolved name) succeeded. The render isolate opens
+  /// its OWN handle to the same file — same process, so the same engine state
+  /// behind the bridge's process-wide `Mutex` — so it needs this exact path.
+  /// Null when the bare name resolved through the OS loader's search path
+  /// (the worker then tries the bare name too).
+  String? loadedPath;
+
   /// Load the library and bind it, or return null if it cannot be found or a
   /// symbol is missing. Never throws — a failure is just "run on placeholders".
   static LumitBridge? tryLoad() {
     for (final candidate in _candidatePaths()) {
       try {
         final lib = DynamicLibrary.open(candidate);
-        return LumitBridge._(lib);
+        final bridge = LumitBridge._(lib);
+        bridge.loadedPath = candidate;
+        return bridge;
       } catch (_) {
         // Try the next candidate.
       }
     }
     return null;
   }
+
+  /// The candidate library paths, in load order — exposed so the render isolate
+  /// can open the same `lumit_bridge.dll` in its own worker.
+  static List<String> candidateLibraryPaths() => _candidatePaths();
 
   /// Where the library might live, in the order the runner should try:
   /// beside the executable first (the shipped layout), then the Cargo debug

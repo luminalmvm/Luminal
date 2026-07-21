@@ -52,6 +52,34 @@ class _GraphEditorState extends State<GraphEditor> {
 
   AppStateStub get app => widget.app;
 
+  @override
+  void initState() {
+    super.initState();
+    // The graph draws the playhead line and a speed readout at the playhead, so
+    // it tracks the fine-grained playhead notifier itself — its parent (the
+    // timeline body) no longer rebuilds per frame (perf pass).
+    app.playheadFrame.addListener(_onPlayhead);
+  }
+
+  @override
+  void didUpdateWidget(GraphEditor old) {
+    super.didUpdateWidget(old);
+    if (!identical(old.app, widget.app)) {
+      old.app.playheadFrame.removeListener(_onPlayhead);
+      app.playheadFrame.addListener(_onPlayhead);
+    }
+  }
+
+  @override
+  void dispose() {
+    app.playheadFrame.removeListener(_onPlayhead);
+    super.dispose();
+  }
+
+  void _onPlayhead() {
+    if (mounted) setState(() {});
+  }
+
   /// The selected layer, resolved in the front comp, or null.
   BridgeLayer? get _selected {
     final id = app.selectedLayer;

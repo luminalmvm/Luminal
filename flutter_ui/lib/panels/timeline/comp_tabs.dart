@@ -22,7 +22,6 @@ class CompTabStrip extends StatelessWidget {
     final frontId = app.frontCompIdResolved;
     final comp = app.frontComp;
     final fps = comp?.fps.fps ?? 0;
-    final seconds = fps > 0 ? app.previewFrame / fps : 0.0;
     return Container(
       height: 28,
       color: t.surface2,
@@ -53,9 +52,17 @@ class CompTabStrip extends StatelessWidget {
           if (comp != null)
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 6),
-              child: Text(
-                'f${app.previewFrame} · ${seconds.toStringAsFixed(2)}s',
-                style: t.small.copyWith(fontFamily: 'monospace'),
+              // The clock ticks per frame, so it alone watches the playhead
+              // notifier — the comp pills stay on the app notifier (perf pass).
+              child: ValueListenableBuilder<int>(
+                valueListenable: app.playheadFrame,
+                builder: (context, frame, _) {
+                  final seconds = fps > 0 ? frame / fps : 0.0;
+                  return Text(
+                    'f$frame · ${seconds.toStringAsFixed(2)}s',
+                    style: t.small.copyWith(fontFamily: 'monospace'),
+                  );
+                },
               ),
             ),
         ],

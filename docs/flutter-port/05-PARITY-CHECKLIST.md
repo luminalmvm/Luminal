@@ -434,6 +434,55 @@ First slice (2026-07-21):
     footage layer whose source probed with audio) rather than the renderer's
     exact `comp_audio_jobs`.
 
+## Performance (perf pass, K-176)
+
+The owner reported the UI as "laggy af". Three causes were fixed; the evidence is
+in `test/timeline_test.dart` (Playhead notifier split), `test/viewer_scopes_test.
+dart` (off-thread renderer) and `test/timeline_columns_session_test.dart`
+(debounced session).
+
+- ☑ **Render isolate.** `PreviewSource` no longer calls `renderCompFrame` /
+  `decodeFrame` synchronously on the UI isolate (K-017 / docs/14: the UI thread
+  must never render a frame). The heavy render/decode rides a long-lived worker
+  isolate (`panels/preview_isolate.dart`, `IsolateFrameRenderer`) that opens its
+  OWN `DynamicLibrary.open` of the same `lumit_bridge.dll` — same process, so the
+  same engine state behind the bridge's process-wide `Mutex`
+  (`crates/lumit-bridge/src/state.rs`: `static BRIDGE: OnceLock<Mutex<Bridge>>`,
+  held only for one call, never across a re-entrant call — so the render on the
+  worker and document ops on the UI isolate serialise through the lock rather
+  than race). Request/response over `SendPort`s carries `{compId/itemId, frame,
+  scale, generation}` → `{TransferableTypedData rgba, w, h}`. **Latest-wins**: at
+  most one render in flight, a newer wanted frame supersedes the queued one (the
+  K-170 pattern applied to the Viewer); the last real picture stays on screen
+  while a newer frame is in flight (never blank — the K-130 hold idea). The inline
+  `SynchronousFrameRenderer` remains the fallback when isolates are unavailable
+  (tests, the placeholder build, a machine where the worker cannot open the
+  library).
+  - **Remainder (◐):** the render is still a full-resolution CPU pixel readback
+    per frame; the D3D11 shared-texture / keyed-mutex zero-copy path is the real
+    end-state and is not built. Renders are not cancelled mid-flight engine-side —
+    latest-wins only drops the *reply* on the Dart side; a superseded comp render
+    still runs to completion in the worker. The worker path is unverified in this
+    sandbox (no native build / no `.dll`, and an isolate cannot bind a Dart fake),
+    so it is exercised only by a deferred-reply fake renderer standing in for the
+    worker; the inline path carries the shipped tests.
+- ☑ **Playhead notifier split.** `AppStateStub` gained `ValueNotifier<int>
+  playheadFrame`. Pure playhead motion (a scrub via `goToFrame`, a playback tick
+  via `advancePlayback`) fires only that notifier, never the big `notifyListeners`
+  — so layer rows, the Project/Hierarchy panels and the effect-controls body no
+  longer rebuild at frame rate. Only the widgets that genuinely track the playhead
+  per frame watch it: the Viewer transport frame/timecode, the Timeline playhead
+  line and comp-tab clock, the Scopes/`PreviewSource` frame source, the graph
+  readout, and the ◄◆► keyframe-navigator clusters (whose add-vs-remove sense
+  depends on the live playhead). Guard: `advancePlayback`/`goToFrame` fire the app
+  notifier zero times, and the `LayerRow` widgets keep their identity across 10
+  advances (`test/timeline_test.dart`).
+- ☑ **Debounced session persistence.** Session `remember` → `Workspace.save()`
+  (JSON to disk) no longer fires per frame during a scrub. It coalesces on a
+  ~500 ms trailing debounce, flushed on dispose and on project close (open/new).
+  Autosave is untouched. Guard: a 30-frame scrub writes 0 times mid-scrub, one
+  time after the flush (`test/timeline_columns_session_test.dart`).
+
 ## Post-parity fixes (owner's known rough edges — do NOT fix during the port)
 
 Collected here as they come up so parity stays honest. Behavioural changes wait

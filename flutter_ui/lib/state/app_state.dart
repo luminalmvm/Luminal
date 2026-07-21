@@ -121,8 +121,16 @@ class AppStateStub extends ChangeNotifier {
   /// falls off. The shell points this at Settings → General.
   int autosaveKeep;
 
+  /// Builds the off-thread frame renderer the [PreviewSource] uses (the perf
+  /// pass render isolate). The shell passes a factory that spawns the worker
+  /// isolate when the real `lumit_bridge` library is loaded; left null (tests
+  /// and the placeholder build) the PreviewSource renders inline on the UI
+  /// isolate exactly as before — so widget tests stay deterministic.
+  final FrameRenderer? Function(AppStateStub app)? previewRendererFactory;
+
   AppStateStub({
     this.bridge,
+    this.previewRendererFactory,
     Future<String?> Function()? openProjectPicker,
     Future<String?> Function()? saveLocationPicker,
     Future<List<String>> Function()? footagePicker,
@@ -177,6 +185,27 @@ class AppStateStub extends ChangeNotifier {
   bool playing = false;
   int previewFrame = 0;
   int previewFrameCount = 0;
+
+  /// The playhead frame as a dedicated fine-grained notifier (the perf pass,
+  /// K-176). Pure playhead motion — a scrub, a playback tick — fires THIS and
+  /// not the big [notifyListeners], so only the widgets that genuinely track
+  /// the playhead per frame rebuild (the Viewer transport readout, the Timeline
+  /// playhead line and comp-tab clock, the Scopes/PreviewSource frame source,
+  /// the graph readout). Layer rows, the Project/Hierarchy panels and the
+  /// effect controls keep listening to the app notifier, which now fires only
+  /// on document/selection/notice changes — so they no longer rebuild at frame
+  /// rate during a scrub or playback. [previewFrame] mirrors this value for the
+  /// many event handlers that read it directly.
+  final ValueNotifier<int> playheadFrame = ValueNotifier<int>(0);
+
+  /// Move the playhead: update the plain [previewFrame] field the event
+  /// handlers read and fire the fine-grained [playheadFrame] notifier. Never
+  /// touches the big notifier — callers decide whether a document/transport
+  /// change also warrants [notifyListeners].
+  void _setPlayhead(int frame) {
+    previewFrame = frame;
+    playheadFrame.value = frame;
+  }
   double timelineZoom = 1.0;
   bool timelineGraphMode = false;
   bool snapping = true;
@@ -223,25 +252,30 @@ class AppStateStub extends ChangeNotifier {
   }
 
   void stepFrame(int delta) {
-    if (playing) playing = false;
-    previewFrame = (previewFrame + delta).clamp(0, previewFrameCount);
-    _persistSession();
-    notifyListeners();
+    final wasPlaying = playing;
+    playing = false;
+    _setPlayhead((previewFrame + delta).clamp(0, previewFrameCount));
+    _scheduleSessionPersist();
+    // Only the transport-state change needs the big notifier; the frame move
+    // itself rides [playheadFrame], so layer rows do not rebuild.
+    if (wasPlaying) notifyListeners();
   }
 
   void goToFrame(int frame) {
-    if (playing) playing = false;
-    previewFrame = frame.clamp(0, previewFrameCount);
-    _persistSession();
-    notifyListeners();
+    final wasPlaying = playing;
+    playing = false;
+    _setPlayhead(frame.clamp(0, previewFrameCount));
+    _scheduleSessionPersist();
+    if (wasPlaying) notifyListeners();
   }
 
   /// Move the playhead during playback WITHOUT stopping (the Viewer's transport
   /// ticker drives this). Unlike [goToFrame] it leaves `playing` set, so the
-  /// loop keeps running. Additive F2 seam.
+  /// loop keeps running. Additive F2 seam. The hottest path: it fires only the
+  /// fine-grained [playheadFrame] notifier and never persists — no disk write
+  /// during continuous playback.
   void advancePlayback(int frame) {
-    previewFrame = frame;
-    notifyListeners();
+    _setPlayhead(frame);
   }
 
   /// The Viewer's CPU frame source (phase F2), shared with the Scopes panel so
@@ -249,7 +283,8 @@ class AppStateStub extends ChangeNotifier {
   /// without a bridge (it simply never resolves a frame). Single-layer preview
   /// until the compositor is extracted from the egui crate.
   PreviewSource? _previewSource;
-  PreviewSource get previewSource => _previewSource ??= PreviewSource(this);
+  PreviewSource get previewSource =>
+      _previewSource ??= PreviewSource(this, renderer: previewRendererFactory?.call(this));
 
   void zoomTimeline(double factor) {
     timelineZoom = (timelineZoom * factor).clamp(1.0, 400.0);
@@ -276,7 +311,7 @@ class AppStateStub extends ChangeNotifier {
   void selectLayer(String? id) {
     if (selectedLayer == id) return;
     selectedLayer = id;
-    _persistSession();
+    _scheduleSessionPersist();
     notifyListeners();
   }
 
@@ -292,6 +327,8 @@ class AppStateStub extends ChangeNotifier {
       engine('New project');
       return;
     }
+    // Closing the current project: flush its pending session before it goes.
+    flushPendingSession();
     _applyReply(bridge!.newProject(), 'New project');
   }
 
@@ -357,6 +394,8 @@ class AppStateStub extends ChangeNotifier {
     }
     final path = await openProjectPicker();
     if (path == null) return; // cancelled — leave the status line as-is
+    // Closing the current project: flush its pending session before it goes.
+    flushPendingSession();
     final reply = bridge!.openProject(path);
     _applyReply(reply, 'Project opened');
     if (reply.ok) {
@@ -454,8 +493,8 @@ class AppStateStub extends ChangeNotifier {
     if (frontCompId == id) return;
     frontCompId = id;
     previewFrameCount = frontComp?.frameCount ?? previewFrameCount;
-    previewFrame = previewFrame.clamp(0, previewFrameCount);
-    _persistSession();
+    _setPlayhead(previewFrame.clamp(0, previewFrameCount));
+    _scheduleSessionPersist();
     notifyListeners();
   }
 
@@ -1035,7 +1074,7 @@ class AppStateStub extends ChangeNotifier {
     final fc = frontComp;
     if (fc != null) {
       previewFrameCount = fc.frameCount;
-      previewFrame = previewFrame.clamp(0, previewFrameCount);
+      _setPlayhead(previewFrame.clamp(0, previewFrameCount));
     }
   }
 
@@ -1068,9 +1107,28 @@ class AppStateStub extends ChangeNotifier {
         selectedLayer: selectedLayer,
       );
 
-  /// Persist the current session against the loaded project path, if one is
-  /// known and the seam is wired. A quiet no-op otherwise.
-  void _persistSession() {
+  /// The trailing debounce for session writes (the perf pass): a continuous
+  /// scrub or a burst of playhead/selection changes coalesces into ONE disk
+  /// write ~500 ms after it settles, so no `Workspace.save()` fires per frame.
+  static const Duration _sessionDebounce = Duration(milliseconds: 500);
+  Timer? _sessionTimer;
+
+  /// Schedule a debounced session write against the loaded project path, if one
+  /// is known and the seam is wired. Repeated calls within [_sessionDebounce]
+  /// collapse into a single trailing write — the fix for per-frame persistence.
+  void _scheduleSessionPersist() {
+    if (snapshot?.path == null || rememberSession == null) return;
+    _sessionTimer?.cancel();
+    _sessionTimer = Timer(_sessionDebounce, flushPendingSession);
+  }
+
+  /// Write the pending session now, cancelling any scheduled write. Called on
+  /// dispose and on project close (open/new), and by tests that assert
+  /// persistence without waiting out the debounce.
+  @visibleForTesting
+  void flushPendingSession() {
+    _sessionTimer?.cancel();
+    _sessionTimer = null;
     final path = snapshot?.path;
     if (path == null) return;
     rememberSession?.call(path, currentSession());
@@ -1100,7 +1158,7 @@ class AppStateStub extends ChangeNotifier {
       previewFrameCount = frontComp?.frameCount ?? previewFrameCount;
     }
     // Restore the playhead, clamped into the (possibly changed) range.
-    previewFrame = session.frame.clamp(0, previewFrameCount);
+    _setPlayhead(session.frame.clamp(0, previewFrameCount));
     // Restore the selection only if that layer is still present.
     final sel = session.selectedLayer;
     selectedLayer =
@@ -1174,7 +1232,11 @@ class AppStateStub extends ChangeNotifier {
 
   @override
   void dispose() {
+    // Flush any pending session write, then tear down the timers/notifiers.
+    flushPendingSession();
     _autosaveTimer?.cancel();
+    _previewSource?.dispose();
+    playheadFrame.dispose();
     super.dispose();
   }
 }

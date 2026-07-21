@@ -555,4 +555,123 @@ void main() {
       source.dispose();
     });
   });
+
+  // The perf pass render isolate (K-176): the same PreviewSource, but the heavy
+  // render/decode is handed to an off-thread [FrameRenderer]. These prove the
+  // async control flow — holding the last picture while a frame is in flight,
+  // and latest-wins — without spawning a real isolate (a deferred fake stands
+  // in for the worker).
+  group('PreviewSource off-thread renderer (perf pass)', () {
+    final snap = _snapshot(
+      _comp([_layer(name: 'clip.mp4', inFrame: 0, outFrame: 48)]),
+      [_footage('clip.mp4')],
+    );
+
+    testWidgets('holds no image until the worker replies, then shows the comp',
+        (tester) async {
+      final app = AppStateStub(bridge: _FrameBridge(snap, null));
+      final renderer = _QueuedRenderer()..compResult = _solid(8, 8, 10, 20, 30);
+      late PreviewSource source;
+      await tester.runAsync(() async {
+        source = PreviewSource(app, renderer: renderer);
+        // The render is in flight but unanswered: comp mode is entered, and the
+        // Viewer holds (no image) rather than blanking.
+        expect(renderer.compRequests, contains('c1@0'));
+        expect(source.compActive, isTrue);
+        expect(source.image, isNull);
+        renderer.flush();
+        await Future<void>.delayed(const Duration(milliseconds: 80));
+      });
+      expect(source.image, isNotNull, reason: 'the composited frame landed');
+      expect(source.displayedFrame, isNotNull);
+      source.dispose();
+    });
+
+    testWidgets('latest-wins: a newer frame supersedes the queued one',
+        (tester) async {
+      final app = AppStateStub(bridge: _FrameBridge(snap, null));
+      final renderer = _QueuedRenderer()..compResult = _solid(8, 8, 1, 2, 3);
+      late PreviewSource source;
+      await tester.runAsync(() async {
+        source = PreviewSource(app, renderer: renderer);
+        expect(renderer.compRequests, ['c1@0'],
+            reason: 'one render in flight for the initial frame');
+
+        // The playhead jumps twice while c1@0 is still rendering: no second
+        // request goes out (at most one in flight), only the latest is kept.
+        app.advancePlayback(5);
+        app.advancePlayback(9);
+        expect(renderer.compRequests, ['c1@0'],
+            reason: 'no concurrent request while one is in flight');
+
+        renderer.flush(); // answer c1@0; its image decodes, then the drain runs
+        await Future<void>.delayed(const Duration(milliseconds: 80));
+      });
+      // The queued want collapsed to the LATEST frame — c1@9, skipping c1@5.
+      expect(renderer.compRequests, contains('c1@9'));
+      expect(renderer.compRequests, isNot(contains('c1@5')));
+      source.dispose();
+    });
+
+    testWidgets('a null comp reply falls back to the single-layer decode',
+        (tester) async {
+      final app = AppStateStub(bridge: _FrameBridge(snap, _solid(4, 4, 7, 7, 7)));
+      // supportsCompRender is true, but the render returns null (no adapter):
+      // the async reply falls back to the single-layer decode.
+      final renderer = _QueuedRenderer()
+        ..compResult = null
+        ..decodeResult = _solid(4, 4, 7, 7, 7);
+      late PreviewSource source;
+      await tester.runAsync(() async {
+        source = PreviewSource(app, renderer: renderer);
+        renderer.flush(); // comp reply null → single-layer decode queued
+        renderer.flush(); // answer the decode
+        await Future<void>.delayed(const Duration(milliseconds: 80));
+      });
+      expect(renderer.compRequests, contains('c1@0'));
+      expect(renderer.decodeRequests, contains('item-clip.mp4@0'),
+          reason: 'the single-layer decode ran after the comp declined');
+      expect(source.compActive, isFalse);
+      expect(source.image, isNotNull);
+      source.dispose();
+    });
+  });
+}
+
+/// A [FrameRenderer] that defers every reply until [flush], so a test can drive
+/// the async control flow deterministically (the worker isolate stand-in).
+class _QueuedRenderer implements FrameRenderer {
+  @override
+  bool get supportsCompRender => true;
+
+  final List<String> compRequests = [];
+  final List<String> decodeRequests = [];
+  final List<void Function()> _pending = [];
+  DecodedFrame? compResult;
+  DecodedFrame? decodeResult;
+
+  @override
+  void requestComp(String compId, int frame, double scale, int generation,
+      void Function(DecodedFrame?) onFrame) {
+    compRequests.add('$compId@$frame');
+    _pending.add(() => onFrame(compResult));
+  }
+
+  @override
+  void requestDecode(String itemId, int frame, int generation,
+      void Function(DecodedFrame?) onFrame) {
+    decodeRequests.add('$itemId@$frame');
+    _pending.add(() => onFrame(decodeResult));
+  }
+
+  void flush() {
+    final pending = List<void Function()>.from(_pending);
+    _pending.clear();
+    for (final run in pending) {
+      run();
+    }
+  }
+
+  @override
+  void dispose() {}
 }

@@ -13,6 +13,7 @@ import 'package:lumit_flutter/panels/timeline/key_glyph.dart';
 import 'package:lumit_flutter/panels/timeline/key_nav.dart';
 import 'package:lumit_flutter/panels/timeline/lane_scale.dart';
 import 'package:lumit_flutter/panels/timeline/lane_selection.dart';
+import 'package:lumit_flutter/panels/timeline/layer_row.dart';
 import 'package:lumit_flutter/panels/timeline/outline_layout.dart';
 import 'package:lumit_flutter/panels/timeline/ruler.dart';
 import 'package:lumit_flutter/panels/timeline/search.dart';
@@ -689,6 +690,65 @@ void main() {
             o.startsWith('work_area:c0@') && o.endsWith('/out=false')),
         isTrue,
       );
+    });
+  });
+
+  // The perf pass (K-176): pure playhead motion must not rebuild the layer rows
+  // or panels — it fires only the fine-grained playhead notifier. These are the
+  // durable regression guards for the "laggy af" fix.
+  group('Playhead notifier split (perf pass)', () {
+    test('advancing or scrubbing the playhead never fires the app notifier', () {
+      final app = AppStateStub(bridge: _TimelineFake());
+      var appNotifies = 0;
+      var playheadNotifies = 0;
+      app.addListener(() => appNotifies++);
+      app.playheadFrame.addListener(() => playheadNotifies++);
+
+      // 10 playback ticks + a scrub: every layer row, the Project/Hierarchy
+      // panels and the effect controls listen to the app notifier, so a zero
+      // count proves none of them can rebuild on pure playhead motion.
+      for (var f = 1; f <= 10; f++) {
+        app.advancePlayback(f);
+      }
+      app.goToFrame(5);
+
+      expect(appNotifies, 0,
+          reason: 'no big notify → no layer-row/panel rebuild per frame');
+      expect(playheadNotifies, 11, reason: 'the playhead notifier fired once per move');
+      expect(app.previewFrame, 5);
+    });
+
+    testWidgets('layer rows are not rebuilt across playhead advances',
+        (tester) async {
+      final app = AppStateStub(bridge: _TimelineFake());
+      await tester.pumpWidget(_host(app));
+
+      // Capture the live LayerRow instances. A StatelessWidget that its parent
+      // did not rebuild stays the SAME object, so identity proves no rebuild.
+      final heroBefore = tester.widget<LayerRow>(find.byKey(const ValueKey('l0')));
+      final backdropBefore =
+          tester.widget<LayerRow>(find.byKey(const ValueKey('l1')));
+
+      var appNotifies = 0;
+      app.addListener(() => appNotifies++);
+
+      for (var f = 1; f <= 10; f++) {
+        app.advancePlayback(f);
+        await tester.pump();
+      }
+
+      final heroAfter = tester.widget<LayerRow>(find.byKey(const ValueKey('l0')));
+      final backdropAfter =
+          tester.widget<LayerRow>(find.byKey(const ValueKey('l1')));
+
+      expect(identical(heroBefore, heroAfter), isTrue,
+          reason: 'the hero layer row was not rebuilt over 10 playhead advances');
+      expect(identical(backdropBefore, backdropAfter), isTrue,
+          reason: 'the backdrop layer row was not rebuilt either');
+      expect(appNotifies, 0, reason: 'the app notifier stayed silent');
+
+      // The comp-tab clock DID follow the playhead (its own ValueListenableBuilder).
+      expect(find.textContaining('f10'), findsOneWidget);
     });
   });
 }

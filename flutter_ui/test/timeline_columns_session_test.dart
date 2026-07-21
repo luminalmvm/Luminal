@@ -528,9 +528,30 @@ void main() {
       )..frontCompSelect('c1');
       app.selectLayer('l0');
       app.goToFrame(17);
+      // The perf pass moved session writes onto a trailing ~500 ms debounce so a
+      // continuous scrub no longer writes per frame; flush it to assert the
+      // final coalesced write carries every edit.
+      app.flushPendingSession();
       expect(saved['p.lum']?.selectedLayer, 'l0');
       expect(saved['p.lum']?.frame, 17);
       expect(saved['p.lum']?.activeComp, 'c1');
+    });
+
+    test('a continuous scrub coalesces into one debounced session write', () {
+      var writes = 0;
+      final fake = _FakeBridge(path: 'p.lum');
+      final app = AppStateStub(
+        bridge: fake,
+        rememberSession: (path, s) => writes++,
+      )..frontCompSelect('c1');
+      // A burst of playhead moves (a scrub) must NOT write per frame.
+      for (var f = 0; f < 30; f++) {
+        app.goToFrame(f);
+      }
+      expect(writes, 0, reason: 'no disk write during the scrub itself');
+      // Only the trailing flush persists — one write for the whole burst.
+      app.flushPendingSession();
+      expect(writes, 1);
     });
   });
 

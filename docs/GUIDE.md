@@ -2499,3 +2499,27 @@ per project file and restored when you reopen it — and it **autosaves** a
 rotating copy beside the project every few minutes while you have unsaved
 changes, in an `autosaves` folder next to the file, never touching the file
 itself (three copies are kept, oldest dropped first).
+
+**Making the Viewer smooth: the render isolate (the perf pass).** The interface
+felt laggy because it did the heaviest job — asking the engine to composite the
+whole picture and copy it back — on the same thread that draws the interface, so
+the window froze for the length of every render. A *thread* in Dart is called an
+*isolate*, and the fix is a dedicated background one: a long-lived worker that
+opens its own handle to the same engine library and does nothing but render
+frames when asked. Because both handles are the same file loaded once into the
+same program, they see the very same engine (the engine guards itself with a
+lock, so the worker's render and the interface's edits take turns rather than
+collide). The interface now *asks* the worker for a frame and carries on drawing;
+when the picture comes back it is shown. Two manners keep it feeling live: only
+one render runs at a time, and if you scrub past several frames while one is
+still rendering, the worker is asked only for the newest one you landed on (the
+in-between frames are skipped, not queued up) — and the last real picture stays
+on screen the whole time, so the Viewer never flashes blank. If the worker
+cannot be started, or there is no engine library (as in every test), the old
+behaviour is kept as a fallback and the picture is simply rendered inline. Two
+smaller changes came with it: the playhead now has its own private
+change-signal, so moving it repaints just the picture, the time readouts and the
+playhead line rather than rebuilding every layer row and panel at the frame
+rate; and remembering the session (which project, playhead, selection) now waits
+for a half-second lull instead of writing to disk on every single frame of a
+scrub.

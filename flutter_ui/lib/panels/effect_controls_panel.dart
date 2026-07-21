@@ -350,11 +350,6 @@ class _TransformRowState extends State<_TransformRow> {
     final t = ThemeScope.of(context).theme;
     final animated = _animated;
     final frames = _keyFrames();
-    final frame = _app.previewFrame;
-    final prev = frames.where((f) => f < frame).fold<int?>(null, (m, f) => f);
-    final onKey = frames.contains(frame);
-    final next = frames.where((f) => f > frame).fold<int?>(
-        null, (m, f) => m ?? f);
 
     final cells = <Widget>[];
     for (var i = 0; i < widget.axes.length; i++) {
@@ -393,11 +388,26 @@ class _TransformRowState extends State<_TransformRow> {
           ),
           const SizedBox(width: 4),
           if (animated)
-            _KeyframeNavigator(
-              onKey: onKey,
-              onPrev: prev == null ? null : () => _app.goToFrame(prev),
-              onToggle: () => _toggleKeyframe(onKey),
-              onNext: next == null ? null : () => _app.goToFrame(next),
+            // The ◄ ◆ ► navigator (and the diamond's add-vs-remove sense)
+            // tracks where the playhead sits relative to this property's keys,
+            // so it alone watches the fine-grained playhead notifier — the
+            // panel above stays on the app notifier (perf pass).
+            ValueListenableBuilder<int>(
+              valueListenable: _app.playheadFrame,
+              builder: (context, frame, _) {
+                final prev =
+                    frames.where((f) => f < frame).fold<int?>(null, (m, f) => f);
+                final onKey = frames.contains(frame);
+                final next = frames
+                    .where((f) => f > frame)
+                    .fold<int?>(null, (m, f) => m ?? f);
+                return _KeyframeNavigator(
+                  onKey: onKey,
+                  onPrev: prev == null ? null : () => _app.goToFrame(prev),
+                  onToggle: () => _toggleKeyframe(onKey),
+                  onNext: next == null ? null : () => _app.goToFrame(next),
+                );
+              },
             )
           else
             const SizedBox(width: 4),

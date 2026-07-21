@@ -225,10 +225,6 @@ class _TimelineBodyState extends State<_TimelineBody>
             if (layerMatchesSearch(l.name, _search)) l,
         ];
 
-        final playheadX = scale.xOfFrame(app.previewFrame);
-        final showPlayhead =
-            playheadX >= trackLeft - 0.5 && playheadX <= trackLeft + trackW + 0.5;
-
         return Stack(
           children: [
             Column(
@@ -326,15 +322,27 @@ class _TimelineBodyState extends State<_TimelineBody>
                   ),
               ],
             ),
-            if (showPlayhead)
-              Positioned(
-                left: playheadX,
-                top: 0,
-                bottom: scale.canPan ? _PanScrollbar.height : 0,
-                child: IgnorePointer(
-                  child: Container(width: 1, color: t.accent),
-                ),
-              ),
+            // The playhead line is the only thing that moves per frame, so it
+            // alone watches the fine-grained playhead notifier — the ruler,
+            // layer rows and lanes above stay outside this rebuild (perf pass:
+            // scrubbing no longer rebuilds the rows subtree).
+            ValueListenableBuilder<int>(
+              valueListenable: app.playheadFrame,
+              builder: (context, frame, _) {
+                final playheadX = scale.xOfFrame(frame);
+                final showPlayhead = playheadX >= trackLeft - 0.5 &&
+                    playheadX <= trackLeft + trackW + 0.5;
+                if (!showPlayhead) return const SizedBox.shrink();
+                return Positioned(
+                  left: playheadX,
+                  top: 0,
+                  bottom: scale.canPan ? _PanScrollbar.height : 0,
+                  child: IgnorePointer(
+                    child: Container(width: 1, color: t.accent),
+                  ),
+                );
+              },
+            ),
           ],
         );
       },

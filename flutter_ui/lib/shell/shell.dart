@@ -15,6 +15,7 @@ import 'package:flutter/widgets.dart';
 
 import '../bridge/bridge.dart';
 import '../panels/panels.dart';
+import '../panels/preview_isolate.dart';
 import '../state/app_state.dart';
 import '../state/dock.dart';
 import '../state/workspace.dart';
@@ -68,6 +69,10 @@ class _ShellBody extends StatefulWidget {
 class _ShellBodyState extends State<_ShellBody> {
   late final AppStateStub app = AppStateStub(
     bridge: widget.bridge,
+    // The perf pass: with a real engine library the Viewer renders on a worker
+    // isolate (K-176). A null result (no library, or spawn refused) keeps the
+    // inline renderer, so the placeholder build and tests are unaffected.
+    previewRendererFactory: IsolateFrameRenderer.tryCreate,
     lastProjectPath: widget.workspace.lastProjectPath,
     rememberProject: widget.workspace.rememberProject,
     rememberSession: widget.workspace.rememberSession,

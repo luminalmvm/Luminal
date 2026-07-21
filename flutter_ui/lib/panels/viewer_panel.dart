@@ -188,9 +188,21 @@ class _ViewerPanelState extends State<ViewerPanel>
             ),
           ),
           const SizedBox(width: 8),
-          Text('frame ${app.previewFrame}', style: t.small),
-          const SizedBox(width: 8),
-          Text(_timecode(app.previewFrame, fps), style: t.small),
+          // The frame + timecode readout is the one part of the transport that
+          // moves every playhead tick, so it alone watches the fine-grained
+          // playhead notifier — the play button and fps stay on the app
+          // notifier above (perf pass).
+          ValueListenableBuilder<int>(
+            valueListenable: app.playheadFrame,
+            builder: (context, frame, _) => Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text('frame $frame', style: t.small),
+                const SizedBox(width: 8),
+                Text(_timecode(frame, fps), style: t.small),
+              ],
+            ),
+          ),
           const Spacer(),
           Text('Full', style: t.small),
         ],

@@ -113,7 +113,6 @@ class _PropertyRowState extends State<PropertyRow> {
   Widget build(BuildContext context) {
     final t = ThemeScope.of(context).theme;
     final frames = [for (final k in _keys) k.frame];
-    final targets = keyNavTargets(frames, _playhead);
     final animated = rowAnimated(layer.transform, spec);
 
     return SizedBox(
@@ -122,7 +121,7 @@ class _PropertyRowState extends State<PropertyRow> {
         children: [
           SizedBox(
             width: widget.outlineWidth,
-            child: _outline(t, targets, animated),
+            child: _outline(t, frames, animated),
           ),
           Expanded(
             child: Listener(
@@ -185,7 +184,7 @@ class _PropertyRowState extends State<PropertyRow> {
     );
   }
 
-  Widget _outline(LumitTheme t, KeyNavTargets targets, bool animated) {
+  Widget _outline(LumitTheme t, List<int> frames, bool animated) {
     final readouts = <Widget>[];
     for (final name in spec.props) {
       final v = app.transformValueFor(layer.id, name);
@@ -208,24 +207,42 @@ class _PropertyRowState extends State<PropertyRow> {
             onTap: _stopwatch,
           ),
           const SizedBox(width: 2),
-          _NavButton(
-            key: ValueKey('nav-prev:${layer.id}:${spec.primary}'),
-            icon: LumitIcon.prevKeyframe,
-            enabled: targets.prev != null,
-            onTap: () => app.goToFrame(targets.prev!),
-          ),
-          _NavButton(
-            key: ValueKey('nav-toggle:${layer.id}:${spec.primary}'),
-            icon: targets.onKey ? LumitIcon.keyframeFilled : LumitIcon.keyframe,
-            enabled: true,
-            accent: targets.onKey,
-            onTap: () => _toggleKey(targets.onKey),
-          ),
-          _NavButton(
-            key: ValueKey('nav-next:${layer.id}:${spec.primary}'),
-            icon: LumitIcon.nextKeyframe,
-            enabled: targets.next != null,
-            onTap: () => app.goToFrame(targets.next!),
+          // The ◄ ◆ ► navigator (and the diamond's add-vs-remove sense) depends
+          // on where the playhead sits relative to this row's keys, so ONLY this
+          // small cluster watches the fine-grained playhead notifier — the rest
+          // of the row (and every clip layer row) stays off the per-frame path
+          // (perf pass). The lane painter to the right ignores the playhead too.
+          ValueListenableBuilder<int>(
+            valueListenable: app.playheadFrame,
+            builder: (context, frame, _) {
+              final targets = keyNavTargets(frames, frame);
+              return Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  _NavButton(
+                    key: ValueKey('nav-prev:${layer.id}:${spec.primary}'),
+                    icon: LumitIcon.prevKeyframe,
+                    enabled: targets.prev != null,
+                    onTap: () => app.goToFrame(targets.prev!),
+                  ),
+                  _NavButton(
+                    key: ValueKey('nav-toggle:${layer.id}:${spec.primary}'),
+                    icon: targets.onKey
+                        ? LumitIcon.keyframeFilled
+                        : LumitIcon.keyframe,
+                    enabled: true,
+                    accent: targets.onKey,
+                    onTap: () => _toggleKey(targets.onKey),
+                  ),
+                  _NavButton(
+                    key: ValueKey('nav-next:${layer.id}:${spec.primary}'),
+                    icon: LumitIcon.nextKeyframe,
+                    enabled: targets.next != null,
+                    onTap: () => app.goToFrame(targets.next!),
+                  ),
+                ],
+              );
+            },
           ),
           const SizedBox(width: 6),
           Expanded(
