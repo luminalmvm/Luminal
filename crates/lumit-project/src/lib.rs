@@ -1,6 +1,8 @@
 //! The `.lum` project container, autosave, and the crash-recovery journal —
 //! docs/10-FILE-FORMAT.md, Phase 0 scope (no thumbnails yet).
 
+pub mod fixtures;
+
 use lumit_core::model::{Fingerprint, MediaRef};
 use lumit_core::ops::Op;
 use lumit_core::Document;
