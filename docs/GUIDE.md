@@ -1859,6 +1859,68 @@ Two mechanisms make this safe, and you'll see them by name in the code:
   the comp" rules from the drag and the import. One rough edge for now: the timeline can't
   scroll to show negative time, so a layer that starts before zero is drawn tucked under the
   left edge (you can still grab the part that's on screen).
+- **Finding footage that moved (`lumit-project` fingerprint + relink)** — a project doesn't
+  hold the video and audio files inside it; it *points* at them on disc. Move or rename a
+  file and the pointer goes stale. Lumit now records, next to each pointer, a small
+  **fingerprint** of the file: its size and a quick hash of the first and last chunk (never
+  the whole thing, so it stays instant even on a feature-length movie). When a project opens,
+  each pointer is resolved in order — first the path relative to the project, then the last
+  full path it was seen at, then, if both miss, a **search by fingerprint** through folders
+  you've told Lumit to look in — so a clip that was simply moved is found again by its
+  *content*, not its name. Relink one file and its neighbours that moved the same way are
+  offered automatically (the "it all went into a new folder" case). Nothing is a blocking
+  error: a file that can't be found shows a placeholder and waits for you to relink it.
+- **Collect for sharing (`lumit-project::collect_for_sharing`)** — one command copies the
+  project and every file it uses into a single folder, rewriting the pointers to sit next to
+  the copies. Nothing machine-specific is written (no "C:\Users\me\…" paths), so the folder
+  opens cleanly on someone else's computer — the mechanism behind sharing a project with the
+  community. Two clips that happen to share a name are copied under distinct names so neither
+  overwrites the other, and anything that can't be found is listed rather than silently
+  dropped.
+- **Opening older projects (`lumit-project` schema migrations)** — the file format will
+  change over time. So a saved project carries a version number, and when a newer Lumit opens
+  an older file it walks it up through a chain of small **migration** steps — each one nudging
+  the raw saved data from one version to the next — before the program ever tries to
+  understand it as a real project. Today the chain is empty (this is the first format), but
+  the machinery is in place, so future changes have a home and old files keep opening. A
+  current-version file skips all of it and loads directly, so ordinary saves are untouched.
+- **The frame cupboard decides what to drop (`lumit-cache`, docs 06 §5.3)** — the store of
+  rendered frames has a strict size limit (a budget in megabytes, not a count — one big frame
+  costs as much as many small ones). When it's full and a new frame arrives, it throws out the
+  frame that's the *best bargain to lose*: one you haven't looked at in a while, that's large
+  (frees the most room), and that's cheap to recreate — the "stale × big × cheap" rule. Two
+  frames it will **never** throw out are ones that have been **pinned**: the picture on screen
+  and the handful of frames either side of the playhead, so playback can't accidentally bin
+  the very frame it's about to show. If the whole cupboard is pinned it simply runs a touch
+  over budget for a moment rather than dropping something you need — the pins clear on their
+  own as the playhead moves on.
+- **Undo doesn't remember forever (`lumit-core::store`)** — every edit is remembered so you
+  can undo it, but that memory can't be allowed to grow without end over a long session. So
+  the undo history keeps at most a few hundred steps; once it's full, the *oldest* step falls
+  off the back. You can't undo past that point any more, but nothing about your current
+  project changes — dropping old history only limits how far back you can rewind. (Crash
+  recovery is separate and unaffected: every edit is also written to a journal on disc as it
+  happens, independently of this in-memory limit.)
+- **The stress project and speed benchmarks (`lumit-project::fixtures`, docs 13)** — the
+  promise that Lumit stays responsive on huge projects needs something huge to test against.
+  There's now a builder that makes a deliberately enormous project on demand — hundreds of
+  compositions, thousands of layers, a quarter of a million keyframes — always *identical*
+  down to the last byte, so a speed measurement means the same thing every time. Alongside it,
+  a set of **benchmarks** time the everyday operations on that project (open it, save it, make
+  one edit, undo). They run when a developer asks (`cargo bench`), and they'll later become
+  pass/fail speed budgets in the automated checks.
+- **Remappable keyboard shortcuts (`lumit-keymap`)** — the rules behind "every shortcut can be
+  changed" live in their own small, self-contained piece with no screen or window in sight, so
+  they can be proven correct on their own. A **chord** is a key plus its held modifiers
+  (`Shift+F3`, `Ctrl/Cmd+D`); a **context** is where you are (the whole app, the timeline, the
+  viewer…); a **binding** ties a chord in a context to an action. The interesting part is
+  spotting **clashes** — the same chord that would trigger two different things at once — with
+  the twist that an app-wide (Global) shortcut is live everywhere, so it clashes with a
+  same-chord shortcut in *any* panel, while two different panels may reuse a key harmlessly.
+  The default set (the whole documented table) and an "After Effects" preset both ship
+  clash-free, the map can be saved to a shareable file, and Ctrl/Cmd is stored as one
+  neutral "primary" key so a keymap works on both Windows and Mac. Still to come: wiring the
+  live key presses and the Settings → Keymap screen to this core.
 
 ## 5. Making a change safely (the recipe)
 
