@@ -76,7 +76,12 @@ modules:
         FFMPEG_PKG_CONFIG_PATH: /app/lib/pkgconfig
     build-commands:
       - cargo --offline fetch --manifest-path Cargo.toml --verbose
-      - cargo --offline build --release --verbose -p lumit-app
+      # bindgen needs clang's *own* builtin headers — stddef.h and friends —
+      # which sit in a resource directory beside libclang, under a
+      # version-named subdirectory that moves with each LLVM release. Resolve
+      # it with a glob at build time rather than hard-coding "20".
+      - export BINDGEN_EXTRA_CLANG_ARGS="-I$(echo /usr/lib/sdk/llvm20/lib/clang/*/include)"
+        && cargo --offline build --release --verbose -p lumit-app
       - install -Dm755 target/release/lumit /app/bin/lumit
       - install -Dm644 assets/brand/lumit-icon.svg
         /app/share/icons/hicolor/scalable/apps/io.github.luminalmvm.Lumit.svg
