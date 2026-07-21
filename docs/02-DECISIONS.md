@@ -2221,3 +2221,16 @@ the previously built-but-unwired docs/10 §2 resolver now actually runs: relativ
 absolute → fingerprint search across the project tree; found files repoint the session path
 (this is what makes a moved project folder open intact — the tester's other half of the report),
 and missing ones are named in a notice, the relink dialogue remaining future work.
+
+**K-174 · DECIDED · A Flutter frontend alternative is built on its own branch, docs-first,
+one-for-one before any redesign.** The owner wants to evaluate replacing the egui frontend
+with Flutter (text rendering, motion, platform polish, widget ecosystem). The experiment
+lives on `flutter-frontend-alternative`: a Dart application in `flutter_ui/` over the
+unchanged Rust engine crates, specified by `docs/flutter-port/` (strategy, full UI
+inventory, bridge architecture, widget map, living parity checklist). Ground rules: the
+first pass reproduces the shipped egui behaviour exactly — known rough edges are logged,
+not fixed — so there is a truthful baseline; the glossary, no-hex-outside-theme and
+tests-with-features rules bind the Dart tree as they bind Rust; engine crates never depend
+on either frontend; `main` keeps shipping the egui frontend until the Flutter one reaches
+parity and wins the side-by-side. The Viewer's frame path is the one piece of new systems
+work (wgpu → shared D3D11 texture → Flutter texture registrar, docs/flutter-port/03).

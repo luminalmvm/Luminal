@@ -1,0 +1,25 @@
+name: lumit_flutter
+description: "Lumit's Flutter frontend alternative (K-174) — the chrome over the Rust engine; see docs/flutter-port/."
+publish_to: 'none'
+version: 0.1.0+1
+
+environment:
+  sdk: ^3.12.2
+
+dependencies:
+  flutter:
+    sdk: flutter
+  iconoir_flutter: ^7.11.1
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: false
+  fonts:
+    - family: Inter
+      fonts:
+        - asset: assets/fonts/Inter-Medium.otf
+          weight: 500

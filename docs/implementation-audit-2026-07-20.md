@@ -22,6 +22,13 @@ original snapshot; this log is the running record of what has since changed. Per
 (commit, CI/test status, and `👁` where behaviour needs the owner's eye) lives in each table's
 **Resolution / next step** column.
 
+### Frontend-alternative branch note (2026-07-21)
+
+Not a finding resolution: the `flutter-frontend-alternative` branch (K-174) starts a
+one-for-one Flutter port of the egui frontend, specified in `docs/flutter-port/` with its
+own living parity checklist. No engine crate and no finding row below is affected; the
+egui frontend remains the shipping one on `main`.
+
 ### Third pass (owner's desk, 2026-07-21 — built and tested locally on Windows)
 
 Driven by the first outside tester's notes and the owner's own desk run; full suite green

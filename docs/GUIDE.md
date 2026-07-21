@@ -2177,3 +2177,46 @@ The platform recipes above are exactly what CI does, written out by hand in
 Mesa's *lavapipe*, a Vulkan driver that renders on the CPU, so the GPU tests actually run on
 a machine with no graphics card in it. And a sixth job builds the Flatpak, which is how we
 know the packaging works and not just the code.
+
+## 9. The Flutter frontend experiment, in plain terms
+
+*(K-174, branch `flutter-frontend-alternative`. Skip this section if you are
+working on `main` — nothing here changes the egui application.)*
+
+**What Flutter and Dart are.** Flutter is Google's toolkit for building user
+interfaces; Dart is the programming language it uses, roughly as readable as
+TypeScript. Where egui redraws the whole window every frame from immediate
+drawing commands, Flutter keeps a *widget tree* — a description of the
+interface — and redraws only the parts whose description changed. That buys
+polished text rendering, smooth built-in animation and a huge widget ecosystem,
+at the cost of a second language in the repository and a *bridge* between the
+interface and the engine.
+
+**What moves and what stays.** Everything that opens files, decodes video,
+composites frames, caches, mixes audio and exports stays exactly where it is,
+in the Rust crates — the Flutter interface is a new front door on the same
+house. The Dart code lives in `flutter_ui/` and is a stand-alone application
+during the experiment: you can build and run it without touching the Rust
+build, and vice versa.
+
+**How they will talk.** Dart cannot call Rust directly, so a small generated
+layer (the bridge, `flutter_rust_bridge`) turns Rust functions into functions
+Dart can call, and Rust's progress messages into streams Dart can listen to.
+The Viewer is special: video frames are too large to pass through function
+calls sixty times a second, so the engine draws each frame into a piece of GPU
+memory that Flutter displays directly — the picture never takes a detour
+through ordinary memory.
+
+**Where things are.** `docs/flutter-port/` holds the plan: `01` the strategy
+and phases, `02` an inventory of every surface the egui interface ships (the
+port's shopping list), `03` the bridge design, `04` a table mapping each egui
+mechanism to its Flutter counterpart, `05` the living checklist of what is
+ported. The first phase rebuilds the *chrome* — theme, settings, dock, menus,
+panels as placeholders — on a pretend engine, so the interface can be judged by
+eye before any bridge work is spent.
+
+**Running it.** Install the Flutter SDK (`git clone -b stable
+https://github.com/flutter/flutter`, put its `bin` on PATH — it fetches its own
+Dart on first run; the Windows build also wants the same VS 2022 C++ tools the
+Rust build uses). Then, from `flutter_ui/`: `flutter run -d windows` to launch,
+`flutter test` for the tests, `flutter analyze` for the lint pass.
