@@ -370,6 +370,84 @@ pub fn apply_mapping(mapping: &(PathBuf, PathBuf), sibling_old: &Path) -> Option
         .map(|rest| to.join(rest))
 }
 
+/// The result of [`collect_for_sharing`].
+pub struct Collected {
+    /// The document with every located reference rewritten to the collected
+    /// copy under `media/`. The caller saves this into the destination folder.
+    pub doc: Document,
+    /// Names of footage items whose media could not be located, left referenced
+    /// as-is so the shared project still opens (they show the relink slate).
+    pub missing: Vec<String>,
+}
+
+/// Pick a name not already in `used`, appending `-1`, `-2`, … before the
+/// extension on a collision. Records the chosen name in `used`.
+fn unique_name(base: &str, used: &mut std::collections::HashSet<String>) -> String {
+    if used.insert(base.to_string()) {
+        return base.to_string();
+    }
+    let p = Path::new(base);
+    let stem = p
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let ext = p.extension().map(|e| e.to_string_lossy().into_owned());
+    let mut i = 1u32;
+    loop {
+        let cand = match &ext {
+            Some(e) => format!("{stem}-{i}.{e}"),
+            None => format!("{stem}-{i}"),
+        };
+        if used.insert(cand.clone()) {
+            return cand;
+        }
+        i += 1;
+    }
+}
+
+/// Copy the project's referenced media into `dest_dir/media/` and return a
+/// document whose references point there, project-relative — the mechanism
+/// behind sharing a project (K-065, docs/10 §2). `source_dir` is the current
+/// project folder, used to locate each file with the same resolver `open` uses.
+///
+/// Nothing machine-specific survives: both the relative and the former absolute
+/// path of each reference become the collected `media/<name>` path, and colliding
+/// file names are disambiguated. Files that cannot be located are left as-is and
+/// listed in [`Collected::missing`], so a partial collect still opens. The
+/// existing fingerprint is preserved (a copy has the same content). The caller
+/// writes the returned document into `dest_dir`.
+pub fn collect_for_sharing(
+    doc: &Document,
+    source_dir: &Path,
+    dest_dir: &Path,
+) -> Result<Collected, ProjectError> {
+    let media_dir = dest_dir.join("media");
+    fs::create_dir_all(&media_dir)?;
+    let mut out = doc.clone();
+    let mut used = std::collections::HashSet::new();
+    let mut missing = Vec::new();
+    for item in &mut out.items {
+        let lumit_core::model::ProjectItem::Footage(f) = item else {
+            continue;
+        };
+        match resolve_media(&f.media, source_dir, &[]) {
+            Resolved::Found { path, .. } => {
+                let base = Path::new(&f.media.relative_path)
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| format!("{}.bin", f.id));
+                let name = unique_name(&base, &mut used);
+                fs::copy(&path, media_dir.join(&name))?;
+                let rel = format!("media/{name}");
+                f.media.absolute_path.clone_from(&rel);
+                f.media.relative_path = rel;
+            }
+            Resolved::Missing => missing.push(f.name.clone()),
+        }
+    }
+    Ok(Collected { doc: out, missing })
+}
+
 /// Append-only op log between saves; truncated on successful save.
 pub struct JournalFile {
     path: PathBuf,
@@ -639,6 +717,112 @@ mod tests {
         assert_eq!(
             path_mapping(Path::new("/a/b/clip.mp4"), Path::new("/a/b/clip.mp4")),
             None
+        );
+    }
+
+    fn footage_item(name: &str, rel: &str, abs: &str) -> lumit_core::model::ProjectItem {
+        lumit_core::model::ProjectItem::Footage(lumit_core::model::FootageItem {
+            id: Uuid::now_v7(),
+            name: name.into(),
+            media: media_ref(rel, abs, None),
+            extra: serde_json::Map::new(),
+        })
+    }
+
+    fn media_of(item: &lumit_core::model::ProjectItem) -> &MediaRef {
+        match item {
+            lumit_core::model::ProjectItem::Footage(f) => &f.media,
+            _ => panic!("expected footage"),
+        }
+    }
+
+    /// docs/10 §2 / K-065: collect copies referenced media into `dest/media/`
+    /// and rewrites the reference project-relative, with nothing machine-specific.
+    #[test]
+    fn collect_copies_media_and_rewrites_refs() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src");
+        fs::create_dir_all(&src).unwrap();
+        let real = dir.path().join("assets/clip.mp4");
+        fs::create_dir_all(real.parent().unwrap()).unwrap();
+        fs::write(&real, b"video-bytes").unwrap();
+
+        let mut doc = Document::new();
+        doc.items.push(footage_item(
+            "Clip",
+            "footage/clip.mp4",
+            real.to_str().unwrap(),
+        ));
+        let dest = dir.path().join("share");
+        let collected = collect_for_sharing(&doc, &src, &dest).unwrap();
+
+        assert!(collected.missing.is_empty());
+        let copied = dest.join("media/clip.mp4");
+        assert!(copied.is_file(), "media copied into the share folder");
+        assert_eq!(fs::read(&copied).unwrap(), b"video-bytes");
+        let m = media_of(&collected.doc.items[0]);
+        assert_eq!(m.relative_path, "media/clip.mp4");
+        assert_eq!(
+            m.absolute_path, "media/clip.mp4",
+            "no machine-specific absolute path is written"
+        );
+    }
+
+    /// Two references to files that share a basename get distinct collected
+    /// names, so neither overwrites the other.
+    #[test]
+    fn collect_dedupes_colliding_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src");
+        fs::create_dir_all(&src).unwrap();
+        let a = dir.path().join("d1/clip.mp4");
+        let b = dir.path().join("d2/clip.mp4");
+        fs::create_dir_all(a.parent().unwrap()).unwrap();
+        fs::create_dir_all(b.parent().unwrap()).unwrap();
+        fs::write(&a, b"AAA").unwrap();
+        fs::write(&b, b"BBB").unwrap();
+
+        let mut doc = Document::new();
+        doc.items
+            .push(footage_item("One", "footage/clip.mp4", a.to_str().unwrap()));
+        doc.items
+            .push(footage_item("Two", "footage/clip.mp4", b.to_str().unwrap()));
+        let dest = dir.path().join("share");
+        let collected = collect_for_sharing(&doc, &src, &dest).unwrap();
+
+        assert_eq!(
+            media_of(&collected.doc.items[0]).relative_path,
+            "media/clip.mp4"
+        );
+        assert_eq!(
+            media_of(&collected.doc.items[1]).relative_path,
+            "media/clip-1.mp4"
+        );
+        assert_eq!(fs::read(dest.join("media/clip.mp4")).unwrap(), b"AAA");
+        assert_eq!(fs::read(dest.join("media/clip-1.mp4")).unwrap(), b"BBB");
+    }
+
+    /// A reference that resolves nowhere is reported and left untouched, so the
+    /// shared project still opens (missing media shows the relink slate).
+    #[test]
+    fn collect_reports_missing_media() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src");
+        fs::create_dir_all(&src).unwrap();
+        let mut doc = Document::new();
+        doc.items.push(footage_item(
+            "Ghost",
+            "footage/ghost.mp4",
+            "/nope/ghost.mp4",
+        ));
+        let dest = dir.path().join("share");
+        let collected = collect_for_sharing(&doc, &src, &dest).unwrap();
+
+        assert_eq!(collected.missing, vec!["Ghost".to_string()]);
+        assert_eq!(
+            media_of(&collected.doc.items[0]).relative_path,
+            "footage/ghost.mp4",
+            "an unlocatable reference is left unchanged"
         );
     }
 
