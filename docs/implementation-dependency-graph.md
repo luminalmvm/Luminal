@@ -17,8 +17,32 @@ Maintenance rule: whenever a feature lands or a 👁 is confirmed, this file is 
 commit (add/flip the ✅ marker, re-wire arrows), so the graph stays the live picture of progress.
 Completed boxes are never removed — the graph is a growing record, not just a to-do list.
 
+Layout rule: subgraphs that arrows run *between* are declared next to each other, and the
+free-standing ones (Media and colour, Audio, Keymap, Distribution, Plugins — no arrows in or
+out) are declared together at the end. Mermaid places boxes roughly in declaration order, so
+an independent group left in the middle pushes connected ones apart and drags their arrows
+across the whole picture. Keep new subgraphs on the same principle: beside what they connect
+to, or at the end if they connect to nothing.
+
 ```mermaid
 flowchart TD
+
+
+
+  RING -.->|smooths decode-bound realtime| RTEYE
+
+
+
+
+
+
+
+
+
+
+
+
+
 
   subgraph SVERIFY["Verify first — built, awaiting your eye"]
     RTEYE["✅ Realtime adaptive preview — render-pull rework, owner-accepted:<br/>no longer freezes (one un-superseded render at a time),<br/>fed the real decode cost so the tier drops + the box is honest.<br/>Known limit (documented): dropping res doesn't cut decode, so<br/>decode-bound comps stay a bit choppy until render-ahead (RING) —<br/>Cached is the smooth path there"]
@@ -33,6 +57,44 @@ flowchart TD
     BEATEYE["👁 Beat sensitivity slider — now in the timeline<br/>empty-lane right-click menu; re-check there"]
     AUDIOMEMEYE["👁 Memory + instant audio — re-test with the movie:<br/>RAM within the ONE Settings budget (half RAM default),<br/>solo/mute/move/volume heard instantly (the comp waveform strip<br/>is gone, K-172 — per-layer lanes fill as decodes land)"]
   end
+
+  subgraph SRETIME["Retime surface — owner: leave ALL of this until last"]
+    FREEZE["Wire freeze_at_playhead (04 §7.3)"]
+    HOLDP["Hold preset in the ramp shelf (04 §12.2)"]
+    MERGEB["Wire merge_boundary on boundary delete (04 §5.4)"]
+    RCHROME["Graph chrome: kink badge, RATE/MAP chips,<br/>source-extent band, media-end line (04 §6, §9)"]
+    DRIFTB["Persistent fitted-drift badge (04 §9.2)"]
+    REVUI["Reverse toggle + lock glyph +<br/>negative-region editing (04 §6.2)"]
+    NUMENTRY["Speed-lens numeric % entry +<br/>Alt-compensated edit (04 §9.2)"]
+    QUANTB["Bulk quantise boundaries to beats (04 §12.3)"]
+    STRETCHOP["Stretch op rewriting the Retime store (04 §11.2)"]
+    OUTTRIM["Outward trim extends map at constant speed (04 §7.3)"]
+    RTCOPY["Copy/paste retime + paste-attributes (04 §8.2)"]
+    FREEZE --> HOLDP
+  end
+  RATEEYE --> DRIFTB
+
+  subgraph SPERF["Performance backbone"]
+    TEXPOOL["Texture pool with refcounts (06 §2.2)"]
+    GOV["Resource governor —<br/>RAM/VRAM budgets, ledger (13 §3)"]
+    LADDER["Degradation ladder and status chip (13 §4)"]
+    DEVLOST["Device-lost recovery and DRED (13 §5, 14 §4)"]
+    TEXPOOL --> ROIDOD
+    TEXPOOL --> GOV
+    TEXPOOL --> DEVLOST
+    GOV --> LADDER
+  end
+  RTEYE --> LADDER
+
+  subgraph SCACHE["Cache tiers"]
+    FP16DISK["fp16 LZ4 planes + colourspace marker on disk (06 §5.4) —<br/>the disk tier ALREADY does LZ4 + a magic/format/colourspace/size<br/>header for RGBA8 (today's producible format); the fp16-planes format<br/>tag is blocked on the working fp16 frame reaching the CPU, i.e. the<br/>pixel-pass migration — not a standalone task"]
+    GREEDY["✅ GreedyDual eviction + pinning (06 §5.3) — ByteLru now evicts by<br/>staleness × size ÷ recompute-cost (the 'stale × cheap × large' rule),<br/>reduces to LRU for equal size/cost so callers are unchanged; pin/unpin<br/>protects the displayed frame + playhead window, bounded overage when only<br/>pins remain. Cost hints via insert_with_cost. Tested. Remaining: caller<br/>adoption (pass real costs / pin the playhead window) + VRAM→RAM demotion<br/>(waits on the VRAM tier)"]
+    SQLIDX["index.db SQLite cache index (06 §5.4)"]
+    VRAMTIER["VRAM cache tier (06 §5.1)"]
+    CACHEBAR3["Cache-bar third tier + all-mint ramp (15 §6.3)"]
+    VRAMTIER --> CACHEBAR3
+  end
+  TEXPOOL --> VRAMTIER
 
   subgraph SSPINE["Render and evaluation spine"]
     WPOOL["✅ Worker pool — built + tested<br/>(lumit-eval::pool, cores−3 min 2, two classes;<br/>its tenants — per-frame render jobs — arrive with PIXPASS;<br/>existing shell spawns are decode/IO roles, correctly off-pool)"]
@@ -57,18 +119,125 @@ flowchart TD
     CACHEDPLAY --> RING
   end
 
-  subgraph SPERF["Performance backbone"]
-    TEXPOOL["Texture pool with refcounts (06 §2.2)"]
-    GOV["Resource governor —<br/>RAM/VRAM budgets, ledger (13 §3)"]
-    LADDER["Degradation ladder and status chip (13 §4)"]
-    DEVLOST["Device-lost recovery and DRED (13 §5, 14 §4)"]
-    TEXPOOL --> ROIDOD
-    TEXPOOL --> GOV
-    TEXPOOL --> DEVLOST
-    GOV --> LADDER
+  subgraph SENG["Engineering and CI"]
+    TYPEDTIME["Typed rational time through eval +<br/>FrameIndex newtype (14 §2)"]
+    AUDIDX["No-panic indexing in the audio callback (14 §4)"]
+    HOTSWEEP["Hot-path sweep → enable indexing_slicing /<br/>arithmetic_side_effects lints (14 §4)"]
+    FIXTURES["◑ Stress fixture DONE, reference comp remaining (13 §1, §7.3) —<br/>lumit-project::fixtures::stress_document builds the 13 §2.1 doc<br/>(200 comps / 5,000 layers / 250,000 keyframes / 2,000 footage)<br/>deterministically from fixed UUIDs, parameterised (TINY for tests,<br/>REFERENCE for the spec); determinism + spec-count + save/open tested.<br/>Remaining: the faithful 5-layer reference comp (§1, LUT/glow/retime)"]
+    BENCH["◑ Benchmark harness started (13 §7.3) — a criterion bench<br/>(lumit-project/benches/document_scale) measures the document-scale<br/>S2–S5 on the REFERENCE stress fixture: save, open (~194 ms locally),<br/>commit, undo. Runs on demand (cargo bench); compiles in CI but is not<br/>a gate yet. Remaining: the B3–B11 render/playback/export benches<br/>(need the pixel-pass migration) and wiring budgets into CI (PERFCI)"]
+    PERFCI["Perf budgets gate merges in CI (13 §7.3, 16)"]
+    EXRGOLD["Golden-frame EXR tests per platform (14 §6)"]
+    KITTEST["egui_kittest UI test harness"]
+    UICOV["Coverage gate: UI crates (14 §6)"]
+    LAVACI["CI software-GPU step (lavapipe)"]
+    GPUCOV["Coverage gate + kernel tests for lumit-gpu in CI"]
+    FUZZ["cargo-fuzz on .lum / journal (14 §6)"]
+    DENYTOOL["cargo-deny + pinned toolchain +<br/>edition 2024 (14 §7, §9)"]
+    PEDANTIC["rust_2024_idioms + clippy pedantic sweep (14 §7)"]
+    I18N["i18n string externalisation (14 §7, K-005)"]
+    TRACING["tracing spans + diagnostics ring log +<br/>export action (14 §8, 13 §7.2)"]
+    CRASHH["Crash-handler process, Crashpad (05 §8, 14 §8)"]
+    GLOSSCI["Decision: glossary banned-terms CI gate —<br/>term list + scoping (14 §7, 01 §9)"]
+    JCOMPACT["✅ Undo-journal compaction (14 §5) — the in-memory undo/redo<br/>history is now bounded to MAX_UNDO_DEPTH (500): commits past the<br/>cap drop the oldest steps (state untouched), redo is transitively<br/>bounded, crash recovery unaffected (disk journal is separate).<br/>Compaction story documented at the type; regression-tested"]
+    AEFIXT["AE golden keyframe fixtures +<br/>denominator property test (04 impl notes)"]
+    FIXTURES --> BENCH
+    BENCH --> PERFCI
+    FIXTURES --> EXRGOLD
+    KITTEST --> UICOV
+    LAVACI --> GPUCOV
+    TRACING --> PROFILER
   end
-  RTEYE --> LADDER
-  RING -.->|smooths decode-bound realtime| RTEYE
+
+  subgraph SDESIGN["Design and accessibility"]
+    FONTS["Embed the full type stack:<br/>Schibsted Grotesk, Source Serif 4, JetBrains Mono (15 §1.1)"]
+    TYPESCALE["Apply the documented type scale (15 §7.1)"]
+    TOKENS["Split semantic theme tokens: disabled, fill_tonal,<br/>keyframe, marker, selection… — incl. Decision:<br/>Adjustment-layer colour per scheme (15 §4.1, §6.1)"]
+    CONTRASTCI["Contrast-floor CI check (15 §9)"]
+    ACCESSKIT["AccessKit wiring: roles, landmarks,<br/>timeline tree (15 §9)"]
+    FONTS --> TYPESCALE
+    TOKENS --> CONTRASTCI
+  end
+
+  subgraph SUI["UI shell"]
+    THUMBS["Thumbnail render service (engine-rendered)"]
+    HOVSCRUB["Project panel columns, sort, Ctrl+F,<br/>hover-scrub thumbnails (07 §3.1)"]
+    THUMBSLUM["thumbs/ inside the .lum container (10 §1)"]
+    PREVIEWPANEL["Preview panel: loop modes, fill-cache,<br/>mute, quality toggle (07 §9)"]
+    AUDIOPANEL["Audio panel + meters (07 §10)"]
+    WORKSPACES["Workspaces: presets, switcher,<br/>Alt+Shift+1–9, user CRUD (07 §1.4)"]
+    VIEWERCHROME["Viewer chrome cluster: magnification steps,<br/>transparency grid, rulers/guides, bg swatch,<br/>click-to-type time, viewer locks (07 §2.2, §2.6)"]
+    GIZMO["Transform gizmo: move/scale/rotate (07 §2.3)"]
+    MOTIONPATHS["Motion paths in the Viewer (07 §2.4)"]
+    DOCKX["Dock extras: floating frames, drop zones,<br/>backtick maximise, panel menus (07 §1)"]
+    MARKERSUI["Marker ribbon interactions:<br/>create/drag/labels/layer rows (07 §4.1)"]
+    SNAPX["Snapping to edits/keys/playhead +<br/>Ctrl suspend + indication (07 §4.5)"]
+    EXPORTQ["Export queue list UI:<br/>reorder/retry/cancel (07 §11)"]
+    PALETTEX["Palette: comps/panels categories,<br/>badges, recent-first (07 §12)"]
+    PERSIST["◑ Per-comp viewer/timeline state persistence (07 §1.5)<br/>— session restore shipped (OD-4): open tabs, fronted comp,<br/>playhead, selection + twirls, per project path.<br/>Remaining: viewer locks, column state, per-comp zoom"]
+    FOCUSNAV["Focus cycling Ctrl+F6, Tab traversal,<br/>arrow nav (07 §14)"]
+    PERCOMPRES["Per-comp preview-resolution state (07 §2.2)"]
+    THUMBS --> HOVSCRUB
+    THUMBS --> THUMBSLUM
+    PREVIEWPANEL --> WORKSPACES
+    AUDIOPANEL --> WORKSPACES
+    GIZMO --> MOTIONPATHS
+  end
+  RTEYE --> PREVIEWPANEL
+  ACCESSKIT --> FOCUSNAV
+
+  subgraph SFX["Effects and model"]
+    STRENGTHM["K-035 universal per-effect strength matte<br/>host plumbing (08)"]
+    ANIMMASK["Animated keyframed masks (03 §7)"]
+    TRANSITIONS["Masked transitions — Gate 3 (16)"]
+    SMOOTHZOOM["Smooth-zoom effect (16 Phase 3)"]
+    FXDEFER["Doc-flagged effect deferrals: glow falloff/CA,<br/>LUT tetrahedral, echo transforms,<br/>matte-key spatial, vignette tint… (08)"]
+    GRADELIB["Shipped grade-preset library ≥40 +<br/>live thumbnails (08 §3.10)"]
+    ANIMMASK --> TRANSITIONS
+  end
+  THUMBS --> GRADELIB
+
+  subgraph SPOST["Post-v1 by design"]
+    STENCIL["Stencil / Silhouette / Alpha-add mattes (06 §3.5)"]
+    TIER2["18 Tier-2 effects (08 §4)"]
+    LOUDNESS["Loudness normalisation −14 LUFS (09 §8)"]
+    COMPOSER["The Composer (09 §9)"]
+    OTIO["OTIO interchange (10 §6)"]
+    FIRSTRUN["First-run screen (K-006)"]
+    SHAPEL["Shape layers (03 §9.2)"]
+  end
+  ANIMMASK --> SHAPEL
+
+  subgraph SFILE["File format and relink"]
+    FPRINT["✅ MediaRef content fingerprint (10 §2, 03 §3) — Fingerprint type<br/>(size + mtime + blake3 head/tail hash) on MediaRef, optional + skipped<br/>when unset so old projects round-trip byte-identical; lumit-project::<br/>fingerprint_path computes it (≤2×64 KiB read, cheap on huge footage);<br/>likely_same_content matches a moved/copied file by content. Tested.<br/>Unblocks the relink resolver (step 3)"]
+    RELINK["✅ Relink resolver: 4-step + sibling auto-relink (10 §2) —<br/>lumit-project::resolve_media tries relative → absolute →<br/>fingerprint search (size-filtered walk of search roots + project<br/>tree) → Missing; path_mapping/apply_mapping relink siblings that<br/>moved the same way. Pure/tested (5 tests). Remaining: the relink<br/>dialogue UI (RELINKUI) + calling this from open()"]
+    RELINKUI["Missing-footage badge + relink flow (07 §3.3)"]
+    COLLECT["✅ Collect-for-sharing (10 §2, K-065) — lumit-project::<br/>collect_for_sharing copies every located reference into<br/>dest/media/ (colliding names disambiguated), rewrites refs<br/>project-relative with nothing machine-specific, reports<br/>unlocatable media instead of failing. Tested (3). Remaining:<br/>the menu command + save-into-dest wiring (lumit-ui)"]
+    MIGRATE["✅ Format migration framework (10 §1, 03 §12) — an ordered<br/>Migration chain transforms raw project.json (as serde Value, before<br/>typing) version→version; open() walks an older file up to the current<br/>schema, current files take the direct path unchanged. Bounded (never<br/>loops on a malformed chain). Chain empty today (0.1.0 is first);<br/>each schema bump appends one step. Tested (3, synthetic chain)"]
+    RISKYOPS["Autosave before risky ops (10 §4)"]
+    TEMPLATEO["New-from-template open mode (10 §5)"]
+    FPRINT --> RELINK
+    RELINK --> RELINKUI
+    RELINK --> COLLECT
+  end
+
+  subgraph SAE["AE import (16 Phase 4)"]
+    RIFX["RIFX .aep parser in lumit-project (11 §7)"]
+    MAPPER["AE→Lumit mapper: fidelity matrix +<br/>ae-effect-map.toml (11 §4, §5)"]
+    BRIDGE["Bridge .zxp panel + .lum-bundle format (11 §2)"]
+    IMPREPORT["Import report panel + placeholder badges (11 §6, §9)"]
+    AEGOLD["AE golden-frame tests (11 §5)"]
+    IMPRELINK["Footage relink chain on import (11 §2.5)"]
+    TRIMP["AE Time-Remap import driver (04 §13.1)"]
+    LOTTIE["Lottie/bodymovin importer (11 §8) (post-v1)"]
+    RIFX --> MAPPER
+    BRIDGE --> MAPPER
+    MAPPER --> IMPREPORT
+    MAPPER --> AEGOLD
+    MAPPER --> TRIMP
+    MAPPER --> LOTTIE
+  end
+  RELINK --> IMPRELINK
+  MAPPER --> IMPRELINK
 
   subgraph SMEDIA["Media and colour"]
     DECODER["Persistent per-stream decoders (05 §2, 06 §3.2)"]
@@ -98,16 +267,6 @@ flowchart TD
     PRORES --> ALPHAOUT
     PROXYGEN --> PROXYUI
   end
-
-  subgraph SCACHE["Cache tiers"]
-    FP16DISK["fp16 LZ4 planes + colourspace marker on disk (06 §5.4) —<br/>the disk tier ALREADY does LZ4 + a magic/format/colourspace/size<br/>header for RGBA8 (today's producible format); the fp16-planes format<br/>tag is blocked on the working fp16 frame reaching the CPU, i.e. the<br/>pixel-pass migration — not a standalone task"]
-    GREEDY["✅ GreedyDual eviction + pinning (06 §5.3) — ByteLru now evicts by<br/>staleness × size ÷ recompute-cost (the 'stale × cheap × large' rule),<br/>reduces to LRU for equal size/cost so callers are unchanged; pin/unpin<br/>protects the displayed frame + playhead window, bounded overage when only<br/>pins remain. Cost hints via insert_with_cost. Tested. Remaining: caller<br/>adoption (pass real costs / pin the playhead window) + VRAM→RAM demotion<br/>(waits on the VRAM tier)"]
-    SQLIDX["index.db SQLite cache index (06 §5.4)"]
-    VRAMTIER["VRAM cache tier (06 §5.1)"]
-    CACHEBAR3["Cache-bar third tier + all-mint ramp (15 §6.3)"]
-    VRAMTIER --> CACHEBAR3
-  end
-  TEXPOOL --> VRAMTIER
 
   subgraph SAUDIO["Audio"]
     GAIN["✅ Per-layer gain / volume keyframes (09 §3.1, §6) —<br/>shipped K-172 (desk session): Layer.volume_db, dB with a −∞ knee,<br/>envelope-baked fades identical in playback + export"]
@@ -151,80 +310,6 @@ flowchart TD
     FLATPAK --> FLATHUB
   end
 
-  subgraph SUI["UI shell"]
-    THUMBS["Thumbnail render service (engine-rendered)"]
-    HOVSCRUB["Project panel columns, sort, Ctrl+F,<br/>hover-scrub thumbnails (07 §3.1)"]
-    THUMBSLUM["thumbs/ inside the .lum container (10 §1)"]
-    PREVIEWPANEL["Preview panel: loop modes, fill-cache,<br/>mute, quality toggle (07 §9)"]
-    AUDIOPANEL["Audio panel + meters (07 §10)"]
-    WORKSPACES["Workspaces: presets, switcher,<br/>Alt+Shift+1–9, user CRUD (07 §1.4)"]
-    VIEWERCHROME["Viewer chrome cluster: magnification steps,<br/>transparency grid, rulers/guides, bg swatch,<br/>click-to-type time, viewer locks (07 §2.2, §2.6)"]
-    GIZMO["Transform gizmo: move/scale/rotate (07 §2.3)"]
-    MOTIONPATHS["Motion paths in the Viewer (07 §2.4)"]
-    DOCKX["Dock extras: floating frames, drop zones,<br/>backtick maximise, panel menus (07 §1)"]
-    MARKERSUI["Marker ribbon interactions:<br/>create/drag/labels/layer rows (07 §4.1)"]
-    SNAPX["Snapping to edits/keys/playhead +<br/>Ctrl suspend + indication (07 §4.5)"]
-    EXPORTQ["Export queue list UI:<br/>reorder/retry/cancel (07 §11)"]
-    PALETTEX["Palette: comps/panels categories,<br/>badges, recent-first (07 §12)"]
-    PERSIST["◑ Per-comp viewer/timeline state persistence (07 §1.5)<br/>— session restore shipped (OD-4): open tabs, fronted comp,<br/>playhead, selection + twirls, per project path.<br/>Remaining: viewer locks, column state, per-comp zoom"]
-    FOCUSNAV["Focus cycling Ctrl+F6, Tab traversal,<br/>arrow nav (07 §14)"]
-    PERCOMPRES["Per-comp preview-resolution state (07 §2.2)"]
-    THUMBS --> HOVSCRUB
-    THUMBS --> THUMBSLUM
-    PREVIEWPANEL --> WORKSPACES
-    AUDIOPANEL --> WORKSPACES
-    GIZMO --> MOTIONPATHS
-  end
-  RTEYE --> PREVIEWPANEL
-
-  subgraph SRETIME["Retime surface — owner: leave ALL of this until last"]
-    FREEZE["Wire freeze_at_playhead (04 §7.3)"]
-    HOLDP["Hold preset in the ramp shelf (04 §12.2)"]
-    MERGEB["Wire merge_boundary on boundary delete (04 §5.4)"]
-    RCHROME["Graph chrome: kink badge, RATE/MAP chips,<br/>source-extent band, media-end line (04 §6, §9)"]
-    DRIFTB["Persistent fitted-drift badge (04 §9.2)"]
-    REVUI["Reverse toggle + lock glyph +<br/>negative-region editing (04 §6.2)"]
-    NUMENTRY["Speed-lens numeric % entry +<br/>Alt-compensated edit (04 §9.2)"]
-    QUANTB["Bulk quantise boundaries to beats (04 §12.3)"]
-    STRETCHOP["Stretch op rewriting the Retime store (04 §11.2)"]
-    OUTTRIM["Outward trim extends map at constant speed (04 §7.3)"]
-    RTCOPY["Copy/paste retime + paste-attributes (04 §8.2)"]
-    FREEZE --> HOLDP
-  end
-  RATEEYE --> DRIFTB
-
-  subgraph SFILE["File format and relink"]
-    FPRINT["✅ MediaRef content fingerprint (10 §2, 03 §3) — Fingerprint type<br/>(size + mtime + blake3 head/tail hash) on MediaRef, optional + skipped<br/>when unset so old projects round-trip byte-identical; lumit-project::<br/>fingerprint_path computes it (≤2×64 KiB read, cheap on huge footage);<br/>likely_same_content matches a moved/copied file by content. Tested.<br/>Unblocks the relink resolver (step 3)"]
-    RELINK["✅ Relink resolver: 4-step + sibling auto-relink (10 §2) —<br/>lumit-project::resolve_media tries relative → absolute →<br/>fingerprint search (size-filtered walk of search roots + project<br/>tree) → Missing; path_mapping/apply_mapping relink siblings that<br/>moved the same way. Pure/tested (5 tests). Remaining: the relink<br/>dialogue UI (RELINKUI) + calling this from open()"]
-    RELINKUI["Missing-footage badge + relink flow (07 §3.3)"]
-    COLLECT["✅ Collect-for-sharing (10 §2, K-065) — lumit-project::<br/>collect_for_sharing copies every located reference into<br/>dest/media/ (colliding names disambiguated), rewrites refs<br/>project-relative with nothing machine-specific, reports<br/>unlocatable media instead of failing. Tested (3). Remaining:<br/>the menu command + save-into-dest wiring (lumit-ui)"]
-    MIGRATE["✅ Format migration framework (10 §1, 03 §12) — an ordered<br/>Migration chain transforms raw project.json (as serde Value, before<br/>typing) version→version; open() walks an older file up to the current<br/>schema, current files take the direct path unchanged. Bounded (never<br/>loops on a malformed chain). Chain empty today (0.1.0 is first);<br/>each schema bump appends one step. Tested (3, synthetic chain)"]
-    RISKYOPS["Autosave before risky ops (10 §4)"]
-    TEMPLATEO["New-from-template open mode (10 §5)"]
-    FPRINT --> RELINK
-    RELINK --> RELINKUI
-    RELINK --> COLLECT
-  end
-
-  subgraph SAE["AE import (16 Phase 4)"]
-    RIFX["RIFX .aep parser in lumit-project (11 §7)"]
-    MAPPER["AE→Lumit mapper: fidelity matrix +<br/>ae-effect-map.toml (11 §4, §5)"]
-    BRIDGE["Bridge .zxp panel + .lum-bundle format (11 §2)"]
-    IMPREPORT["Import report panel + placeholder badges (11 §6, §9)"]
-    AEGOLD["AE golden-frame tests (11 §5)"]
-    IMPRELINK["Footage relink chain on import (11 §2.5)"]
-    TRIMP["AE Time-Remap import driver (04 §13.1)"]
-    LOTTIE["Lottie/bodymovin importer (11 §8) (post-v1)"]
-    RIFX --> MAPPER
-    BRIDGE --> MAPPER
-    MAPPER --> IMPREPORT
-    MAPPER --> AEGOLD
-    MAPPER --> TRIMP
-    MAPPER --> LOTTIE
-  end
-  RELINK --> IMPRELINK
-  MAPPER --> IMPRELINK
-
   subgraph SPLUG["Plugins and expressions (post-main-app, 12 §1)"]
     SANDBOX["Sandbox process substrate:<br/>broker, shared memory, watchdog (K-066)"]
     OFXH["OFX host: suites, actions, param bridge (12 §2)"]
@@ -241,68 +326,6 @@ flowchart TD
     QJS --> EXPRAPI
     EXPRAPI --> EXPRREADS
   end
-
-  subgraph SENG["Engineering and CI"]
-    TYPEDTIME["Typed rational time through eval +<br/>FrameIndex newtype (14 §2)"]
-    AUDIDX["No-panic indexing in the audio callback (14 §4)"]
-    HOTSWEEP["Hot-path sweep → enable indexing_slicing /<br/>arithmetic_side_effects lints (14 §4)"]
-    FIXTURES["◑ Stress fixture DONE, reference comp remaining (13 §1, §7.3) —<br/>lumit-project::fixtures::stress_document builds the 13 §2.1 doc<br/>(200 comps / 5,000 layers / 250,000 keyframes / 2,000 footage)<br/>deterministically from fixed UUIDs, parameterised (TINY for tests,<br/>REFERENCE for the spec); determinism + spec-count + save/open tested.<br/>Remaining: the faithful 5-layer reference comp (§1, LUT/glow/retime)"]
-    BENCH["◑ Benchmark harness started (13 §7.3) — a criterion bench<br/>(lumit-project/benches/document_scale) measures the document-scale<br/>S2–S5 on the REFERENCE stress fixture: save, open (~194 ms locally),<br/>commit, undo. Runs on demand (cargo bench); compiles in CI but is not<br/>a gate yet. Remaining: the B3–B11 render/playback/export benches<br/>(need the pixel-pass migration) and wiring budgets into CI (PERFCI)"]
-    PERFCI["Perf budgets gate merges in CI (13 §7.3, 16)"]
-    EXRGOLD["Golden-frame EXR tests per platform (14 §6)"]
-    KITTEST["egui_kittest UI test harness"]
-    UICOV["Coverage gate: UI crates (14 §6)"]
-    LAVACI["CI software-GPU step (lavapipe)"]
-    GPUCOV["Coverage gate + kernel tests for lumit-gpu in CI"]
-    FUZZ["cargo-fuzz on .lum / journal (14 §6)"]
-    DENYTOOL["cargo-deny + pinned toolchain +<br/>edition 2024 (14 §7, §9)"]
-    PEDANTIC["rust_2024_idioms + clippy pedantic sweep (14 §7)"]
-    I18N["i18n string externalisation (14 §7, K-005)"]
-    TRACING["tracing spans + diagnostics ring log +<br/>export action (14 §8, 13 §7.2)"]
-    CRASHH["Crash-handler process, Crashpad (05 §8, 14 §8)"]
-    GLOSSCI["Decision: glossary banned-terms CI gate —<br/>term list + scoping (14 §7, 01 §9)"]
-    JCOMPACT["✅ Undo-journal compaction (14 §5) — the in-memory undo/redo<br/>history is now bounded to MAX_UNDO_DEPTH (500): commits past the<br/>cap drop the oldest steps (state untouched), redo is transitively<br/>bounded, crash recovery unaffected (disk journal is separate).<br/>Compaction story documented at the type; regression-tested"]
-    AEFIXT["AE golden keyframe fixtures +<br/>denominator property test (04 impl notes)"]
-    FIXTURES --> BENCH
-    BENCH --> PERFCI
-    FIXTURES --> EXRGOLD
-    KITTEST --> UICOV
-    LAVACI --> GPUCOV
-    TRACING --> PROFILER
-  end
-
-  subgraph SDESIGN["Design and accessibility"]
-    FONTS["Embed the full type stack:<br/>Schibsted Grotesk, Source Serif 4, JetBrains Mono (15 §1.1)"]
-    TYPESCALE["Apply the documented type scale (15 §7.1)"]
-    TOKENS["Split semantic theme tokens: disabled, fill_tonal,<br/>keyframe, marker, selection… — incl. Decision:<br/>Adjustment-layer colour per scheme (15 §4.1, §6.1)"]
-    CONTRASTCI["Contrast-floor CI check (15 §9)"]
-    ACCESSKIT["AccessKit wiring: roles, landmarks,<br/>timeline tree (15 §9)"]
-    FONTS --> TYPESCALE
-    TOKENS --> CONTRASTCI
-  end
-  ACCESSKIT --> FOCUSNAV
-
-  subgraph SFX["Effects and model"]
-    STRENGTHM["K-035 universal per-effect strength matte<br/>host plumbing (08)"]
-    ANIMMASK["Animated keyframed masks (03 §7)"]
-    TRANSITIONS["Masked transitions — Gate 3 (16)"]
-    SMOOTHZOOM["Smooth-zoom effect (16 Phase 3)"]
-    FXDEFER["Doc-flagged effect deferrals: glow falloff/CA,<br/>LUT tetrahedral, echo transforms,<br/>matte-key spatial, vignette tint… (08)"]
-    GRADELIB["Shipped grade-preset library ≥40 +<br/>live thumbnails (08 §3.10)"]
-    ANIMMASK --> TRANSITIONS
-  end
-  THUMBS --> GRADELIB
-
-  subgraph SPOST["Post-v1 by design"]
-    STENCIL["Stencil / Silhouette / Alpha-add mattes (06 §3.5)"]
-    TIER2["18 Tier-2 effects (08 §4)"]
-    LOUDNESS["Loudness normalisation −14 LUFS (09 §8)"]
-    COMPOSER["The Composer (09 §9)"]
-    OTIO["OTIO interchange (10 §6)"]
-    FIRSTRUN["First-run screen (K-006)"]
-    SHAPEL["Shape layers (03 §9.2)"]
-  end
-  ANIMMASK --> SHAPEL
 ```
 
 ## Suggested attack order
