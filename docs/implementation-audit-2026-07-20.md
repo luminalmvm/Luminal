@@ -60,12 +60,15 @@ locally (fmt, clippy `-D warnings`, 638 + 64 GPU tests). Tracked as TF-1..4 / OD
   (regression: `precomp_audio_follows_nested_and_carrier_mutes`). Precomp rows with nested
   audio carry the speaker. And the restored project's first frame re-renders as probes land
   (`MediaRegistry::poll` reports arrivals) instead of waiting for a playhead move.
-- **Linux becomes a proven target (TF-3).** A `tests (Linux, with media)` CI job — desktop
-  system libs, the same BtbN n7.1 FFmpeg the Windows job takes, LLVM 18, clippy, the
-  workspace tests, the GPU oracles under Mesa's lavapipe, and a release compile check — plus
-  **Flatpak packaging** (`packaging/flatpak/`) that bundles its own FFmpeg 7.1 and publishes
-  an installable `lumit.flatpak` artifact per run. K-082 said Linux is supported; it is now
-  continuously proven rather than asserted. **A finding it produced immediately:** the
+- **Linux becomes a proven target (TF-3) — CI-green.** A `tests (Linux, with media)` job:
+  desktop system libs, the same BtbN n7.1 FFmpeg the Windows job takes, the distro's clang 18,
+  clippy `-D warnings`, the workspace tests, the GPU oracles under Mesa's lavapipe, and a
+  release compile check. K-082 said Linux is supported; it is now continuously proven rather
+  than asserted. Notable side effect: **the GPU oracles now run in CI at all** — 64 tests that
+  previously only ever ran on the owner's machine (macOS's job runs them too, but lavapipe
+  proves they hold on a machine with no graphics card). **Flatpak packaging**
+  (`packaging/flatpak/`, bundling its own FFmpeg 7.1) is committed and its CI job is still
+  being brought up — not yet green, so no `lumit.flatpak` artifact is published yet. **A finding it produced immediately:** the
   accumulation motion-blur *still-scene bit-identity* (docs/08 §3.26, impl/temporal-rerender
   §3) holds on GPUs but not on lavapipe, where the sum-and-divide rounds one 8-bit step away
   from the single composite. Not a Lumit bug — two mathematically identical paths, and fp16

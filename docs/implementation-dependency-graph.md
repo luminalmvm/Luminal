@@ -302,8 +302,8 @@ flowchart TD
   end
 
   subgraph SDIST["Distribution"]
-    FLATPAK["✅ Linux Flatpak bundle — manifest + CI artifact (TF-3);<br/>bundles FFmpeg 7.1, installs on any distro"]
-    LINUXCI["✅ Linux CI: clippy, tests, GPU oracles on lavapipe,<br/>release compile check (TF-3)"]
+    FLATPAK["◑ Linux Flatpak bundle — manifest written (TF-3),<br/>bundles its own FFmpeg 7.1; CI job still being brought up,<br/>so no installable artifact published yet"]
+    LINUXCI["✅ Linux CI green — clippy, tests, GPU oracles on lavapipe<br/>(64 of them, first time they run in CI at all),<br/>release compile check (TF-3)"]
     MACAPP["macOS .app bundle + signing/notarisation"]
     WINPKG["Windows installer (MSI/MSIX) + code signing"]
     FLATHUB["Flathub submission (needs screenshots,<br/>a narrower --filesystem than host)"]

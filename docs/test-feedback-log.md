@@ -364,7 +364,8 @@ Four notes relayed by the owner; the tester started on main, then switched to th
   bundle — the runtime's is 6.x — plus a desktop entry, AppStream metainfo and the brand icon;
   a CI job generates the offline cargo sources from Cargo.lock (a Flatpak build has no
   network) and publishes `lumit.flatpak` as a run artifact, which is what a Linux tester
-  installs on any distribution. Both were the tester's own suggestion, verbatim.
+  installs on any distribution — the Linux test job is **CI-green**; the Flatpak job is still
+  being brought up, so it publishes no artifact yet. Both were the tester's own suggestion.
   Two things Linux CI caught on its first runs, both now fixed: the upstream LLVM 18 tarball
   links `libtinfo.so.5` (an ncurses ABI Ubuntu 24.04 dropped) so bindgen could not load it —
   the distro's own clang 18 is used instead; and the accumulation still-scene bit-identity
