@@ -54,6 +54,14 @@ locally (fmt, clippy `-D warnings`, 638 + 64 GPU tests). Tracked as TF-1..4 / OD
   walk), and precomp carriers get the Audio group's Volume row; **audio-only rows draw no
   eye** (nothing to show or hide); the **per-layer waveform lane rides a live bar drag**
   (reads `move_edit`, the same preview the bar draws from).
+- **Round 4 (tester privacy report, TF-36 / K-173):** saved projects contained every media
+  file's absolute path — usernames included — while docs/10 §2 simultaneously promised "no
+  local usernames" ever in the file (a self-contradiction the audit missed: the same section
+  also said references *store* the absolute path). Resolved for privacy: `absolute_path` is
+  session-state (`skip_serializing`; legacy files still load theirs), saves rebase relative
+  paths against the project folder and stamp fingerprints, and open now actually runs the
+  built-but-unwired resolver — the tester's moved-project-folder breakage was exactly this
+  missing wiring. The relink dialogue for still-missing files stays future work.
 - **Round 3 (owner re-test, OD-8/OD-9):** the GEN-4 sync's scoping hole — `sync_comp_audio`
   managed only the fronted comp, so an edit inside a fronted precomp stale-played the
   PARENT's loaded mix; it now also reconciles whichever comp's mix sits in the engine

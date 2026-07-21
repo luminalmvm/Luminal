@@ -528,3 +528,15 @@ hotkeys, and their absence makes testing feel clunky).
 - [ ] TF-33 GPU-accelerated pixel sorter.
 - [ ] TF-34 Dithering / Bayer filters (one combined effect).
 - [ ] TF-35 Edge detection.
+
+- [x] TF-36 **Absolute paths in saved projects leak usernames; a moved project stopped
+  loading its files.** (Tester, flagged sensitive.) Fixed as K-173: `MediaRef.absolute_path`
+  is session-state — never serialized (legacy files still load theirs as a fallback); saves
+  rebase every located reference relative to the project folder (forward slashes,
+  cross-platform) and stamp missing fingerprints; opening runs the docs/10 §2 resolver
+  (relative → legacy absolute → fingerprint search over the project tree) before anything
+  probes, so a moved project folder opens intact and moved-within-the-tree footage is found
+  by content. Missing files are named in a notice and keep their reference untouched; the
+  interactive relink dialogue remains future work. Tests at the serde, rebase, and
+  resolve-all levels; docs/10 §2's self-contradiction ("stores the absolute path" vs "no
+  local usernames ever") resolved in privacy's favour.
