@@ -123,6 +123,8 @@ pub(crate) enum PanelAction {
         target: Option<uuid::Uuid>,
     },
     CompSettings(uuid::Uuid),
+    /// Point a missing footage item at its new location (docs/07 §3.3).
+    Relink(uuid::Uuid),
     Delete(uuid::Uuid),
 }
 
@@ -288,6 +290,7 @@ pub(crate) fn project_panel(
             }
             PanelAction::MoveTo { item, target } => app.move_item_to_folder(item, target),
             PanelAction::CompSettings(id) => app.open_comp_settings(id),
+            PanelAction::Relink(id) => app.relink_item_dialog(id),
             PanelAction::Delete(id) => {
                 app.commit(lumit_core::Op::RemoveItem { id });
                 // A deleted comp also loses its Timeline tab (neighbour takes
@@ -477,6 +480,24 @@ pub(crate) fn project_header(
                                         .on_hover_text(
                                             "Variable frame rate: conformed to the median rate",
                                         );
+                                    }
+                                });
+                            }
+                            Some(MediaStatus::Missing) => {
+                                // Absent, not broken (docs/07 §3.3): say where
+                                // it was looked for and offer the way out,
+                                // rather than scolding.
+                                ui.horizontal(|ui| {
+                                    ui.label(
+                                        egui::RichText::new("missing")
+                                            .small()
+                                            .color(theme.warning),
+                                    )
+                                    .on_hover_text(
+                                        "This file is not where the project expects it.                                          Relink it to point at its new location.",
+                                    );
+                                    if ui.small_button("Relink…").clicked() {
+                                        actions.push(PanelAction::Relink(item.id()));
                                     }
                                 });
                             }
@@ -720,7 +741,18 @@ pub(crate) fn item_rows(
     let is_folder = matches!(item, ProjectItem::Folder(_));
     // Type glyph + tint carried on the left of the row (replaces the old text
     // tag): comps take the accent, the rest a muted tint (docs/15-DESIGN.md §5).
+    // Missing footage wears its state in the tree, not just the info header
+    // (docs/07 §3.3): the glyph turns to a warning-tinted unlink, so a broken
+    // project reads at a glance down the list.
+    #[cfg(feature = "media")]
+    let missing = matches!(
+        app.media.map.get(&id),
+        Some(crate::app_state::media::MediaStatus::Missing)
+    );
+    #[cfg(not(feature = "media"))]
+    let missing = false;
     let (type_icon, tag_colour) = match item {
+        ProjectItem::Footage(_) if missing => (Icon::Unlink, theme.warning),
         ProjectItem::Footage(_) => (Icon::Footage, theme.text_muted),
         ProjectItem::Folder(_) => (Icon::Folder, theme.text_muted),
         ProjectItem::Composition(_) => (Icon::Comp, theme.accent),

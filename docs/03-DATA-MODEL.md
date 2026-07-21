@@ -84,9 +84,9 @@ struct MediaRef {
 
 - a `FootageInterpretation` (frame-rate override, alpha mode, colour-space tag, loop count,
   timecode policy) — v1 treats every source as sRGB with no per-item overrides;
-- the **missing**-footage placeholder slate + interactive relink dialogue
-  ([07-UI-SPEC.md](07-UI-SPEC.md)) — the automatic resolver (relative → legacy absolute →
-  fingerprint search) is wired on open; only the dialogue for still-missing files remains.
+(The **missing**-footage state is built: the automatic resolver runs on open, a lost file
+gets a project badge and a generated colour-bar slate in comps, and *Relink…* re-points it
+along with its siblings — [07-UI-SPEC.md](07-UI-SPEC.md) §3.3.)
 
 ---
 

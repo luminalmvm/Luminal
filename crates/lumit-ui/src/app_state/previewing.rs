@@ -547,6 +547,7 @@ impl AppState {
                                     // resolution); footage layers first.
                                     temporal: Vec::new(),
                                     flow_neighbour: None,
+                                    slate: false,
                                 });
                             }
                         }
@@ -577,6 +578,28 @@ impl AppState {
                     let Some(ProjectItem::Footage(f)) = doc.item(*item) else {
                         continue;
                     };
+                    // Missing media still draws (docs/07 §3.3): a slate job at
+                    // comp size, so the layer shows test bars in place of the
+                    // picture instead of silently vanishing. Sized to the comp
+                    // because a file we cannot open has no size to report.
+                    if matches!(self.media.map.get(item), Some(media::MediaStatus::Missing)) {
+                        jobs.push(preview::CompJob {
+                            layer: layer.id,
+                            item: *item,
+                            path: PathBuf::from(&f.media.absolute_path),
+                            source_frame: 0,
+                            target_width: None,
+                            natural_w: comp.width,
+                            natural_h: comp.height,
+                            blend: None,
+                            flow: false,
+                            flow_full: false,
+                            temporal: Vec::new(),
+                            flow_neighbour: None,
+                            slate: true,
+                        });
+                        continue;
+                    }
                     let Some(media::MediaStatus::Ready {
                         probe,
                         frames: src_frames,
@@ -657,6 +680,7 @@ impl AppState {
                             &layer.effects,
                             layer.switches.fx,
                         ),
+                        slate: false,
                     });
                 }
             }

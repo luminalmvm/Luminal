@@ -245,6 +245,15 @@ touching the file (K-024):
   on relinking one item, Lumit MUST scan the chosen folder for the project's other missing
   items by filename and offer to batch-relink the matches. A *Find missing footage* search
   filter lists all missing items in one view.
+  **Shipped:** `MediaStatus::Missing` is its own state, distinct from an unreadable file —
+  the project row wears a crossed-link glyph in the warning tint, the info header reads
+  "missing" with a *Relink…* button, and the layer renders **generated colour bars**
+  (`lumit_media::slate`, drawn at comp size, never a bundled image) in preview *and* export,
+  so the mistake cannot hide in a delivered file (K-031). Relinking one item batch-relinks
+  every other missing item whose name is found beside the chosen file, in a single undo step,
+  each rebased relative and re-fingerprinted (K-173). Still to build: the *Find missing
+  footage* filter, and a dedicated slate for a file that is present but **unreadable** —
+  that state currently shows the row's "unreadable" note and no picture.
 
 ---
 

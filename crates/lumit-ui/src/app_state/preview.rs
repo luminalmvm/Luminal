@@ -56,6 +56,11 @@ pub struct CompJob {
     /// stamps it onto [`CompLayerPixels::flow_field`]. See
     /// [`lumit_core::fx::stack_flow_neighbour`].
     pub flow_neighbour: Option<i32>,
+    /// The file could not be found (docs/07 §3.3): the worker synthesises the
+    /// test-bar slate at the layer's size instead of decoding, so a comp with
+    /// missing footage shows unmistakably-absent bars rather than silent
+    /// black — and never fails the whole frame.
+    pub slate: bool,
 }
 
 pub struct CompLayerPixels {
@@ -294,7 +299,20 @@ fn decode_comp(
             frame: job.source_frame,
             target_width: job.target_width,
         };
-        let px = decode(decoders, cache, &req)?;
+        // Missing media renders the slate; nothing else about the layer
+        // changes, so transforms, effects and blending all still apply.
+        let px = if job.slate {
+            let (w, h) = (job.natural_w.max(1), job.natural_h.max(1));
+            FramePixels {
+                width: w,
+                height: h,
+                rgba: lumit_media::slate::colour_bars(w, h),
+                frame: job.source_frame,
+                item: job.item,
+            }
+        } else {
+            decode(decoders, cache, &req)?
+        };
         // Neighbour frames for a temporal effect (job.temporal is empty
         // for a plain layer, so this loop does nothing then). A neighbour
         // that fails to decode is simply dropped — a missing echo tap

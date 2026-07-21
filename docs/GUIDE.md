@@ -1185,8 +1185,18 @@ Two mechanisms make this safe, and you'll see them by name in the code:
   does an old save's absolute path still point somewhere real? If not, the fingerprint
   search combs the project's folder tree for a file with the same content — so footage that
   was reorganised into a subfolder is found by what it *is*, not where it was. Anything
-  still missing is named in a notice and its reference kept intact, so nothing is lost for
-  the day the relink dialogue exists.
+  still missing is named in a notice and its reference kept intact.
+- **When footage goes missing, you see colour bars** — the broadcast test pattern, the same
+  one a television shows with no signal. The reasoning is that the alternative is worse: a
+  missing layer that renders *black* looks exactly like a deliberate edit, so the mistake
+  can survive all the way into an exported file. Bars cannot be mistaken for anything but
+  "there is nothing here". They appear in the Viewer and in exports alike, for the same
+  reason. In the Project panel the item wears a crossed-link icon and a **Relink…** button;
+  pointing it at the file's new home also relinks every *other* missing file sitting in that
+  same folder, in one undo step — losing a folder of footage is then one dialogue rather
+  than twenty. The pattern itself is drawn by arithmetic at whatever size is needed, not
+  loaded from a bundled image, so it is crisp at any resolution and adds nothing to the
+  download.
 - **Beat detection** (`lumit-audio::beat`) — the groundwork for cutting to the music. It
   slides a short window along the track and, at each step, measures how much *new* energy
   appeared since the last step (the "spectral flux"); a kick or snare makes that number

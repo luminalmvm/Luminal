@@ -62,6 +62,13 @@ locally (fmt, clippy `-D warnings`, 638 + 64 GPU tests). Tracked as TF-1..4 / OD
   paths against the project folder and stamp fingerprints, and open now actually runs the
   built-but-unwired resolver — the tester's moved-project-folder breakage was exactly this
   missing wiring. The relink dialogue for still-missing files stays future work.
+- **Round 5 (missing-footage flow, TF-37).** 07 §3.3's badge + placeholder slate + relink
+  flow, previously "not implemented", is built: absent media is its own `MediaStatus`, the
+  project row carries a crossed-link badge and a *Relink…* button, and a lost layer renders
+  **generated** colour bars (never a bundled asset) in preview and export alike — a missing
+  layer that rendered black could otherwise reach a delivered file unnoticed. Relinking one
+  item takes its siblings in the same folder with it. Closes the graph's RELINKUI node;
+  the *Find missing footage* filter and an unreadable-file slate remain.
 - **Round 3 (owner re-test, OD-8/OD-9):** the GEN-4 sync's scoping hole — `sync_comp_audio`
   managed only the fronted comp, so an edit inside a fronted precomp stale-played the
   PARENT's loaded mix; it now also reconciles whichever comp's mix sits in the engine

@@ -41,6 +41,8 @@ pub enum Icon {
     Unlock,
     /// Chain link (linked values, e.g. linked scale).
     Link,
+    /// A link with a cross — footage whose file cannot be found (docs/07 §3.3).
+    Unlink,
     /// Folder (a project folder).
     Folder,
     /// Film (the "new composition" button).
@@ -112,7 +114,7 @@ pub enum Icon {
 
 impl Icon {
     /// Every variant, for exhaustive iteration (tests, palettes).
-    pub const ALL: [Icon; 43] = [
+    pub const ALL: [Icon; 44] = [
         Icon::Pointer,
         Icon::Move,
         Icon::Rectangle,
@@ -124,6 +126,7 @@ impl Icon {
         Icon::Lock,
         Icon::Unlock,
         Icon::Link,
+        Icon::Unlink,
         Icon::Folder,
         Icon::Film,
         Icon::GraphCurve,
@@ -172,6 +175,7 @@ impl Icon {
             Icon::Lock => "lock",
             Icon::Unlock => "lock-slash",
             Icon::Link => "link",
+            Icon::Unlink => "link-xmark",
             Icon::Folder => "folder",
             Icon::Film => "movie",
             Icon::GraphCurve => "ease-curve-control-points",

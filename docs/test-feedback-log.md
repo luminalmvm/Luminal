@@ -540,3 +540,16 @@ hotkeys, and their absence makes testing feel clunky).
   interactive relink dialogue remains future work. Tests at the serde, rebase, and
   resolve-all levels; docs/10 §2's self-contradiction ("stores the absolute path" vs "no
   local usernames ever") resolved in privacy's favour.
+
+- [x] TF-37 **Missing footage: badge, slate, and the relink flow** (owner, closing the
+  graph's RELINKUI). `MediaStatus::Missing` is now distinct from `Failed` (absent ≠ broken):
+  the project tree row shows a crossed-link glyph in the warning tint, the info header reads
+  "missing" beside a *Relink…* button, and the layer renders **generated colour bars**
+  instead of vanishing — `lumit_media::slate`, pure arithmetic at comp size rather than a
+  bundled image, in preview and export both so a missing layer cannot silently reach a
+  delivered file (K-031). *Relink…* opens a picker on the item's own name and batch-relinks
+  every other missing item found beside the chosen file (07 §3.3), one undo step, each
+  rebased relative and re-fingerprinted (K-173). Slate frames stay cacheable and keyed on
+  the missing state, so a relink retires them. New `Op::SetMediaRef`. Tests: slate geometry
+  (4), op undo symmetry, plus the existing suite. Remaining: the *Find missing footage*
+  filter, and an unreadable-file slate (that state shows the row note but no picture).

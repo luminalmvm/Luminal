@@ -572,7 +572,16 @@ impl lumit_eval::SourceStamper for PreviewStamper<'_> {
         let Some(ProjectItem::Footage(f)) = self.doc.item(item) else {
             return None;
         };
-        let media::MediaStatus::Ready { probe, frames, .. } = self.media.map.get(&item)? else {
+        let status = self.media.map.get(&item)?;
+        // Missing media renders the slate (docs/07 §3.3), which is perfectly
+        // cacheable: it is a pure function of the size. Key it on the state
+        // and the path so relinking retires those frames — returning None
+        // here would instead make every frame of the comp unkeyable, so a
+        // project with one lost file would cache nothing at all.
+        if matches!(status, media::MediaStatus::Missing) {
+            return Some((format!("missing#{}", f.media.relative_path), 0));
+        }
+        let media::MediaStatus::Ready { probe, frames, .. } = status else {
             return None;
         };
         let video = probe.video.as_ref()?;
