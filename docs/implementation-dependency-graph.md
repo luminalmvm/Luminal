@@ -53,7 +53,10 @@ flowchart TD
     STRETCHOP["Stretch op rewriting the Retime store (04 §11.2)"]
     OUTTRIM["Outward trim extends map at constant speed (04 §7.3)"]
     RTCOPY["Copy/paste retime + paste-attributes (04 §8.2)"]
+    RTPARITY["Retime graph parity NOW (TF-24, owner): identical to any<br/>other property, except enabling seeds first+last keyframes.<br/>The AE-identical / Vegas-different split waits for the modes"]
+    RTEDGES["Retime edge cases (TF-16/23/27): first/last keys deletable;<br/>hold after the last key instead of continuing;<br/>the two-keyframe oddity (tester video pending)"]
     FREEZE --> HOLDP
+    RTPARITY --> RTEDGES
   end
   RATEEYE --> DRIFTB
 
@@ -153,7 +156,11 @@ flowchart TD
     GIZMO["Transform gizmo: move/scale/rotate (07 §2.3)"]
     MOTIONPATHS["Motion paths in the Viewer (07 §2.4)"]
     DOCKX["Dock extras: floating frames, drop zones,<br/>backtick maximise, panel menus (07 §1)"]
-    MARKERSUI["Marker ribbon interactions:<br/>create/drag/labels/layer rows (07 §4.1)"]
+    MARKERSUI["Marker ribbon interactions (07 §4.1) — tester-demanded slice<br/>first (TF-9/10): move markers after creation + labels<br/>(the create/drag/labels/layer-rows set)"]
+    PROJSEL["Project-panel selection semantics (TF-12..15):<br/>Shift = range select, Ctrl = toggle; a multi-drag moves the<br/>whole selection into a folder; folder rename; a drop indicator<br/>when dragging into a comp"]
+    ROWTARGETS["Whole-row click targets on layers/files/effects +<br/>effects-list hover/drag affordance + icons (TF-20..22)"]
+    TLPOLISH["Timeline input polish (TF-11/17/18/19): link-row bottom<br/>clipping; Alt-zoom must not also scroll; consider Ctrl-scroll<br/>zoom; keyframe/playhead/layer-edge frame-snap alignment"]
+    GRAPHPOLISH["Graph editor polish (TF-25/26/30): keys align to their<br/>lane/playhead positions; scrolling left of the first key;<br/>adjustment-layer keyframes visible in the graph"]
     SNAPX["Snapping to edits/keys/playhead +<br/>Ctrl suspend + indication (07 §4.5)"]
     EXPORTQ["Export queue list UI:<br/>reorder/retry/cancel (07 §11)"]
     PALETTEX["Palette: comps/panels categories,<br/>badges, recent-first (07 §12)"]
@@ -176,6 +183,10 @@ flowchart TD
     SMOOTHZOOM["Smooth-zoom effect (16 Phase 3)"]
     FXDEFER["Doc-flagged effect deferrals: glow falloff/CA,<br/>LUT tetrahedral, echo transforms,<br/>matte-key spatial, vignette tint… (08)"]
     GRADELIB["Shipped grade-preset library ≥40 +<br/>live thumbnails (08 §3.10)"]
+    SHAKEROT["Bug (TF-28): Shake Amplitude must scale the<br/>Rotation amount too"]
+    SCALEBEZ["Bug (TF-29): linked Scale squishes aspect under bezier<br/>animation — x/y ease apart though the ratio lock is on"]
+    POSTOPACITY["Bug (TF-31): Posterize on a zero-opacity adjustment still<br/>fully posterizes below — the held composite must blend back by<br/>coverage (mask × opacity), as docs/08 §3.25 already promises"]
+    NEWFX["Tester wish-list (TF-32..35): lens distortion, GPU pixel<br/>sorter, dithering/Bayer (one effect), edge detection"]
     ANIMMASK --> TRANSITIONS
   end
   THUMBS --> GRADELIB
@@ -278,11 +289,19 @@ flowchart TD
     TOOLTIPKEYS["Tooltip shortcut text (07 §13.2)"]
     MACMENU["macOS native menu ↔ keymap sync (07 §15)"]
     RAZORD["Decision: razor-on-C semantics —<br/>click-tool vs playhead cut (07 §4.4)"]
+    KEYSNOW["Tester round 2 quick wins (TF-6/7): Delete removes the<br/>selection (layers AND keyframes); a marker key that<br/>works during playback"]
+    KEYFULL["The FULL binding pass (TF-8, owner): every 07 §15 action<br/>bound or explicitly documented as not-yet-wired —<br/>must be thorough; wires lumit-keymap through the app"]
+    VEGASKEYS["Vegas keymap preset table (owner) —<br/>joins the shipped AE preset in lumit-keymap"]
+    ONBOARD["First-run onboarding modal (TF-8, owner): settings-style,<br/>expandable later; v1 = pick AE or Vegas bindings + a note<br/>they can be changed later. Supersedes K-006's post-v1<br/>stance — log the K-decision when it lands"]
     KEYMAP --> KEYS30
     KEYMAP --> AEKEYS
     KEYMAP --> TOOLTIPKEYS
     KEYMAP --> MACMENU
     RAZORD --> KEYS30
+    KEYMAP --> KEYFULL
+    KEYFULL --> ONBOARD
+    KEYMAP --> VEGASKEYS
+    VEGASKEYS --> ONBOARD
   end
 
   subgraph SDIST["Distribution"]

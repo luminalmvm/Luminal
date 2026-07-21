@@ -460,3 +460,63 @@ Four notes relayed by the owner; the tester started on main, then switched to th
   nothing re-rendered when they landed. `MediaRegistry::poll` now reports when results
   arrive, and the shell re-renders the shown frame — the first frame fills in as probes
   complete, no playhead nudge needed.
+
+# Tester feedback round 2 (owner's friend) — 2026-07-21, post-merge
+
+Owner's inline directions are folded into the items. Work is picked from the dependency
+graph, where these are wired in; the shortcuts group goes first (owner: users default to
+hotkeys, and their absence makes testing feel clunky).
+
+## Usability
+- [ ] TF-6 Delete key deletes the selection — layers and keyframes both.
+- [ ] TF-7 A hotkey inserts a marker at the playhead, and works during playback.
+- [ ] TF-8 (owner) **The full shortcut pass**: bind everything — including actions not yet
+  implemented where sensible — or document precisely which 07 §15 bindings are not wired
+  yet; must be thorough. With it, **start the first-run onboarding screen**: a settings-like
+  modal (expandable later), v1 content = choose AE or Vegas key-binding style, with a small
+  note that this can be changed later. (Supersedes K-006's post-v1 stance for the first-run
+  screen — log the K-decision when it lands. Needs a Vegas preset table in lumit-keymap
+  beside the shipped AE one.)
+- [ ] TF-9 Markers cannot be moved after creation.
+- [ ] TF-10 Markers cannot be given a label.
+- [ ] TF-11 Timeline property rows with a link/unlink axes button clip at the bottom.
+- [ ] TF-12 Project view: Shift-select acts like Ctrl-select (toggles clicked items) —
+  Shift should range-select from the previous selection; Ctrl toggles.
+- [ ] TF-13 Project view: dragging a multi-selection into a folder moves only one item.
+- [ ] TF-14 Folders cannot be renamed.
+- [ ] TF-15 Dragging from the Project tab into a comp shows no indicator of where the item
+  will land.
+- [ ] TF-16 Retime: the first and last keyframe cannot be deleted.
+- [ ] TF-17 Alt-scroll timeline zoom also scrolls the timeline vertically.
+- [ ] TF-18 Consider Ctrl-scroll as the (or an) intuitive zoom gesture.
+- [ ] TF-19 Keyframe markers do not align to the playhead / snap to frames correctly; layer
+  start/end times show the same misalignment.
+- [ ] TF-20 Click targets on layers, files and effects only cover the text, not the row
+  space containing it.
+- [ ] TF-21 The effects list needs hover/drag feedback making it read as clickable.
+- [ ] TF-22 Icons in the effects list.
+- [ ] TF-23 Retime continues advancing past the last keyframe — should hold.
+- [ ] TF-24 (owner) Retime's graph must, for now, be **identical to every other property's**,
+  with one exception: enabling it seeds a keyframe at the first and last frame. The bigger
+  split — identical in AE mode, entirely different in Vegas mode — comes with the mode work.
+- [ ] TF-25 Graph editor: keyframes are not aligned to their timeline positions (the
+  playhead position does not match the comp).
+- [ ] TF-26 Graph editor: cannot scroll left of the first keyframe (it sits pinned against
+  the panel edge).
+- [ ] TF-27 Retime behaves oddly with exactly two keyframes (tester video pending).
+
+## Bugs
+- [ ] TF-28 Shake: Amplitude does not affect rotation — Rotation amount should be
+  multiplied by amplitude.
+- [ ] TF-29 Linked Scale squishes the aspect ratio when animated with bezier curves,
+  despite the axis link being on.
+- [ ] TF-30 Keyframes on an adjustment layer are invisible in the graph view.
+- [ ] TF-31 Posterize Time on a zero-opacity adjustment still fully posterizes what is
+  below. The held composite must blend back by the adjustment's coverage (mask × opacity) —
+  which is what docs/08 §3.25 already promises, so this is code contradicting spec.
+
+## Effect wishes
+- [ ] TF-32 General lens-distortion effect.
+- [ ] TF-33 GPU-accelerated pixel sorter.
+- [ ] TF-34 Dithering / Bayer filters (one combined effect).
+- [ ] TF-35 Edge detection.
