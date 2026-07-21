@@ -586,3 +586,16 @@ hotkeys, and their absence makes testing feel clunky).
   probe calls `invalidate_rendered_frames` — a media probe changes what a comp looks like
   without changing the document, which the frame key alone cannot express. Regression:
   `a_landing_probe_discards_frames_rendered_before_it`, verified to fail without the fix.
+  **Follow-up — the above did not fix it.** Two further findings. (1) The generation gate was
+  itself wrong and is reverted: *every* request bumps the generation, background fills
+  included, so a fill queued behind a display render would supersede it and the Viewer would
+  simply stop updating. Staleness belongs where it already was — the worker drops superseded
+  requests, and a landing probe drops banked frames. (2) The likely culprit: **clicking a
+  footage item in the Project panel sets `preview_comp = None`**, switching the Viewer out of
+  comp mode, and that footage path had no missing-media branch at all — it returned without
+  requesting anything, leaving a black panel that never recovers, because nothing later
+  triggers a render. It now answers with the same slate (`request_slate`, 1920×1080 — a file
+  we cannot open has no size to report). Reproduced through the real `open_path` +
+  probe-thread flow in `a_reopened_project_with_missing_media_slates_at_every_frame`, which
+  proves the comp path emits a slate job at every time, so the comp render was never the
+  problem.

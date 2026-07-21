@@ -1588,3 +1588,117 @@ fn a_landing_probe_discards_frames_rendered_before_it() {
     assert_eq!(app.cached_present, None, "and must not be presented either");
     assert!(app.cache_epoch > epoch, "the cache bar re-reads");
 }
+
+/// TF-40 take two, through the REAL open path: save a project whose footage
+/// then disappears, open it, and check the slate job survives a playhead move.
+/// The artificial version of this test passed while the app still failed, so
+/// this one uses `open_path` + the actual probe threads.
+#[cfg(feature = "media")]
+#[test]
+fn a_reopened_project_with_missing_media_slates_at_every_frame() {
+    use lumit_core::model::{FootageItem, MediaRef, ProjectItem};
+    let dir = tempfile::tempdir().unwrap();
+    let media = dir.path().join("clip.mp4");
+    std::fs::write(&media, vec![0u8; 2048]).unwrap();
+
+    let mut app = AppState::default();
+    app.new_composition();
+    app.confirm_comp_dialog();
+    let comp_id = app.selected_comp.unwrap();
+    let item_id = Uuid::now_v7();
+    app.commit(Op::AddItem {
+        index: app.store.snapshot().items.len(),
+        item: Box::new(ProjectItem::Footage(FootageItem {
+            id: item_id,
+            name: "clip.mp4".into(),
+            extra: serde_json::Map::new(),
+            media: MediaRef {
+                relative_path: "clip.mp4".into(),
+                absolute_path: media.to_string_lossy().into_owned(),
+                fingerprint: None,
+                extra: serde_json::Map::new(),
+            },
+        })),
+    });
+    // A layer spanning the comp, as a real one would be.
+    app.media.map.insert(
+        item_id,
+        media::MediaStatus::Ready {
+            probe: lumit_media::MediaProbe {
+                duration_seconds: 10.0,
+                container: "mp4".into(),
+                video: Some(lumit_media::VideoInfo {
+                    width: 640,
+                    height: 360,
+                    fps_num: 30,
+                    fps_den: 1,
+                    codec: "h264".into(),
+                }),
+                audio: None,
+            },
+            frames: 300,
+            vfr: false,
+        },
+    );
+    app.preview_comp = Some(comp_id);
+    app.add_footage_to_comp(item_id);
+
+    // Save the way the app does (this also clears the crash journal, so the
+    // reopen takes the ordinary path rather than offering recovery).
+    let project = dir.path().join("p.lum");
+    app.path = Some(project.clone());
+    app.save();
+
+    // The file goes away, and the project is reopened exactly as the app does.
+    std::fs::remove_file(&media).unwrap();
+    let mut app = AppState::default();
+    app.open_path(&project);
+
+    // Wait for the probe threads (they are real).
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while std::time::Instant::now() < deadline {
+        app.media.poll();
+        if app
+            .media
+            .map
+            .values()
+            .any(|s| matches!(s, media::MediaStatus::Missing))
+        {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let statuses: Vec<&'static str> = app
+        .media
+        .map
+        .values()
+        .map(|s| match s {
+            media::MediaStatus::Probing => "probing",
+            media::MediaStatus::Ready { .. } => "ready",
+            media::MediaStatus::Missing => "missing",
+            media::MediaStatus::Failed(_) => "failed",
+        })
+        .collect();
+    assert_eq!(statuses, vec!["missing"], "the lost file reads as missing");
+
+    let doc = app.store.snapshot();
+    let comp_id = doc
+        .items
+        .iter()
+        .find_map(|i| match i {
+            ProjectItem::Composition(c) => Some(c.id),
+            _ => None,
+        })
+        .unwrap();
+    let comp = doc.comp(comp_id).unwrap();
+    let layer_id = comp.layers[0].id;
+    for t in [0.0, 0.25, 1.0, 3.0] {
+        let mut jobs = Vec::new();
+        let mut visited = vec![comp_id];
+        app.collect_comp_jobs(&doc, comp, t, &mut jobs, &mut visited);
+        assert!(
+            jobs.iter().any(|j| j.layer == layer_id && j.slate),
+            "no slate job at t={t} — the layer would go black there"
+        );
+    }
+}

@@ -719,6 +719,16 @@ impl AppState {
         let Some(ProjectItem::Footage(f)) = doc.item(id) else {
             return;
         };
+        // A lost file previewed on its own shows the same bars a comp shows
+        // for it (docs/07 §3.3). Without this the Viewer drew nothing at all —
+        // a black panel that looks exactly like a broken application, and
+        // never recovers, because nothing further triggers a render. Sized
+        // 1920×1080: a file we cannot open has no size to report.
+        if matches!(self.media.map.get(&id), Some(media::MediaStatus::Missing)) {
+            self.preview_frame = 0;
+            self.preview_engine.request_slate(id, (1920, 1080));
+            return;
+        }
         let (width, frames) = match self.media.map.get(&id) {
             Some(media::MediaStatus::Ready { probe, frames, .. }) => {
                 (probe.video.as_ref().map(|v| v.width).unwrap_or(0), *frames)

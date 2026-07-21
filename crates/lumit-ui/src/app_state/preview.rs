@@ -22,6 +22,11 @@ struct Request {
     path: PathBuf,
     frame: usize,
     target_width: Option<u32>,
+    /// The file is missing (docs/07 §3.3): answer with the test-bar slate at
+    /// this size instead of decoding. Viewing a lost clip on its own must
+    /// show the same bars a comp shows for it — the Viewer previously drew
+    /// nothing at all here, which looks identical to a broken application.
+    slate: Option<(u32, u32)>,
 }
 
 /// One layer's decode job inside a comp render request.
@@ -230,6 +235,16 @@ fn decode(
     cache: &mut lumit_cache::ByteLru<(Uuid, usize, Option<u32>), CachedFrame>,
     req: &Request,
 ) -> Result<FramePixels, String> {
+    if let Some((w, h)) = req.slate {
+        let (w, h) = (w.max(1), h.max(1));
+        return Ok(FramePixels {
+            width: w,
+            height: h,
+            rgba: lumit_media::slate::colour_bars(w, h),
+            frame: req.frame,
+            item: req.item,
+        });
+    }
     let cache_key = (req.item, req.frame, req.target_width);
     if let Some(hit) = cache.get(&cache_key) {
         return Ok(FramePixels {
@@ -274,6 +289,23 @@ fn decode(
 impl PreviewEngine {
     /// Ask for a frame; any not-yet-decoded older request is abandoned.
     pub fn request(&self, item: Uuid, path: PathBuf, frame: usize, target_width: Option<u32>) {
+        self.request_inner(item, path, frame, target_width, None);
+    }
+
+    /// As [`Self::request`], but answers with the missing-footage slate at
+    /// `size` rather than decoding (docs/07 §3.3).
+    pub fn request_slate(&self, item: Uuid, size: (u32, u32)) {
+        self.request_inner(item, PathBuf::new(), 0, None, Some(size));
+    }
+
+    fn request_inner(
+        &self,
+        item: Uuid,
+        path: PathBuf,
+        frame: usize,
+        target_width: Option<u32>,
+        slate: Option<(u32, u32)>,
+    ) {
         let generation = self.generation.fetch_add(1, Ordering::Relaxed) + 1;
         let _ = self.tx.send(Message::Footage(Request {
             generation,
@@ -281,6 +313,7 @@ impl PreviewEngine {
             path,
             frame,
             target_width,
+            slate,
         }));
     }
 
@@ -319,6 +352,7 @@ fn decode_comp(
             path: job.path.clone(),
             frame: job.source_frame,
             target_width: job.target_width,
+            slate: None, // the comp path builds its slate below, from natural size
         };
         // Missing media renders the slate; nothing else about the layer
         // changes, so transforms, effects and blending all still apply.
@@ -348,6 +382,7 @@ fn decode_comp(
                     path: job.path.clone(),
                     frame,
                     target_width: job.target_width,
+                    slate: None,
                 };
                 decode(decoders, cache, &nreq)
                     .ok()
@@ -389,6 +424,7 @@ fn decode_comp(
                 path: job.path.clone(),
                 frame: ceil,
                 target_width: req.target_width,
+                slate: None,
             };
             let px2 = decode(decoders, cache, &req2)?;
             if job.flow {

@@ -405,14 +405,14 @@ impl Shell {
             }
             use crate::app_state::preview::PreviewResult;
             match newest {
-                // A result older than the newest request describes a picture
-                // that has since changed — showing it flickers, and banking it
-                // files the wrong pixels under the right key (see
-                // `invalidate_rendered_frames`). Drop it.
-                Some(Ok(PreviewResult::Comp(cf)))
-                    if Some(cf.comp) == self.app.preview_comp
-                        && cf.generation == self.app.preview_engine.generation() =>
-                {
+                // NB: deliberately NOT gated on `cf.generation` being current.
+                // Every request bumps the generation, background fills
+                // included, so a fill queued after a display render would
+                // supersede it and the viewer would simply stop updating.
+                // Staleness is handled where it matters instead: the worker
+                // drops superseded *requests*, and a landing probe drops
+                // already-banked frames (`invalidate_rendered_frames`).
+                Some(Ok(PreviewResult::Comp(cf))) if Some(cf.comp) == self.app.preview_comp => {
                     // Only the frame under the playhead is presented; any other
                     // frame (a background fill, or a stale render that arrived
                     // after an edit moved on) is banked, never shown — otherwise
