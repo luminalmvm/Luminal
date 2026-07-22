@@ -405,3 +405,432 @@ double? overrunLocalTime(BridgeRetime retime, double sourceDurationSecs) {
   final pad = math.max((hi - lo).abs(), 1.0) * 0.12;
   return (lo - pad, hi + pad);
 }
+
+// ===========================================================================
+// The transform value graph (K-078; ported from
+// `crates/lumit-core/src/anim.rs` — `evaluate`/`evaluate_speed`/`CubicSpan` —
+// and `crates/lumit-ui/src/shell/graph.rs` — `graph_plot`, the bezier
+// handle geometry, the auto-fit and the beat/frame snapping). All pure so it
+// unit-tests against the same hand-computed and anim.rs constants the engine
+// pins (the EASY_EASE midpoint, the easy-ease flat ends).
+//
+// In plain terms: this half of the file knows how to turn a property's
+// keyframes into a smooth curve (sampling the real bezier between each pair of
+// keys, exactly as the engine evaluates it), where a key's tangent handle sits
+// on screen and how to read a dragged handle back into (speed, influence), how
+// tall to make the graph so the whole curve and its handles fit, and where a
+// dragged key or boundary snaps to when the magnet is on.
+// ===========================================================================
+
+/// The AE easy-ease influence third — `anim::EASY_EASE`'s influence, the
+/// default handle reach a Linear/Hold side lends the bezier maths.
+const double kEaseThird = 1.0 / 3.0;
+
+/// A keyframe side's influence (bezier handle reach as a fraction of the gap),
+/// defaulting to the easy-ease third for a Linear/Hold side — `graph.rs`'s
+/// `side_influence`.
+double sideInfluence(String interp, BridgeBezier? bezier) =>
+    (interp == 'Bezier' && bezier != null) ? bezier.influence : kEaseThird;
+
+/// A keyframe side's bezier slope (value-units per second), or null when the
+/// side is Linear/Hold and carries no single slope — `graph.rs`'s `side_speed`.
+double? sideSpeed(String interp, BridgeBezier? bezier) =>
+    (interp == 'Bezier' && bezier != null) ? bezier.speed : null;
+
+/// The AE (speed, influence) a side contributes to the cubic: a Bezier side's
+/// own pair (influence floored to 1e-3), else the chord slope with a ⅓ reach —
+/// `anim::side_params`.
+(double, double) _sideParams(String interp, BridgeBezier? bezier, double chord) {
+  if (interp == 'Bezier' && bezier != null) {
+    return (bezier.speed, bezier.influence.clamp(1e-3, 1.0));
+  }
+  return (chord, kEaseThird);
+}
+
+/// One span's cubic bezier built from AE parameters — `anim::CubicSpan`, ported
+/// line-for-line (the same bracketed-Newton solve the engine uses, so a
+/// steep-handle curve is sampled exactly rather than approximated).
+class GraphCubic {
+  final List<double> _x;
+  final List<double> _y;
+  const GraphCubic._(this._x, this._y);
+
+  /// `P0=(t1,v1) P1=(t1+bOut·Δt, v1+sOut·bOut·Δt)
+  ///  P2=(t2−bIn·Δt, v2−sIn·bIn·Δt) P3=(t2,v2)` — `CubicSpan::from_ae`.
+  factory GraphCubic.fromAe(double t1, double v1, double t2, double v2,
+      double speedOut, double inflOut, double speedIn, double inflIn) {
+    final dt = t2 - t1;
+    return GraphCubic._(
+      [t1, t1 + inflOut * dt, t2 - inflIn * dt, t2],
+      [v1, v1 + speedOut * inflOut * dt, v2 - speedIn * inflIn * dt, v2],
+    );
+  }
+
+  /// Solve x(u) = t by Newton inside a shrinking bracket — `CubicSpan::solve_u`
+  /// (binding; the same solver as the retime map param solve).
+  double _solveU(double t) {
+    final x0 = _x[0], x3 = _x[3];
+    if (x3 <= x0) return 0;
+    var lo = 0.0, hi = 1.0;
+    var u = ((t - x0) / (x3 - x0)).clamp(0.0, 1.0);
+    for (var i = 0; i < 16; i++) {
+      final xu = _bezier(_x, u);
+      if ((xu - t).abs() < 1e-12) break;
+      if (xu < t) {
+        lo = u;
+      } else {
+        hi = u;
+      }
+      final dxu = _bezierDeriv(_x, u);
+      final newton = u - (xu - t) / dxu;
+      u = (dxu > 1e-12 && newton > lo && newton < hi) ? newton : 0.5 * (lo + hi);
+    }
+    return u;
+  }
+
+  /// The value at time `t` (seconds).
+  double valueAt(double t) => _bezier(_y, _solveU(t));
+
+  /// The instantaneous slope dv/dt at `t` — `y′(u)/x′(u)`, x′ floored so a
+  /// 100%-influence handle stays finite (`CubicSpan::speed_at`).
+  double speedAt(double t) {
+    final u = _solveU(t);
+    return _bezierDeriv(_y, u) / math.max(_bezierDeriv(_x, u), 1e-12);
+  }
+}
+
+/// Evaluate a property's keyframes at comp time [tSecs] — a port of
+/// `anim::evaluate`, honouring each pair of adjacent sides (Hold-out wins the
+/// span, Linear/Linear is the chord, any bezier side shapes the cubic). The
+/// keys carry their comp [frame]; [fps] turns frames into the seconds the
+/// bezier speed is expressed in. Clamps flat past the ends; 0 for no keys.
+double evaluateValueKeys(List<BridgeKeyframe> keys, double fps, double tSecs) {
+  if (keys.isEmpty) return 0;
+  final f = fps <= 0 ? 1.0 : fps;
+  final first = keys.first, last = keys.last;
+  if (tSecs <= first.frame / f) return first.value;
+  if (tSecs >= last.frame / f) return last.value;
+  var idx = keys.length - 2;
+  for (var i = 0; i < keys.length - 1; i++) {
+    if (tSecs < keys[i + 1].frame / f) {
+      idx = i;
+      break;
+    }
+  }
+  return _evalSpan(keys[idx], keys[idx + 1], f, tSecs);
+}
+
+double _evalSpan(BridgeKeyframe a, BridgeKeyframe b, double f, double t) {
+  final t1 = a.frame / f, t2 = b.frame / f;
+  final dt = t2 - t1;
+  if (dt <= 0) return a.value;
+  if (a.interpOut == 'Hold') return a.value;
+  if (a.interpOut == 'Linear' && b.interpIn == 'Linear') {
+    return a.value + (b.value - a.value) * ((t - t1) / dt);
+  }
+  final chord = (b.value - a.value) / dt;
+  final (s1, b1) = _sideParams(a.interpOut, a.bezierOut, chord);
+  final (s2, b2) = _sideParams(b.interpIn, b.bezierIn, chord);
+  return GraphCubic.fromAe(t1, a.value, t2, b.value, s1, b1, s2, b2).valueAt(t);
+}
+
+/// The instantaneous speed dv/dt at [tSecs] — a port of `anim::evaluate_speed`
+/// (flat past the ends and across a Hold-out span, the exact derivative of the
+/// value bezier elsewhere).
+double evaluateSpeedKeys(List<BridgeKeyframe> keys, double fps, double tSecs) {
+  if (keys.isEmpty) return 0;
+  final f = fps <= 0 ? 1.0 : fps;
+  final first = keys.first, last = keys.last;
+  if (tSecs <= first.frame / f || tSecs >= last.frame / f) return 0;
+  var idx = keys.length - 2;
+  for (var i = 0; i < keys.length - 1; i++) {
+    if (tSecs < keys[i + 1].frame / f) {
+      idx = i;
+      break;
+    }
+  }
+  final a = keys[idx], b = keys[idx + 1];
+  final t1 = a.frame / f, t2 = b.frame / f;
+  final dt = t2 - t1;
+  if (dt <= 0) return 0;
+  if (a.interpOut == 'Hold') return 0;
+  if (a.interpOut == 'Linear' && b.interpIn == 'Linear') {
+    return (b.value - a.value) / dt;
+  }
+  final chord = (b.value - a.value) / dt;
+  final (s1, b1) = _sideParams(a.interpOut, a.bezierOut, chord);
+  final (s2, b2) = _sideParams(b.interpIn, b.bezierIn, chord);
+  return GraphCubic.fromAe(t1, a.value, t2, b.value, s1, b1, s2, b2).speedAt(tSecs);
+}
+
+/// One sampled point of the value lens: comp [frame] on x, the property [value]
+/// on y (or its slope, in the speed sub-view).
+typedef ValueSample = ({double frame, double value});
+
+/// Sample a property's value curve densely across `[frameLo, frameHi]`, so the
+/// bezier reads smooth at any zoom — the piecewise curve `graph_plot` draws,
+/// never a straight line between keys. [speed] samples the exact derivative
+/// instead (the speed sub-view). A flat line at [staticValue] when there are no
+/// keys (a still property you can double-click a first key onto).
+List<ValueSample> sampleValueCurve(
+  List<BridgeKeyframe> keys,
+  double fps,
+  double frameLo,
+  double frameHi, {
+  int samples = 160,
+  bool speed = false,
+  double staticValue = 0,
+}) {
+  final f = fps <= 0 ? 1.0 : fps;
+  final n = math.max(2, samples);
+  final span = (frameHi - frameLo);
+  final out = <ValueSample>[];
+  for (var i = 0; i <= n; i++) {
+    final frame = frameLo + span * i / n;
+    final t = frame / f;
+    final v = keys.isEmpty
+        ? (speed ? 0.0 : staticValue)
+        : (speed
+            ? evaluateSpeedKeys(keys, f, t)
+            : evaluateValueKeys(keys, f, t));
+    out.add((frame: frame, value: v));
+  }
+  return out;
+}
+
+/// The comp-frame endpoint and value of a key's bezier tangent handle on one
+/// side — `graph.rs`'s handle geometry. [neighbourFrame] is the frame of the key
+/// on that side; a handle of slope [speed] reaching [influence] of the gap ends
+/// at `value ± speed · reach` a fraction [influence] of the way to the
+/// neighbour. `fps` turns the frame gap into the seconds the slope is per.
+({double frame, double value}) handleEndpoint({
+  required double keyFrame,
+  required double keyValue,
+  required double neighbourFrame,
+  required bool isOut,
+  required double speed,
+  required double influence,
+  required double fps,
+}) {
+  final f = fps <= 0 ? 1.0 : fps;
+  final segFrames = isOut ? neighbourFrame - keyFrame : keyFrame - neighbourFrame;
+  final reachSecs = influence * (segFrames.abs() / f);
+  final endFrame = isOut
+      ? keyFrame + influence * segFrames.abs()
+      : keyFrame - influence * segFrames.abs();
+  final endValue = isOut ? keyValue + speed * reachSecs : keyValue - speed * reachSecs;
+  return (frame: endFrame, value: endValue);
+}
+
+/// Read a dragged tangent-handle endpoint back into `(speed, influence)` for one
+/// side — the inverse of [handleEndpoint], matching `graph.rs`'s value-lens drag
+/// (`dt` clamped inside the segment with a tiny floor; influence and speed share
+/// that reach so the handle lands under the cursor).
+({double speed, double influence}) handleFromDrag({
+  required double keyFrame,
+  required double keyValue,
+  required double neighbourFrame,
+  required bool isOut,
+  required double dragFrame,
+  required double dragValue,
+  required double fps,
+}) {
+  final f = fps <= 0 ? 1.0 : fps;
+  final segFrames = (isOut ? neighbourFrame - keyFrame : keyFrame - neighbourFrame).abs();
+  if (segFrames <= 1e-9) return (speed: 0, influence: kEaseThird);
+  final dFrames = (isOut ? dragFrame - keyFrame : keyFrame - dragFrame)
+      .clamp(segFrames * 1e-3, segFrames);
+  final influence = (dFrames / segFrames).clamp(1e-3, 1.0);
+  final dSecs = dFrames / f;
+  final speed = (isOut ? dragValue - keyValue : keyValue - dragValue) / dSecs;
+  return (speed: speed, influence: influence);
+}
+
+/// The value extremes the value graph must frame: every key's value, each
+/// bezier side's tangent-handle endpoint (a steep handle can poke past the
+/// curve), and the drawn curve's own samples (a bezier can overshoot its
+/// keys) — `graph.rs`'s `fit_values_with_handles` plus the curve-sample grow,
+/// padded 15%. Reads ALL keys so selecting one never jumps the view.
+(double, double) fitValueRange(
+  List<BridgeKeyframe> keys,
+  double fps,
+  double frameLo,
+  double frameHi, {
+  double staticValue = 0,
+}) {
+  final f = fps <= 0 ? 1.0 : fps;
+  if (keys.isEmpty) {
+    final pad = math.max(staticValue.abs(), 1.0) * 0.15;
+    return (staticValue - pad, staticValue + pad);
+  }
+  var lo = double.infinity, hi = -double.infinity;
+  for (var i = 0; i < keys.length; i++) {
+    final k = keys[i];
+    lo = math.min(lo, k.value);
+    hi = math.max(hi, k.value);
+    for (final isOut in const [false, true]) {
+      final interp = isOut ? k.interpOut : k.interpIn;
+      final bez = isOut ? k.bezierOut : k.bezierIn;
+      final sp = sideSpeed(interp, bez);
+      if (sp == null) continue;
+      final int? nb = isOut
+          ? (i + 1 < keys.length ? keys[i + 1].frame : null)
+          : (i > 0 ? keys[i - 1].frame : null);
+      if (nb == null) continue;
+      final e = handleEndpoint(
+        keyFrame: k.frame.toDouble(),
+        keyValue: k.value,
+        neighbourFrame: nb.toDouble(),
+        isOut: isOut,
+        speed: sp,
+        influence: sideInfluence(interp, bez),
+        fps: f,
+      );
+      lo = math.min(lo, e.value);
+      hi = math.max(hi, e.value);
+    }
+  }
+  for (final s in sampleValueCurve(keys, f, frameLo, frameHi, samples: 96)) {
+    lo = math.min(lo, s.value);
+    hi = math.max(hi, s.value);
+  }
+  final pad = math.max((hi - lo).abs(), 1.0) * 0.15;
+  return (lo - pad, hi + pad);
+}
+
+/// The unit a transform property's y-axis labels carry — `graph.rs`'s
+/// `prop_unit`, over the snapshot's snake_case names ("" for the pixel
+/// properties, which read cleaner bare).
+String propUnit(String prop) {
+  switch (prop) {
+    case 'scale_x':
+    case 'scale_y':
+    case 'scale_z':
+    case 'opacity':
+      return '%';
+    case 'rotation':
+    case 'rotation_x':
+    case 'rotation_y':
+    case 'rotation_z':
+      return '°';
+    default:
+      return '';
+  }
+}
+
+/// A y-axis value formatted to suit the span — `graph.rs`'s `fmt_axis_value`
+/// (whole numbers once the range is wide, more decimals as it narrows).
+String fmtAxisValue(double v, double span) {
+  final s = span.abs();
+  if (s >= 20.0) return v.toStringAsFixed(0);
+  if (s >= 2.0) return v.toStringAsFixed(1);
+  return v.toStringAsFixed(2);
+}
+
+/// The four evenly spaced gridline values `graph_y_axis` labels across `[lo,
+/// hi]` (clear of the pane edges), bottom-to-top.
+List<double> axisTickValues(double lo, double hi, {int count = 4}) => [
+      for (var i = 1; i <= count; i++) lo + (i / (count + 1)) * (hi - lo),
+    ];
+
+/// Snap a dragged graph key/boundary comp [frame] — `graph.rs:1616-1628`. A
+/// Retime feature snaps to the nearest beat/marker within [thresholdPx] (so a
+/// ramp lands on the beat), else falls to a whole frame; a transform key rounds
+/// to a whole frame when the [magnet] is on, and — since the bridge keys on
+/// whole comp frames — rounds regardless when it is off (drag-frees within a
+/// frame, commits on the grid). [beats] are candidate marker frames.
+int snapGraphFrame(
+  double frame, {
+  required bool magnet,
+  required double fps,
+  required List<int> beats,
+  required double pxPerFrame,
+  required bool retime,
+  double thresholdPx = 6,
+}) {
+  if (retime) {
+    final thr = thresholdPx / math.max(pxPerFrame, 1e-9);
+    int? best;
+    var bestD = thr;
+    for (final m in beats) {
+      final d = (m - frame).abs();
+      if (d <= bestD) {
+        bestD = d;
+        best = m;
+      }
+    }
+    return best ?? frame.round();
+  }
+  return frame.round();
+}
+
+// ===========================================================================
+// The Retime Time (source-position) lens (docs/04-RETIMING.md §9.1; K-078):
+// source time over local time, the ordinary graph editor reading the store's
+// value keyframes. Its curve is `sourceSecsAtLocal` sampled across the domain
+// (Map segments curve through their control points, Rate segments the
+// integrated position); its boundaries drag horizontally in time through the
+// `dragBoundary` op (which moves a boundary's local time, keeping its source
+// position — the true home of that op, docs/04 §9.1).
+// ===========================================================================
+
+/// One sampled point of the Time lens: comp [frame] on x, source position in
+/// [secs] on y.
+typedef SourceSample = ({double frame, double secs});
+
+/// The local time (seconds) comp [frame] maps to within [retime]'s domain,
+/// read off the boundary `(tFrame, tSeconds)` pairs so a non-zero start offset
+/// is handled without a separate fps round-trip (local time is linear in comp
+/// frame across the whole domain).
+double localSecsOfFrame(BridgeRetime retime, double frame) {
+  final bs = retime.boundaries;
+  if (bs.length < 2) return bs.isEmpty ? 0.0 : bs.first.tSeconds;
+  final f0 = bs.first.tFrame.toDouble(), f1 = bs.last.tFrame.toDouble();
+  final s0 = bs.first.tSeconds, s1 = bs.last.tSeconds;
+  if ((f1 - f0).abs() < 1e-9) return s0;
+  return s0 + (frame - f0) * (s1 - s0) / (f1 - f0);
+}
+
+/// Sample the whole source-position curve as (comp frame, source seconds)
+/// points across `[frameLo, frameHi]` — the Time-lens curve. Dense enough that
+/// a Map segment's cubic reads smooth at any zoom. Empty for a structurally
+/// unusable store.
+List<SourceSample> sampleSourceCurve(
+  BridgeRetime retime,
+  double frameLo,
+  double frameHi, {
+  int samples = 160,
+}) {
+  final bs = retime.boundaries;
+  final segs = retime.segments;
+  if (bs.length < 2 || segs.length != bs.length - 1) return const [];
+  final n = math.max(2, samples);
+  final span = frameHi - frameLo;
+  final out = <SourceSample>[];
+  for (var i = 0; i <= n; i++) {
+    final frame = frameLo + span * i / n;
+    final t = localSecsOfFrame(retime, frame);
+    out.add((frame: frame, secs: sourceSecsAtLocal(retime, t)));
+  }
+  return out;
+}
+
+/// The Time-lens boundary points as (comp frame, source seconds) — the
+/// draggable joins the curve passes through.
+List<SourceSample> sourceBoundaryPoints(BridgeRetime retime) => [
+      for (final b in retime.boundaries) (frame: b.tFrame.toDouble(), secs: b.sSeconds),
+    ];
+
+/// The auto-fit y-range (source seconds) for the Time lens: the source span the
+/// boundaries and the sampled curve cover, padded 12%. Frames at least a small
+/// window so a still store still draws an axis.
+(double, double) sourceRange(List<SourceSample> samples) {
+  if (samples.isEmpty) return (0.0, 1.0);
+  var lo = double.infinity, hi = -double.infinity;
+  for (final s in samples) {
+    lo = math.min(lo, s.secs);
+    hi = math.max(hi, s.secs);
+  }
+  final pad = math.max((hi - lo).abs(), 1.0) * 0.12;
+  return (lo - pad, hi + pad);
+}

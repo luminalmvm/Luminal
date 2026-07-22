@@ -98,7 +98,7 @@ String removeBatchJson(String layerId, Iterable<LaneKeyId> targets) {
   final buf = StringBuffer('[');
   var first = true;
   for (final k in targets) {
-    if (k.layerId != layerId) continue;
+    if (k.layerId != layerId || k.isEffect) continue;
     if (!first) buf.write(',');
     first = false;
     buf.write('{"property":"${k.property}","action":"remove","frame":${k.frame}}');
@@ -187,19 +187,24 @@ void applyKeyframeInterpChoice({
   required LaneKeyId hitId,
   required Set<LaneKeyId> targets,
 }) {
+  // This menu is transform-only (opened from a transform lane); an effect key
+  // that rode in on a mixed multi-selection is dropped so its transform-shaped
+  // ops never touch an effect param.
+  final tx = {for (final k in targets) if (!k.isEffect) k};
+  if (tx.isEmpty) return;
   switch (choice) {
     case KeyframeInterpChoice.easyEase:
-      _applySides(app, compId, targets, (_) => KeyframeInterpSides.easyEase);
+      _applySides(app, compId, tx, (_) => KeyframeInterpSides.easyEase);
     case KeyframeInterpChoice.linear:
-      _applySides(app, compId, targets, (_) => KeyframeInterpSides.linear);
+      _applySides(app, compId, tx, (_) => KeyframeInterpSides.linear);
     case KeyframeInterpChoice.hold:
-      _applySides(app, compId, targets, (_) => KeyframeInterpSides.hold);
+      _applySides(app, compId, tx, (_) => KeyframeInterpSides.hold);
     case KeyframeInterpChoice.unify:
       // Unify is inherently per-key (it averages one key's two handles), so it
       // applies to the right-clicked key alone (graph.rs:1712 uses `idx`).
       _applySides(app, compId, {hitId}, (_) => KeyframeInterpSides.unify(hit));
     case KeyframeInterpChoice.delete:
-      _deleteTargets(app, compId, targets);
+      _deleteTargets(app, compId, tx);
   }
 }
 

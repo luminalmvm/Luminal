@@ -16,11 +16,15 @@
 import 'dart:convert';
 
 import '../../bridge/bridge.dart';
+import 'fx_keys.dart';
 import 'lane_selection.dart';
 
 /// One copied keyframe: its layer + property channel, its [frameOffset] from the
 /// earliest copied key, its [value], and its two-sided easing (variant names plus
-/// the Bezier `(speed, influence)` handles, present only on a Bezier side).
+/// the Bezier `(speed, influence)` handles, present only on a Bezier side). An
+/// effect-param key additionally carries its [effectId] and value [channel]
+/// (null [effectId] = a transform key), so effect lanes copy/paste alongside the
+/// transform lanes.
 class ClipboardKey {
   final String layerId;
   final String property;
@@ -33,6 +37,13 @@ class ClipboardKey {
   final double? speedOut;
   final double? influenceOut;
 
+  /// The owning effect instance for an effect-param key, or null for a transform
+  /// key.
+  final String? effectId;
+
+  /// The param value channel (0 for a scalar/transform key).
+  final int channel;
+
   const ClipboardKey({
     required this.layerId,
     required this.property,
@@ -44,11 +55,16 @@ class ClipboardKey {
     this.influenceIn,
     this.speedOut,
     this.influenceOut,
+    this.effectId,
+    this.channel = 0,
   });
 
   /// Whether either side eases (not plain Linear/Linear) — the keys whose shape
   /// must be restored after a value-only batch paste.
   bool get eases => interpIn != 'Linear' || interpOut != 'Linear';
+
+  /// Whether this is an effect-param key (vs a transform one).
+  bool get isEffect => effectId != null;
 
   Map<String, dynamic> toJson() => {
         'layer': layerId,
@@ -61,6 +77,8 @@ class ClipboardKey {
         if (influenceIn != null) 'influence_in': influenceIn,
         if (speedOut != null) 'speed_out': speedOut,
         if (influenceOut != null) 'influence_out': influenceOut,
+        if (effectId != null) 'effect': effectId,
+        if (effectId != null) 'channel': channel,
       };
 
   factory ClipboardKey.fromJson(Map<String, dynamic> m) => ClipboardKey(
@@ -74,6 +92,8 @@ class ClipboardKey {
         influenceIn: (m['influence_in'] as num?)?.toDouble(),
         speedOut: (m['speed_out'] as num?)?.toDouble(),
         influenceOut: (m['influence_out'] as num?)?.toDouble(),
+        effectId: m['effect'] as String?,
+        channel: (m['channel'] as num?)?.toInt() ?? 0,
       );
 }
 
@@ -120,6 +140,31 @@ KeyframeClipboard buildKeyframeClipboard(
   final keys = <ClipboardKey>[];
   for (final id in selection) {
     final layer = _layer(comp, id.layerId);
+    if (id.isEffect) {
+      // An effect union key expands to one clipboard entry per value channel,
+      // each with that channel's value + easing at the frame.
+      final param = _effectParam(layer, id.effectId!, id.property);
+      if (param == null) continue;
+      for (final ch in fxParamChannels(param.kind)) {
+        final key = fxChannelKeyAt(param, ch, id.frame);
+        if (key == null) continue;
+        keys.add(ClipboardKey(
+          layerId: id.layerId,
+          property: id.property,
+          frameOffset: id.frame - earliest,
+          value: key.value,
+          interpIn: key.interpIn,
+          interpOut: key.interpOut,
+          speedIn: key.bezierIn?.speed,
+          influenceIn: key.bezierIn?.influence,
+          speedOut: key.bezierOut?.speed,
+          influenceOut: key.bezierOut?.influence,
+          effectId: id.effectId,
+          channel: ch,
+        ));
+      }
+      continue;
+    }
     final key = _keyAt(layer, id.property, id.frame);
     if (key == null) continue;
     keys.add(ClipboardKey(
@@ -146,7 +191,7 @@ String pasteAddBatchJson(
   final buf = StringBuffer('[');
   var first = true;
   for (final k in clipboard.keys) {
-    if (k.layerId != layerId) continue;
+    if (k.layerId != layerId || k.isEffect) continue; // fx keys paste per-op
     if (!first) buf.write(',');
     first = false;
     final frame = playheadFrame + k.frameOffset;
@@ -157,12 +202,26 @@ String pasteAddBatchJson(
   return buf.toString();
 }
 
+/// The effect-param keys in [clipboard] (the transform keys ride the value
+/// batch; these paste through per-key `addEffectParamKeyframe` /
+/// `setEffectParamKeyframeInterp`, since the bridge has no effect batch op).
+List<ClipboardKey> effectClipboardKeys(KeyframeClipboard clipboard) =>
+    [for (final k in clipboard.keys) if (k.isEffect) k];
+
 /// The lane keys a paste lands on (the new selection follows the pasted keys),
-/// as `(layerId, property, frame)` at `playhead + offset`.
-List<LaneKeyId> pastedKeyIds(KeyframeClipboard clipboard, int playheadFrame) => [
-      for (final k in clipboard.keys)
-        LaneKeyId(k.layerId, k.property, playheadFrame + k.frameOffset),
-    ];
+/// as `(layerId, property, frame)` at `playhead + offset` — an effect key keeps
+/// its effect identity (canonical channel 0), de-duplicated so a multi-channel
+/// param's union frame is one selected glyph.
+List<LaneKeyId> pastedKeyIds(KeyframeClipboard clipboard, int playheadFrame) {
+  final out = <LaneKeyId>{};
+  for (final k in clipboard.keys) {
+    final frame = playheadFrame + k.frameOffset;
+    out.add(k.isEffect
+        ? LaneKeyId(k.layerId, k.property, frame, effectId: k.effectId)
+        : LaneKeyId(k.layerId, k.property, frame));
+  }
+  return out.toList();
+}
 
 BridgeLayer? _layer(BridgeComp comp, String layerId) {
   for (final l in comp.layers) {
@@ -176,6 +235,18 @@ BridgeKeyframe? _keyAt(BridgeLayer? layer, String property, int frame) {
   if (prop == null) return null;
   for (final k in prop.keys) {
     if (k.frame == frame) return k;
+  }
+  return null;
+}
+
+BridgeEffectParam? _effectParam(
+    BridgeLayer? layer, String effectId, String paramName) {
+  if (layer == null) return null;
+  for (final e in layer.effects) {
+    if (e.id != effectId) continue;
+    for (final p in e.params) {
+      if (p.name == paramName) return p;
+    }
   }
   return null;
 }

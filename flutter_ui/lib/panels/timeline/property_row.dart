@@ -13,6 +13,7 @@ import '../../icons/icons.dart';
 import '../../state/app_state.dart';
 import '../../theme/theme.dart';
 import '../../widgets/controls.dart';
+import 'fx_keys.dart';
 import 'key_glyph.dart';
 import 'key_nav.dart';
 import 'keyframe_interp_menu.dart';
@@ -359,6 +360,11 @@ class _LanePainter extends CustomPainter {
   final List<BridgeKeyframe> keys;
   final String layerId;
   final String property;
+
+  /// The owning effect instance for an effect-param lane, or null for a
+  /// transform lane — threaded into the [LaneKeyId] so an effect key and a
+  /// same-named transform key never share a selection identity.
+  final String? effectId;
   final LaneScale scale;
   final Set<LaneKeyId> selected;
   final bool dragActive;
@@ -376,6 +382,7 @@ class _LanePainter extends CustomPainter {
     required this.accent,
     required this.hot,
     required this.outline,
+    this.effectId,
   });
 
   @override
@@ -384,7 +391,7 @@ class _LanePainter extends CustomPainter {
     canvas.save();
     canvas.clipRect(Offset.zero & size);
     for (final k in keys) {
-      final id = LaneKeyId(layerId, property, k.frame);
+      final id = LaneKeyId(layerId, property, k.frame, effectId: effectId);
       final isSel = selected.contains(id);
       final shown = isSel && dragActive ? k.frame + dragDelta : k.frame;
       final x = scale.xOfFrame(shown) - scale.trackLeft;
@@ -410,4 +417,253 @@ class _LanePainter extends CustomPainter {
       old.dragDelta != dragDelta ||
       old.scale.pxPerFrame != scale.pxPerFrame ||
       old.scale.viewStartFrame != scale.viewStartFrame;
+}
+
+/// One effect-parameter row inside a layer's Effects twirl: the outline cell
+/// (stopwatch, ◄ ◆ ► navigator, name, value readout) on the left and the
+/// keyframe lane on the right — the effect-param twin of [PropertyRow], ported
+/// from egui's `effects_rows` (inspector/effect_rows.rs). The stopwatch /
+/// navigator drive the bridge-v0.9 effect-param keyframe ops (one op per value
+/// channel, mirroring the linked transform rows); the lane keys carry the
+/// effect identity ((layer, effectId, param)) so they select / drag / copy-paste
+/// alongside the transform lanes through the shared [TimelineLaneHost]. Editing
+/// the value stays in the Effect controls panel, so the readout is display-only.
+class FxParamRow extends StatefulWidget {
+  final AppStateStub app;
+  final String compId;
+  final BridgeLayer layer;
+  final BridgeEffect effect;
+  final BridgeEffectParam param;
+  final double outlineWidth;
+  final LaneScale scale;
+  final TimelineLaneHost host;
+
+  const FxParamRow({
+    super.key,
+    required this.app,
+    required this.compId,
+    required this.layer,
+    required this.effect,
+    required this.param,
+    required this.outlineWidth,
+    required this.scale,
+    required this.host,
+  });
+
+  @override
+  State<FxParamRow> createState() => _FxParamRowState();
+}
+
+class _FxParamRowState extends State<FxParamRow> {
+  LaneKeyId? _grabbed;
+  double _downLocalX = 0;
+
+  AppStateStub get app => widget.app;
+  BridgeLayer get layer => widget.layer;
+  BridgeEffect get effect => widget.effect;
+  BridgeEffectParam get param => widget.param;
+  LaneScale get scale => widget.scale;
+
+  /// The union of the param's key frames (one glyph per frame).
+  List<int> get _frames => fxUnionFrames(param);
+
+  /// A representative keyframe per union frame, for the glyph shape.
+  List<BridgeKeyframe> get _keys =>
+      [for (final f in _frames) fxKeyAt(param, f)].whereType<BridgeKeyframe>().toList();
+
+  int get _playhead => app.previewFrame;
+
+  double _laneX(int frame) => scale.xOfFrame(frame) - scale.trackLeft;
+
+  LaneKeyId _idAt(int frame) =>
+      LaneKeyId(layer.id, param.name, frame, effectId: effect.id);
+
+  LaneKeyId? _hitKey(double localX) {
+    LaneKeyId? best;
+    var bestDist = 8.0;
+    for (final f in _frames) {
+      final id = _idAt(f);
+      final selected = widget.host.selectedKeys.contains(id);
+      final shown = selected && widget.host.keyDragActive
+          ? f + widget.host.keyDragDelta
+          : f;
+      final d = (_laneX(shown) - localX).abs();
+      if (d <= bestDist) {
+        bestDist = d;
+        best = id;
+      }
+    }
+    return best;
+  }
+
+  bool get _additive =>
+      HardwareKeyboard.instance.isControlPressed ||
+      HardwareKeyboard.instance.isShiftPressed ||
+      HardwareKeyboard.instance.isMetaPressed;
+
+  void _stopwatch() {
+    final frame = _playhead;
+    for (final ch in fxParamChannels(param.kind)) {
+      app.toggleEffectParamAnimated(
+          widget.compId, layer.id, effect.id, param.name, ch, frame);
+    }
+  }
+
+  void _toggleKey(bool onKey) {
+    final frame = _playhead;
+    for (final (ch, value) in fxChannelValues(param)) {
+      if (onKey) {
+        app.removeEffectParamKeyframe(
+            widget.compId, layer.id, effect.id, param.name, ch, frame);
+      } else {
+        app.addEffectParamKeyframe(
+            widget.compId, layer.id, effect.id, param.name, ch, frame, value);
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final t = ThemeScope.of(context).theme;
+    final frames = _frames;
+
+    return SizedBox(
+      height: kRowHeight,
+      child: Row(
+        children: [
+          SizedBox(
+            width: widget.outlineWidth,
+            child: _outline(t, frames),
+          ),
+          Expanded(
+            child: Listener(
+              onPointerDown: (e) => _downLocalX = e.localPosition.dx,
+              child: GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTapUp: (d) {
+                  final hit = _hitKey(d.localPosition.dx);
+                  if (hit != null) {
+                    widget.host.keyTap(hit, additive: _additive);
+                  }
+                },
+                onHorizontalDragStart: (_) {
+                  final hit = _hitKey(_downLocalX);
+                  _grabbed = hit;
+                  if (hit == null) return;
+                  if (!widget.host.selectedKeys.contains(hit) && !_additive) {
+                    widget.host.keyTap(hit, additive: false);
+                  }
+                  widget.host.keyDragStart(hit, hit.frame);
+                },
+                onHorizontalDragUpdate: (d) {
+                  if (_grabbed == null) return;
+                  final f = scale
+                      .frameOfX(d.localPosition.dx + scale.trackLeft)
+                      .round();
+                  widget.host.keyDragTo(f);
+                },
+                onHorizontalDragEnd: (_) {
+                  if (_grabbed != null) {
+                    widget.host.keyDragEnd();
+                    _grabbed = null;
+                  }
+                },
+                onHorizontalDragCancel: () => _grabbed = null,
+                child: CustomPaint(
+                  painter: _LanePainter(
+                    keys: _keys,
+                    layerId: layer.id,
+                    property: param.name,
+                    effectId: effect.id,
+                    scale: scale,
+                    selected: widget.host.selectedKeys,
+                    dragActive: widget.host.keyDragActive,
+                    dragDelta: widget.host.keyDragDelta,
+                    accent: t.accent,
+                    hot: t.textPrimary,
+                    outline: t.surface0,
+                  ),
+                  child: const SizedBox.expand(),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _outline(LumitTheme t, List<int> frames) {
+    // The value readout: the scalar value, or a compact channel tuple.
+    final channels = fxChannelValues(param);
+    final readout = channels.length == 1
+        ? channels.first.$2.toStringAsFixed(1)
+        : channels.map((c) => c.$2.toStringAsFixed(1)).join(', ');
+    return Container(
+      // Indented one step deeper than a transform row (under the effect twirl).
+      padding: const EdgeInsets.only(left: 44, right: 4),
+      alignment: Alignment.centerLeft,
+      child: Row(
+        children: [
+          _StopwatchButton(
+            key: ValueKey('fxstopwatch:${layer.id}:${effect.id}:${param.name}'),
+            animated: param.animated,
+            onTap: _stopwatch,
+          ),
+          const SizedBox(width: 2),
+          ValueListenableBuilder<int>(
+            valueListenable: app.playheadFrame,
+            builder: (context, frame, _) {
+              final targets = keyNavTargets(frames, frame);
+              return Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  _NavButton(
+                    key: ValueKey(
+                        'fxnav-prev:${layer.id}:${effect.id}:${param.name}'),
+                    icon: LumitIcon.prevKeyframe,
+                    enabled: targets.prev != null,
+                    onTap: () => app.goToFrame(targets.prev!),
+                  ),
+                  _NavButton(
+                    key: ValueKey(
+                        'fxnav-toggle:${layer.id}:${effect.id}:${param.name}'),
+                    icon: targets.onKey
+                        ? LumitIcon.keyframeFilled
+                        : LumitIcon.keyframe,
+                    enabled: true,
+                    accent: targets.onKey,
+                    onTap: () => _toggleKey(targets.onKey),
+                  ),
+                  _NavButton(
+                    key: ValueKey(
+                        'fxnav-next:${layer.id}:${effect.id}:${param.name}'),
+                    icon: LumitIcon.nextKeyframe,
+                    enabled: targets.next != null,
+                    onTap: () => app.goToFrame(targets.next!),
+                  ),
+                ],
+              );
+            },
+          ),
+          const SizedBox(width: 6),
+          Expanded(
+            child: Text(
+              fxParamLabel(param.name),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: t.small.copyWith(color: t.textMuted),
+            ),
+          ),
+          const SizedBox(width: 4),
+          Text(
+            readout,
+            style: t.small.copyWith(color: t.textSecondary),
+            maxLines: 1,
+            overflow: TextOverflow.clip,
+          ),
+        ],
+      ),
+    );
+  }
 }

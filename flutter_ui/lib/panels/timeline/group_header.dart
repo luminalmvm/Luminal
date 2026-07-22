@@ -18,12 +18,17 @@ class GroupHeaderRow extends StatelessWidget {
   final double outlineWidth;
   final VoidCallback onTap;
 
+  /// Extra nesting depth (0 = a top-level group like Transform; 1 = a sub-group
+  /// such as one effect inside the Effects group). Each step indents the twirl.
+  final int indent;
+
   const GroupHeaderRow({
     super.key,
     required this.label,
     required this.open,
     required this.outlineWidth,
     required this.onTap,
+    this.indent = 0,
   });
 
   @override
@@ -40,7 +45,7 @@ class GroupHeaderRow extends StatelessWidget {
             SizedBox(
               width: outlineWidth,
               child: Padding(
-                padding: const EdgeInsets.only(left: 18),
+                padding: EdgeInsets.only(left: 18 + indent * 14),
                 child: Row(
                   children: [
                     lumitIcon(

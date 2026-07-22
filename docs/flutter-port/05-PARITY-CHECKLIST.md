@@ -251,13 +251,17 @@ where the row is logic).
   its rect into comp pixels and commits real geometry via `add_mask_geometry`
   (v0.9), so the drawn size/position is honoured. `viewer_toolbar.dart`,
   `viewer_overlays.dart`
-- ◐ Viewer overlays ☑: the selected 2D layer's anchor crosshair, draggable to
-  move its Position (`setTransform`); the eyedropper magnifier (armed from a
-  colour param's dropper button, sampling the shown `PreviewSource` frame — or a
-  one-off `renderCompFrame` readback on the shared path — Shift+scroll widens the
-  average, a click commits through `setEffectParamColour`). Named remainders: the
-  pan-behind anchor maths, the bounding box and scale handles await the
-  `LayerMap` port. `viewer_overlays.dart`
+- ☑ Viewer overlays: the full transform gizmo — bounding box, corner/edge scale
+  handles (commit `scale_x/y`, animation-aware), the anchor crosshair as the
+  exact egui `anchor_overlay` pan-behind (`anchor_x/y` + `position_x/y`), and a
+  body drag committing Position — all mapped through the ported `LayerMap`
+  (`viewer_layer_map.dart`, unit-tested); plus the eyedropper magnifier (armed
+  from a colour param's dropper button, sampling the shown `PreviewSource` frame
+  — or a one-off `renderCompFrame` readback on the shared path — Shift+scroll
+  widens the average, a click commits through `setEffectParamColour`). egui's
+  `overlays.rs` draws only the anchor cross (no box/handles/rotation, verified) —
+  the box/handles/body drag are the Flutter full manipulator; rotation is not
+  built (egui offers none). `viewer_overlays.dart`, `viewer_layer_map.dart`
 
 ## Bridge v0.4 export + Retime + last columns (done, feeds F3/F4)
 
@@ -426,35 +430,42 @@ and tested (K-171), only unwired.
 - ☑ Horizontal pan (wave 2): shift-wheel + a scrollbar when zoomed past fit,
   ruler and lanes locked through a session-persisted `viewStartFrame` on the
   `LaneScale` — clamp unit-tested
-- ◐ Graph lens — the Retime **speed** lens (docs/04-RETIMING.md §9.2), ported
-  from `graph.rs::graph_plot_retime`: when the graph toggle is on the lane area
-  becomes the speed-over-time curve for the selected footage layer (`panels/
-  timeline/graph_editor.dart` + the pure `graph_maths.dart`; one switch in
-  `timeline_panel.dart`). Rate segments draw their native ease shape (v₀ →
-  v₁ along e(u), the five `Ease` profiles ported exactly), Map segments draw
-  their derived speed y′(u)/x′(u); the header carries the Retime enable toggle,
-  the Lin/Slow/Fast/Smth/Shrp ramp presets (stamping the segment under the
-  playhead via `setSegmentPreset`) and →Rate (`convertSegmentToRate`, surfacing
-  a conversion notice); boundaries draw as verticals, the interior ones
-  draggable (live curve preview, committing `dragBoundary` on release); 0%/100%
-  reference lines, a labelled y-grid, and the playhead with a speed readout,
-  all on the ruler's shared `LaneScale`. Unit-tested (ease shapes, sampling, the
-  map derivative, segment-at-frame, boundary hit-test/clamp) + widget-tested
-  (appears with the lens + a footage selection; preset click stamps the playhead
-  frame; →Rate surfaces the notice; boundary drag commits `dragBoundary`).
-  **Named remainder** — the genuine parity gap (egui *ships* it, big build): the
-  Retime **Time**/value (source-position) lens and the transform value/speed
-  graph (`graph.rs:86-94`, K-078); egui draws both, the Flutter graph editor
-  ports only the speed lens, so a non-footage or un-retimed selection shows a
-  calm hint. Its dependents ride that build: the **Vegas default-lens preference**
-  (`graph.rs:164`, inert until the Time lens exists), **boundary beat/frame
-  snapping** on graph drags (`graph.rs:1616-1628`), and value-key bezier/speed
-  handles. **egui-gap verdicts (2026-07-22 — 04-RETIMING spec-only; verified
-  absent in graph.rs, excluded from parity):** RATE/MAP **type chips** + ease-name
-  label (§9.4), **kink badges** (§6.1), the graph's own **overrun hatching**
-  (§7.2 — egui hatches overrun only on the clip bar, `panel.rs:992`), and the
-  per-boundary/per-segment **numeric % / t·s entry** fields (§9.3 — no `TextEdit`/
-  `DragValue`/type-to-edit in graph.rs).
+- ☑ Graph lens — all three lenses `graph.rs` offers (docs/04-RETIMING.md §9,
+  `graph.rs::graph_plot`/`graph_plot_retime`, `anim.rs`; K-078), picked in a
+  shared header. Files: `panels/timeline/graph_editor.dart` (dispatcher + lens
+  picker + Vegas + property picker), `graph_value_lens.dart`, `graph_time_lens.dart`,
+  `graph_speed_lens.dart`, the pure `graph_maths.dart`; one switch in
+  `timeline_panel.dart`. **Transform value graph** — the selected/first-animated
+  property's curve, piecewise per key-pair honouring `SideInterp` (Hold steps,
+  Linear lines, Bezier segments sampled densely from the real `anim::CubicSpan`
+  bezier — the same bracketed-Newton solve the engine uses, never polylines);
+  interp-coded glyphs (`key_glyph.dart`), a selected-key ring, in-time+value key
+  drag, gold tangent handles (the `speed`/`influence` ↔ endpoint geometry ported
+  from `graph.rs`, committing `setKeyframeInterp`), the right-click interp menu
+  (Easy ease / Linear / Hold / Delete), double-click-to-add; value-unit y-axis.
+  **Retime Time lens** — source position over comp time (`Retime::evaluate`),
+  boundary source-position reference lines, boundaries dragged in TIME through
+  `dragBoundary` (its faithful home, docs/04 §9.1) with beat/frame snapping;
+  source-seconds y-axis. **Retime speed lens** — the earlier build (Rate ease
+  shapes, Map derivative, ramp presets, →Rate, boundary drag, 0%/100% refs). The
+  **Vegas default-lens preference** (`graph.rs:164`, session-scope `AppState`
+  field, mirrored as `AppStateStub.vegasDefaultLens`) and **beat/frame snapping**
+  (`graph.rs:1616-1628`) landed. Unit-tested (bezier value/speed eval vs. the
+  `anim.rs` EASY_EASE midpoint, handle-mapping round-trip, dense sampling,
+  source-position sampling, axis ticks, snapping) + widget-tested (lens switching,
+  value curve renders, key drag → `add_key`/`shift_keys`, handle drag →
+  `setKeyframeInterp`, Time lens renders, boundary drag → `dragBoundary`, Vegas
+  flips the lens). **Named residuals (bridge-op fidelity):** no whole-`Animation`
+  bridge setter, so a key drag moving both time and value commits `shiftKeyframes`
+  then `addKeyframe` (≤ 2 undo steps; a value-only drag is one) not egui's single
+  `SetTransformProperty`; the Time lens's *vertical* (source-position) boundary
+  drag has no bridge op (`SetLayerRetime`/`from_source_keyframes` unexposed), so
+  only the horizontal (time) drag commits; value-key marquee multi-select deferred
+  (single selection landed). **egui-gap verdicts (04-RETIMING spec-only; absent in
+  graph.rs, excluded from parity):** RATE/MAP **type chips** + ease-name label
+  (§9.4), **kink badges** (§6.1), the graph's own **overrun hatching** (§7.2 —
+  egui hatches overrun only on the clip bar, `panel.rs:992`), and the per-boundary/
+  per-segment **numeric % / t·s entry** fields (§9.3 — no type-to-edit in graph.rs).
 - ☑ Timeline top row / session (wave 3, 2026-07-22): the composition
   **motion-blur master** moved into the top row beside the layer search
   (`timeline_panel.dart` `_MotionBlurMaster`); a **resizable outline column**
@@ -477,11 +488,19 @@ and tested (K-171), only unwired.
   **overrun HOLD hatch** on the clip bar (wash + 45° hatch + exhaustion tick +
   HOLD tag, panel.rs:994; the `overrun_span_secs`/`overrun_local_time`/`evaluate`
   retime maths ported to `graph_maths.dart`, unit-tested)
-- ☐ Remainder (blocked): matte/blend/parent columns; **effect-param keyframe
-  lanes in the outline** (egui's "Effects" group + parameter rows + lanes,
-  panel.rs:1602 `effects_rows`) — effect keyframing landed in the Effect controls
-  panel this wave; porting the lanes into the timeline outline is a larger
-  outline build (06 §C)
+- ☑ **Effect-param keyframe lanes in the outline**: the outline twirl grows an
+  "Effects" group per layer (shown only when the layer has effects, collapsed by
+  default) with a sub-twirl per effect and one lane row per animatable parameter
+  — stopwatch, ◄ ◆ ► navigator, value readout, and the param's keys on the lane
+  (`FxParamRow`, `property_row.dart`; wired in `timeline_panel.dart`). The fx
+  keyframe logic is shared with the Effect controls panel (`fx_keys.dart` — the
+  panel now delegates, not duplicates); `LaneKeyId` carries an optional
+  `(effectId, channel)`, so fx keys select/drag/copy-paste through the same lane
+  host (`shiftEffectParamKeyframes`/`removeEffectParamKeyframe`; clipboard pastes
+  fx keys per-op). egui draws one lane per param (never per-channel; colour → no
+  lane), mirrored. Named remainder: no right-click interp menu on the fx lane
+  (small follow-up; the `setEffectParamKeyframeInterp` op exists) (06 §C closed)
+- ☐ Remainder (blocked): matte/blend/parent columns in the outline
 
 ## Phase F4 — editors (in progress)
 

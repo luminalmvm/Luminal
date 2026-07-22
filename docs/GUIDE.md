@@ -2476,8 +2476,19 @@ adds the fold-out twirl on each layer (revealing its transform property rows, ea
 with a stopwatch, the ◄ ◆ ► keyframe navigator and its keyframes drawn as
 shape-coded diamonds you can select and drag), the work-area band on the ruler with
 draggable edges, a right-click menu on each layer, a search box that filters the
-layers by name, and a scrollbar to slide left and right once you have zoomed in;
-the graph editor is still to come.
+layers by name, and a scrollbar to slide left and right once you have zoomed in.
+The **graph editor** landed too: the bottom-bar toggle turns the lane into a curve
+editor, with the lens chosen in its header. The **value graph** draws a layer's
+chosen (or first animated) transform property as a smooth curve — sampled from the
+same bezier the engine evaluates, so it never fakes the shape with straight lines
+between keys — with the keyframes as shape-coded glyphs you drag in time and value,
+gold **bezier handles** on a selected key, a right-click menu (easy-ease / linear /
+hold / delete) and a double-click to add a key. A **retimed footage layer** adds two
+more lenses: the **speed** lens (the speed-over-time ramp, with its presets and
+→Rate) and the **Time** lens (where the source frame sits over comp time, whose
+boundary joins you drag in time). Drags snap to beats and whole frames with the
+magnet on. It shares the timeline's own zoom and scroll, so the curve stays lined up
+with the lanes underneath.
 
 **What the bridge carries now (v0.4): export, Retime and the last columns.** The
 biggest addition is **export** — writing the finished comp to an `.mp4`. Rather

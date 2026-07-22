@@ -331,6 +331,59 @@ class AppStateStub extends ChangeNotifier {
   bool timelineGraphMode = false;
   bool snapping = true;
 
+  // --- Graph editor lens state (additive; egui `AppState::graph_*`) --------
+  //
+  // Which lens the graph editor shows and, for the value lens, which property
+  // it graphs. Session state mirroring egui's in-memory `graph_speed_view` /
+  // `graph_retime` / `graph_prop` / `vegas_default_lens` (none of which are
+  // persisted Settings — `app_state/mod.rs:1232`). `graphLens` is one of
+  // `speed` / `time` / `value`; the GraphEditor constrains it to the lenses
+  // valid for the current selection.
+
+  /// The graph editor's active lens: `speed` (Retime speed %), `time` (Retime
+  /// source position), or `value` (a transform property's value curve). Default
+  /// `value`, the ordinary graph editor — egui's `graph_retime`/`graph_speed_view`
+  /// both start false (`app_state/mod.rs:1253`).
+  String graphLens = 'value';
+
+  /// The transform property the value lens graphs (a snapshot snake_case name,
+  /// e.g. `position_x`), or null to graph the layer's first animated property —
+  /// egui's `graph_prop` (`unwrap_or(PositionX)`).
+  String? graphProp;
+
+  /// The Vegas default-lens preference: when set, opening a retimed footage
+  /// layer's Retime channel defaults to the speed-% lens rather than the Time
+  /// lens (egui's `vegas_default_lens`, `graph.rs:164` — an in-memory field, not
+  /// a persisted Setting). Default off, matching egui.
+  bool vegasDefaultLens = false;
+
+  /// Set the graph editor's active lens (`speed`/`time`/`value`).
+  void setGraphLens(String lens) {
+    if (graphLens == lens) return;
+    graphLens = lens;
+    notifyListeners();
+  }
+
+  /// Point the value lens at a transform property (a snapshot snake_case name),
+  /// or null to fall back to the first animated property.
+  void setGraphProp(String? prop) {
+    if (graphProp == prop) return;
+    graphProp = prop;
+    notifyListeners();
+  }
+
+  /// Toggle the Vegas default-lens preference; when it changes and a Retime lens
+  /// is active, switch the active lens to match (speed when on, time when off),
+  /// so the checkbox reads as an immediate lens choice like egui's.
+  void setVegasDefaultLens(bool value) {
+    if (vegasDefaultLens == value) return;
+    vegasDefaultLens = value;
+    if (graphLens == 'speed' || graphLens == 'time') {
+      graphLens = value ? 'speed' : 'time';
+    }
+    notifyListeners();
+  }
+
   /// The selected layer, by its snapshot layer id (was an int index in F0; the
   /// Timeline selects by the engine's stable layer id so ops address the right
   /// layer). Null when nothing is selected.

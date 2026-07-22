@@ -7,6 +7,8 @@
 // clamp live in panels/timeline/ and are unit-tested; this file is the widget
 // composition and the session-only interaction state (twirls, selection, pan).
 
+import 'dart:convert';
+
 import 'package:flutter/gestures.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
@@ -18,6 +20,7 @@ import '../state/app_state.dart';
 import '../widgets/controls.dart';
 import 'timeline/cache_bar.dart';
 import 'timeline/comp_tabs.dart';
+import 'timeline/fx_keys.dart';
 import 'timeline/graph_editor.dart';
 import 'timeline/group_header.dart';
 import 'timeline/keyframe_clipboard.dart';
@@ -92,6 +95,13 @@ class _TimelineBodyState extends State<_TimelineBody>
     implements TimelineLaneHost {
   /// Layer ids whose outline twirl is open (property rows shown).
   final Set<String> _open = {};
+
+  /// Layer ids whose Effects group (under the layer twirl) is open.
+  final Set<String> _effectsOpen = {};
+
+  /// Effect instance ids whose parameter rows are twirled open (collapsed by
+  /// default in the timeline, mirroring egui).
+  final Set<String> _fxOpen = {};
 
   /// The horizontal pan: the view's left-edge comp frame (0 = comp start).
   /// Persisted only for this session (widget state), as the brief asks.
@@ -266,13 +276,14 @@ class _TimelineBodyState extends State<_TimelineBody>
     final clip = KeyframeClipboard.decode(app.keyframeClipboard);
     if (clip.isEmpty) return;
     final playhead = app.previewFrame;
+    // Transform keys: one value batch per layer (one undo step), then each
+    // eased key's shape restored (the batch op carries no interp).
     for (final layerId in clip.layerIds) {
       app.applyKeyframeBatch(
           widget.compId, layerId, pasteAddBatchJson(clip, layerId, playhead));
     }
-    // Restore the easing the value-only batch could not carry.
     for (final k in clip.keys) {
-      if (!k.eases) continue;
+      if (k.isEffect || !k.eases) continue;
       app.setKeyframeInterp(
         widget.compId,
         k.layerId,
@@ -285,6 +296,29 @@ class _TimelineBodyState extends State<_TimelineBody>
         speedOut: k.speedOut ?? 0,
         influenceOut: k.influenceOut ?? 1.0 / 3.0,
       );
+    }
+    // Effect-param keys: the bridge has no effect batch op, so paste each
+    // (per channel) as one addEffectParamKeyframe, restoring the eased shape.
+    for (final k in effectClipboardKeys(clip)) {
+      final frame = playhead + k.frameOffset;
+      app.addEffectParamKeyframe(widget.compId, k.layerId, k.effectId!,
+          k.property, k.channel, frame, k.value);
+      if (k.eases) {
+        app.setEffectParamKeyframeInterp(
+          widget.compId,
+          k.layerId,
+          k.effectId!,
+          k.property,
+          k.channel,
+          frame,
+          k.interpIn,
+          k.interpOut,
+          k.speedIn ?? 0,
+          k.influenceIn ?? 1.0 / 3.0,
+          k.speedOut ?? 0,
+          k.influenceOut ?? 1.0 / 3.0,
+        );
+      }
     }
     setState(() {
       _selectedKeys
@@ -335,16 +369,30 @@ class _TimelineBodyState extends State<_TimelineBody>
   void keyDragEnd() {
     final delta = _dragDelta;
     if (delta != 0) {
-      // One shiftKeyframes per (layer, property) channel — a single undo step
-      // each, exactly as egui commits its lane drag per property.
+      // One shiftKeyframes per (layer, property) transform channel — a single
+      // undo step each, exactly as egui commits its lane drag per property.
       final groups = groupKeysForShift(_selectedKeys);
       groups.forEach((channel, frames) {
         app.shiftKeyframes(widget.compId, channel.$1, channel.$2, frames, delta);
       });
-      // The selection follows the moved keys to their new frames.
+      // Effect-param keys: one shiftEffectParamKeyframes per (layer, effect,
+      // param), repeated across the param's value channels (a multi-channel
+      // param keys every channel together).
+      final fxGroups = groupEffectKeysForShift(_selectedKeys);
+      fxGroups.forEach((key, frames) {
+        final (layerId, effectId, paramName) = key;
+        final param = _findEffectParam(layerId, effectId, paramName);
+        if (param == null) return;
+        final framesJson = jsonEncode(frames);
+        for (final ch in fxParamChannels(param.kind)) {
+          app.shiftEffectParamKeyframes(
+              widget.compId, layerId, effectId, paramName, ch, framesJson, delta);
+        }
+      });
+      // The selection follows the moved keys to their new frames (fx identity
+      // carried across via [LaneKeyId.atFrame]).
       final moved = <LaneKeyId>{
-        for (final k in _selectedKeys)
-          LaneKeyId(k.layerId, k.property, k.frame + delta),
+        for (final k in _selectedKeys) k.atFrame(k.frame + delta),
       };
       _selectedKeys
         ..clear()
@@ -359,7 +407,33 @@ class _TimelineBodyState extends State<_TimelineBody>
   @override
   void keyRemove(LaneKeyId key) {
     _selectedKeys.remove(key);
-    app.removeKeyframe(widget.compId, key.layerId, key.property, key.frame);
+    if (key.isEffect) {
+      final param = _findEffectParam(key.layerId, key.effectId!, key.property);
+      if (param != null) {
+        for (final ch in fxParamChannels(param.kind)) {
+          app.removeEffectParamKeyframe(widget.compId, key.layerId,
+              key.effectId!, key.property, ch, key.frame);
+        }
+      }
+    } else {
+      app.removeKeyframe(widget.compId, key.layerId, key.property, key.frame);
+    }
+  }
+
+  /// Resolve the effect param a fx lane key belongs to, so its value channels
+  /// can drive the shift / remove ops.
+  BridgeEffectParam? _findEffectParam(
+      String layerId, String effectId, String paramName) {
+    for (final l in widget.comp.layers) {
+      if (l.id != layerId) continue;
+      for (final e in l.effects) {
+        if (e.id != effectId) continue;
+        for (final p in e.params) {
+          if (p.name == paramName) return p;
+        }
+      }
+    }
+    return null;
   }
 
   void _toggleOpen(String layerId) {
@@ -704,6 +778,52 @@ class _TimelineBodyState extends State<_TimelineBody>
           scale: scale,
           host: this,
         ));
+      }
+      // The Effects group (egui panel.rs:1602 `effects_rows`): shown only when
+      // the layer carries effects, twirled closed by default. Each effect is its
+      // own sub-twirl, its animatable parameters listed as lane rows underneath.
+      if (layer.effects.isNotEmpty) {
+        final fxOpen = _effectsOpen.contains(layer.id);
+        rows.add(GroupHeaderRow(
+          key: ValueKey('group:${layer.id}:effects'),
+          label: 'Effects',
+          open: fxOpen,
+          outlineWidth: outlineW,
+          onTap: () => setState(() {
+            if (!_effectsOpen.remove(layer.id)) _effectsOpen.add(layer.id);
+          }),
+        ));
+        if (fxOpen) {
+          for (final e in layer.effects) {
+            final params = fxAnimatableParams(e);
+            final open = _fxOpen.contains(e.id);
+            rows.add(GroupHeaderRow(
+              key: ValueKey('group:${layer.id}:fx:${e.id}'),
+              label: e.name,
+              open: open,
+              indent: 1,
+              outlineWidth: outlineW,
+              onTap: () => setState(() {
+                if (!_fxOpen.remove(e.id)) _fxOpen.add(e.id);
+              }),
+            ));
+            if (open) {
+              for (final p in params) {
+                rows.add(FxParamRow(
+                  key: ValueKey('fxrow:${layer.id}:${e.id}:${p.name}'),
+                  app: app,
+                  compId: widget.compId,
+                  layer: layer,
+                  effect: e,
+                  param: p,
+                  outlineWidth: outlineW,
+                  scale: scale,
+                  host: this,
+                ));
+              }
+            }
+          }
+        }
       }
     }
     return rows;

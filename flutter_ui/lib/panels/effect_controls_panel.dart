@@ -23,6 +23,7 @@ import '../state/app_state.dart';
 import '../theme/theme.dart';
 import '../widgets/colour_picker.dart';
 import '../widgets/controls.dart';
+import 'timeline/fx_keys.dart';
 
 /// Fixed width of a value cell so the axis boxes line up down the group.
 const double _cellWidth = 60.0;
@@ -869,20 +870,9 @@ class _FxKeyframeControls extends StatelessWidget {
     required this.channels,
   });
 
-  /// The union of this param's key frames across every channel, sorted.
-  List<int> _frames() {
-    final frames = <int>{};
-    for (final k in param.keys) {
-      frames.add(k.frame);
-    }
-    for (final list in param.channelKeys.values) {
-      for (final k in list) {
-        frames.add(k.frame);
-      }
-    }
-    final list = frames.toList()..sort();
-    return list;
-  }
+  /// The union of this param's key frames across every channel, sorted (shared
+  /// with the Timeline outline through `fxUnionFrames`).
+  List<int> _frames() => fxUnionFrames(param);
 
   void _toggleStopwatch() {
     final frame = app.previewFrame;
@@ -1109,20 +1099,10 @@ class _EffectParamRow extends StatelessWidget {
   /// value a new key takes at the playhead — null for a non-animatable kind
   /// (enum/bool/seed/file/layer), which shows no stopwatch.
   List<(int, double Function())>? _channels() {
-    switch (param.kind) {
-      case 'scalar':
-        return [
-          (0, () => param.value is num ? (param.value as num).toDouble() : 0.0),
-        ];
-      case 'point':
-        final xy = _rgbaOf(param.value);
-        return [(0, () => xy[0]), (1, () => xy[1])];
-      case 'colour':
-        final c = _rgbaOf(param.value);
-        return [(0, () => c[0]), (1, () => c[1]), (2, () => c[2]), (3, () => c[3])];
-      default:
-        return null;
-    }
+    if (!fxParamAnimatable(param.kind)) return null;
+    // Share the channel/value derivation with the Timeline outline; the panel
+    // wants lazy getters, so wrap each channel's (fixed) value.
+    return [for (final (ch, v) in fxChannelValues(param)) (ch, () => v)];
   }
 
   @override
@@ -1419,16 +1399,9 @@ class _ColourSwatch extends StatelessWidget {
 }
 
 /// A parameter value's scene-linear RGBA, tolerant of `[r,g,b]` or `[r,g,b,a]`.
-List<double> _rgbaOf(Object? value) {
-  if (value is List) {
-    final out = [for (final e in value) e is num ? e.toDouble() : 0.0];
-    while (out.length < 4) {
-      out.add(out.length == 3 ? 1.0 : 0.0);
-    }
-    return out;
-  }
-  return const [0, 0, 0, 1];
-}
+// Delegates to the shared `fxRgbaOf` (fx_keys.dart) so the panel and the
+// Timeline outline read channel values the same way.
+List<double> _rgbaOf(Object? value) => fxRgbaOf(value);
 
 /// A read-only display string for a non-editable parameter value.
 String _displayValue(Object? value) {

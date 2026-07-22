@@ -7,6 +7,7 @@
 // Pure data so the row set is unit-tested without a widget tree.
 
 import '../../bridge/bridge.dart';
+import 'fx_keys.dart';
 
 /// One property row descriptor: its display [label] and the snake_case bridge
 /// property name(s) it edits — a pair (`anchor_x`, `anchor_y`) on one row, or a
@@ -71,4 +72,28 @@ bool rowAnimated(BridgeTransform? transform, PropRowSpec spec) {
     if (transform[name]?.animated == true) return true;
   }
   return false;
+}
+
+// --- Effect-parameter rows (the timeline outline's Effects group) ----------
+
+/// The animatable parameters of an effect instance, in stack order — the rows
+/// the timeline Effects group shows under that effect (one per param). Mirrors
+/// egui's `effects_rows`, which lists a row per Float param; the Flutter model
+/// additionally surfaces the bridge-v0.9 colour/point channel keys, so every
+/// animatable-kind param (scalar/point/colour) gets a row. Non-animatable kinds
+/// (enum/bool/seed/file/layer) have no lane and are dropped here.
+List<BridgeEffectParam> fxAnimatableParams(BridgeEffect effect) => [
+      for (final p in effect.params)
+        if (fxParamAnimatable(p.kind)) p,
+    ];
+
+/// The sentence-case display label for an effect param [name] (`blur_radius` →
+/// "Blur radius"), the same folding the Effect controls panel uses.
+String fxParamLabel(String name) {
+  final words = name.split('_').where((w) => w.isNotEmpty).toList();
+  if (words.isEmpty) return name;
+  final first = words.first;
+  final head =
+      first.isEmpty ? first : '${first[0].toUpperCase()}${first.substring(1)}';
+  return [head, ...words.skip(1)].join(' ');
 }

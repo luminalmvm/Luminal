@@ -150,6 +150,53 @@ pass-throughs):
   keeps in-window, 06 §E) rather than promising a future popout
   (`panels/timeline/comp_tabs.dart`).
 
+Closed in the LayerMap / fx-lane wave (2026-07-22), removed from the burn-down
+(§D and §C):
+
+- **Viewer transform gizmo — full manipulator (§D).** The egui `LayerMap`
+  (comp→viewer-pixel mapping with position/anchor/scale/rotation, `timeline/
+  mod.rs:30-85`) is ported into `panels/viewer_layer_map.dart` (`ViewerLayerMap`
+  + `panBehindPosition`), unit-tested against hand-computed cases
+  (`test/viewer_layer_map_test.dart`). The gizmo (`panels/viewer_overlays.dart`)
+  now draws the layer's bounding box through the map, corner/edge scale handles
+  (a drag commits `scale_x`/`scale_y` on release, animation-aware), the anchor
+  crosshair as the exact egui `anchor_overlay` pan-behind (drag → `anchor_x/y` +
+  `position_x/y`, keying keyed props / setting static ones — egui's `mk`
+  closure), and a body drag committing Position; handles hit-test in viewer
+  space with the K-116 slop, live-preview while dragging, commit on release. It
+  draws over both the shared-texture and CPU paths (positioned from the fitted
+  rect `viewer_panel.dart` passes in). *egui-gap verdict (verified in
+  `overlays.rs`, read end to end):* egui's viewer overlays draw **only** the
+  anchor-cross pan-behind drag (`anchor_overlay`, lines 143-242) — there is **no
+  bounding box, no scale handles and no rotation affordance** in egui. The box,
+  scale handles and body drag are the Flutter "full manipulator" the LayerMap
+  unblocks, built on the exact ported maths and the same animation-aware
+  transform ops. **Rotation is not built** (egui offers none). `test/
+  viewer_gizmo_test.dart` covers the box/handle render and each drag's committed
+  op (body/anchor pan-behind/corner-both/edge-one/keyed→keyframe).
+- **Effect-param keyframe lanes in the Timeline outline (§C).** The outline twirl
+  now grows an "Effects" group per layer (shown only when the layer has effects,
+  collapsed by default) with a sub-twirl per effect and one lane row per
+  animatable parameter — stopwatch, ◄ ◆ ► navigator, value readout, and the
+  param's keyframes drawn on the lane (`FxParamRow` in `panels/timeline/
+  property_row.dart`, wired in `timeline_panel.dart` `_layerBlock`). The fx
+  keyframe logic (channels, union frames, channel fields) is shared with the
+  Effect controls panel through `panels/timeline/fx_keys.dart` (the panel's
+  `_channels`/`_frames`/`_rgbaOf` now delegate — extracted, not duplicated). The
+  lane machinery generalised: `LaneKeyId` carries an optional `(effectId,
+  channel)` (transform keys leave it null), so fx keys select / drag / copy-paste
+  through the same `TimelineLaneHost` — `keyDragEnd` splits transform vs fx and
+  commits `shiftEffectParamKeyframes` (per channel), `keyRemove` routes to
+  `removeEffectParamKeyframe`, and the clipboard carries fx keys (pasted via
+  per-key `addEffectParamKeyframe` + interp restore, since the bridge has no
+  effect batch op). *egui verdict (per-channel vs one row, verified in
+  `effect_rows.rs`):* egui draws **one lane row per param** (Float; an X/Y pair
+  folded to one row keyed on x), **never per-channel**, and colour params get no
+  lane — mirrored here as one union lane per animatable param. *Named remainder:*
+  the fx lane has no right-click interpolation menu (the transform interp menu is
+  `applyKeyframeBatch`-shaped; an fx-interp menu is a small follow-up — the
+  `setEffectParamKeyframeInterp` op exists).
+
 ## Blocked — awaiting engine/bridge capability, with evidence
 
 Each row states the specific missing capability. None can land Dart-side without
@@ -186,42 +233,40 @@ annotated honestly rather than faked.
 
 **Section C — timeline and graph:**
 
-- **Graph editor — the transform value graph and the Retime Time
-  (source-position) lens** (`graph.rs:86-94`, K-078). The Flutter graph editor
-  ports the Retime *speed* lens; the value graph for an animated transform
-  property (curves from keys with draggable bezier value handles) and the Time
-  (source-position) lens for Map segments remain a substantial unbuilt
-  graph-editor build — deliberately NOT half-built in this wave, since a
-  low-fidelity value curve (bezier segments drawn as straight lines) would drift
-  from `graph.rs`'s real shapes. Its dependents ride that same build — the
-  **lens picker in the header**, the **Vegas default-lens preference**
-  (`graph.rs:164`, an `egui::Checkbox` the shell persists — verified it persists
-  one, so it lands with the value lens), **boundary beat/frame snapping** on
-  graph drags (`graph.rs:1616-1628`), and the **graph-key right-click interp
-  menu** applying to value keys. The `evaluate`/`overrun_local_time` retime maths
-  this build shares were ported to `graph_maths.dart` in the final UI wave (for
-  the HOLD hatch), so the value-lens build inherits them.
+- **Graph editor — the transform value graph and the Retime Time (source-position)
+  lens** — **BUILT** (2026-07-22, `graph.rs:86-94`/`anim.rs`, K-078). The graph
+  editor now offers all three lenses `graph.rs` does, picked in a shared header:
+  the transform **value graph** for the selected/first-animated property (the
+  piecewise per-key-pair curve — Hold steps, Linear lines, Bezier segments sampled
+  densely from the real `anim::CubicSpan` bezier, never polylines between keys),
+  with interp-coded glyphs (`key_glyph.dart`), a selected-key ring, in-time+value
+  key drag, draggable gold tangent handles (the `speed`/`influence` ↔ endpoint
+  geometry ported from `graph.rs`), the graph-key right-click interp menu (Easy
+  ease / Linear / Hold / Delete) and double-click-to-add; the **Retime Time lens**
+  (source position over comp time via `Retime::evaluate`, boundary joins dragged
+  in TIME through the `dragBoundary` op — its faithful home, docs/04 §9.1); and
+  the existing **Retime speed lens**. The **lens picker**, the **Vegas
+  default-lens preference** (`graph.rs:164` — an in-memory `AppState` field, not a
+  Setting; mirrored as `AppStateStub.vegasDefaultLens`, session scope) and
+  **boundary beat/frame snapping** (`graph.rs:1616-1628`) all landed. Pure maths
+  in `graph_maths.dart` (bezier sampling, handle mapping, source-position
+  sampling, axis ticks, snapping), unit-tested against hand-computed values and
+  the `anim.rs` EASY_EASE midpoint; widgets in `graph_value_lens.dart`,
+  `graph_time_lens.dart`, `graph_speed_lens.dart`, dispatched by `graph_editor.dart`.
+  *Named residuals (bridge-op fidelity):* the Flutter bridge exposes only granular
+  keyframe ops (no whole-`Animation` setter), so a key drag that moves BOTH time
+  and value commits `shiftKeyframes` then `addKeyframe` (≤ 2 undo steps; a
+  value-only drag is one) rather than egui's single `SetTransformProperty`; and the
+  Time lens's *vertical* (source-position) boundary drag has no bridge op
+  (`SetLayerRetime`/`from_source_keyframes` unexposed), so only the horizontal
+  (time) boundary drag is committable — an honest scope edge, same spirit as the
+  speed lens. Marquee multi-select of value keys is likewise deferred (single-key
+  selection landed).
   *egui-gap verdicts (04-RETIMING spec-only — egui never built them, verified in
   graph.rs and excluded from parity):* RATE/MAP **type chips** + ease-name labels
   (§9.4); **kink badges** (§6.1); **numeric % and t·s entry fields** (§9.3); the
   graph's **own overrun hatching** (§7.2 — egui hatches overrun only on the clip
   bar, `panel.rs:992`, which the clip-bar HOLD hatch now draws).
-
-- **Effect-param keyframe lanes in the Timeline outline** — egui shows each
-  layer's effect stack as an "Effects" group in the timeline outline with
-  per-parameter rows and their keyframe lanes (`panel.rs:1602`, `effects_rows`).
-  The Flutter timeline outline shows only the Transform group; effect keyframing
-  currently lives in the Effect controls panel (stopwatch + navigator, landed
-  this wave). Porting the effect group + parameter rows + lanes into the timeline
-  outline is a larger outline build (the `PropertyRow`/lane machinery is
-  transform-shaped) — a named remainder, not faked.
-
-**Section D — editors, viewer and panels:**
-
-- **Viewer transform gizmo — full manipulator.** The selected 2D layer draws an
-  anchor crosshair, draggable to move its Position. The pan-behind anchor maths,
-  the bounding box and the scale handles await the `LayerMap` (layer↔screen
-  transform) port from `overlays.rs`.
 
 **Section E — chrome and shell:**
 
@@ -294,3 +339,23 @@ annotated honestly rather than faked.
   by BridgeReply" remainder was stale — `driftSeconds` is threaded and the notice
   reads "fitted, N ms drift"; 05's F3 graph-lens named-remainder dropped the
   drift-figure caveat.
+
+## Platform passes and engine enhancements (recorded 2026-07-22, from the
+## owner's friend's review — outside this branch's parity scope, never lost)
+
+- **Shared-texture on Linux and macOS.** The zero-copy Viewer path is
+  Windows/D3D12 only, and rightly so today: the Flutter frontend itself builds
+  only for Windows (the project was scaffolded `--platforms windows`). When the
+  Linux/macOS Flutter passes happen, the texture path needs DMA-BUF (Linux) and
+  IOSurface/Metal (macOS) implementations — both already named in
+  03-ARCHITECTURE. The CPU path is the portable fallback by design.
+- **GPU-side scope pass.** The reviewer is right that the Scopes could be
+  computed on the GPU and delivered zero-copy. Parity note: the egui frontend's
+  shipped scopes are ALSO CPU-computed (from the RAM-banked frame), and Lumit's
+  own spec records the GPU scope pass as future work (the K-096 v1 note:
+  "guaranteed every-frame tracing still waits on a GPU-side scope pass"). It is
+  an ENGINE enhancement (a new WGSL pass in lumit-gpu) benefiting both
+  frontends, so it belongs on main, not the port branch.
+- **Thumbnails stay CPU-decoded on purpose**: the egui frontend also decodes
+  thumbnails on the CPU; they are tiny one-off images, not per-frame streams —
+  parity holds and zero-copy would buy nothing.

@@ -11,6 +11,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:lumit_flutter/bridge/bridge.dart';
 import 'package:lumit_flutter/panels/timeline/graph_editor.dart';
 import 'package:lumit_flutter/panels/timeline/graph_maths.dart';
+import 'package:lumit_flutter/panels/timeline/graph_time_lens.dart';
+import 'package:lumit_flutter/panels/timeline/graph_value_lens.dart';
 import 'package:lumit_flutter/panels/timeline_panel.dart';
 import 'package:lumit_flutter/state/app_state.dart';
 import 'package:lumit_flutter/theme/theme.dart';
@@ -70,10 +72,57 @@ BridgeRetime _heroRetime() {
   return comp.layers.firstWhere((l) => l.id == 'hero').retime!;
 }
 
-/// A fake bridge that answers with the Retime document and records ops.
+/// A comp ("Scene2") whose solid layer "box" carries an animated rotation
+/// (frames 0..60, easy-ease both keys) plus a static position — the value-lens
+/// fixture (a keyed transform property with a bezier side, so a tangent handle
+/// shows and drags).
+const _valueJson = '''
+{
+  "ok": true,
+  "items": [
+    {
+      "id": "c1", "name": "Scene2", "kind": "composition", "children": [],
+      "comp": {
+        "width": 1920, "height": 1080,
+        "fps": {"num": 60, "den": 1}, "frame_count": 120,
+        "layers": [
+          {
+            "id": "box", "index": 0, "name": "box", "kind": "solid",
+            "in_frame": 0, "out_frame": 120, "label": 1,
+            "switches": {"visible": true, "audible": true, "locked": false,
+              "three_d": false, "collapse": false, "fx": true,
+              "solo": false, "motion_blur": false},
+            "transform": {
+              "position_x": {"value": 960.0, "animated": false, "keys": []},
+              "rotation": {
+                "value": 0.0, "animated": true,
+                "keys": [
+                  {"frame": 0, "value": 0.0, "interp_in": "Bezier",
+                   "interp_out": "Bezier",
+                   "bezier_in": {"speed": 0.0, "influence": 0.3333333333},
+                   "bezier_out": {"speed": 0.0, "influence": 0.3333333333}},
+                  {"frame": 60, "value": 90.0, "interp_in": "Bezier",
+                   "interp_out": "Bezier",
+                   "bezier_in": {"speed": 0.0, "influence": 0.3333333333},
+                   "bezier_out": {"speed": 0.0, "influence": 0.3333333333}}
+                ]
+              }
+            }
+          }
+        ],
+        "markers": []
+      }
+    }
+  ],
+  "can_undo": false, "can_redo": false, "path": null
+}''';
+
+/// A fake bridge that answers with a fixed document ([json]) and records ops.
 class _GraphFake implements DocumentBridge {
   final List<String> ops = [];
-  BridgeReply _snap() => BridgeReply.parse(_retimeJson);
+  final String json;
+  _GraphFake({this.json = _retimeJson});
+  BridgeReply _snap() => BridgeReply.parse(json);
   BridgeReply _op(String record) {
     ops.add(record);
     return _snap();
@@ -411,16 +460,24 @@ void main() {
       expect(find.byType(GraphEditor), findsOneWidget);
       expect(find.text('Select a layer to edit its curves.'), findsOneWidget);
 
-      // Select the retimed footage layer: the header (with →Rate) appears.
+      // Select the retimed footage layer and pick the speed lens: its
+      // sub-header (with →Rate and the ramp presets) appears.
       app.selectLayer('hero');
+      app.setGraphLens('speed');
       await tester.pump();
       expect(find.text('→Rate'), findsOneWidget);
       expect(find.text('Ramp'), findsOneWidget);
+      // The lens picker offers all three lenses for a retimed footage layer.
+      expect(find.text('Speed'), findsOneWidget);
+      expect(find.text('Time'), findsOneWidget);
+      expect(find.text('Value'), findsOneWidget);
 
-      // Select the un-retimed footage layer: the enable hint instead.
+      // Select the un-retimed footage layer: the speed lens is unavailable, so
+      // the picker falls to Value and the header offers the Retime enable.
       app.selectLayer('flat');
       await tester.pump();
-      expect(find.textContaining('no Retime'), findsOneWidget);
+      expect(find.text('Retime'), findsOneWidget);
+      expect(find.text('Speed'), findsNothing);
     });
 
     testWidgets('a preset click stamps the segment under the playhead',
@@ -430,6 +487,7 @@ void main() {
       final app = AppStateStub(bridge: fake)
         ..toggleGraphMode()
         ..selectLayer('hero')
+        ..setGraphLens('speed')
         ..goToFrame(90); // in the second segment
       await tester.pumpWidget(_host(app));
       await tester.pump();
@@ -446,6 +504,7 @@ void main() {
       final app = AppStateStub(bridge: fake)
         ..toggleGraphMode()
         ..selectLayer('hero')
+        ..setGraphLens('speed')
         ..goToFrame(30);
       await tester.pumpWidget(_host(app));
       await tester.pump();
@@ -463,7 +522,8 @@ void main() {
       final fake = _GraphFake();
       final app = AppStateStub(bridge: fake)
         ..toggleGraphMode()
-        ..selectLayer('hero');
+        ..selectLayer('hero')
+        ..setGraphLens('speed');
       await tester.pumpWidget(_host(app));
       await tester.pump();
 
@@ -491,6 +551,370 @@ void main() {
         isTrue,
         reason: 'ops were: ${fake.ops}',
       );
+    });
+  });
+
+  group('graph_maths — value curve', () {
+    const ease = BridgeBezier(speed: 0, influence: 1 / 3);
+    List<BridgeKeyframe> easeKeys(double v0, double v1) => [
+          BridgeKeyframe(
+              frame: 0,
+              value: v0,
+              interpIn: 'Bezier',
+              interpOut: 'Bezier',
+              bezierIn: ease,
+              bezierOut: ease),
+          BridgeKeyframe(
+              frame: 60,
+              value: v1,
+              interpIn: 'Bezier',
+              interpOut: 'Bezier',
+              bezierIn: ease,
+              bezierOut: ease),
+        ];
+
+    test('evaluateValueKeys matches the anim.rs EASY_EASE shape', () {
+      final keys = easeKeys(0, 100);
+      // The midpoint of a symmetric ease is the midpoint value (anim.rs test).
+      expect(evaluateValueKeys(keys, 60, 0.5), closeTo(50, 1e-6));
+      // Flat at both keys: the value barely moves near them.
+      expect(evaluateValueKeys(keys, 60, 0.01), lessThan(0.5));
+      expect(evaluateValueKeys(keys, 60, 0.99), greaterThan(99.5));
+      // Clamped flat outside the key span.
+      expect(evaluateValueKeys(keys, 60, -1), 0);
+      expect(evaluateValueKeys(keys, 60, 3), 100);
+    });
+
+    test('evaluateValueKeys is linear across a Linear/Linear span', () {
+      final keys = [
+        const BridgeKeyframe(
+            frame: 0, value: 0, interpIn: 'Linear', interpOut: 'Linear'),
+        const BridgeKeyframe(
+            frame: 60, value: 120, interpIn: 'Linear', interpOut: 'Linear'),
+      ];
+      // Half a second (frame 30) into a 0→120 ramp over 1 s.
+      expect(evaluateValueKeys(keys, 60, 0.5), closeTo(60, 1e-9));
+    });
+
+    test('a Hold-out span holds its value until the next key', () {
+      final keys = [
+        const BridgeKeyframe(
+            frame: 0, value: 3, interpIn: 'Hold', interpOut: 'Hold'),
+        const BridgeKeyframe(
+            frame: 120, value: 9, interpIn: 'Linear', interpOut: 'Linear'),
+      ];
+      expect(evaluateValueKeys(keys, 60, 1.0), 3); // held mid-span
+      expect(evaluateValueKeys(keys, 60, 2.0), 9); // steps at the key
+    });
+
+    test('handle geometry round-trips against the easy-ease third', () {
+      final e = handleEndpoint(
+          keyFrame: 0,
+          keyValue: 0,
+          neighbourFrame: 60,
+          isOut: true,
+          speed: 0,
+          influence: 1 / 3,
+          fps: 60);
+      expect(e.frame, closeTo(20, 1e-9)); // a third of the 60-frame gap
+      expect(e.value, closeTo(0, 1e-9)); // zero speed → flat handle
+      final back = handleFromDrag(
+          keyFrame: 0,
+          keyValue: 0,
+          neighbourFrame: 60,
+          isOut: true,
+          dragFrame: 20,
+          dragValue: 0,
+          fps: 60);
+      expect(back.influence, closeTo(1 / 3, 1e-6));
+      expect(back.speed, closeTo(0, 1e-6));
+      // Pull the endpoint up to (frame 30, value 30): reach ½ s → speed 60/s.
+      final steep = handleFromDrag(
+          keyFrame: 0,
+          keyValue: 0,
+          neighbourFrame: 60,
+          isOut: true,
+          dragFrame: 30,
+          dragValue: 30,
+          fps: 60);
+      expect(steep.influence, closeTo(0.5, 1e-9));
+      expect(steep.speed, closeTo(60, 1e-6));
+    });
+
+    test('sampleValueCurve is smooth and monotone across an easy ease', () {
+      final s = sampleValueCurve(easeKeys(0, 100), 60, 0, 60, samples: 60);
+      var prev = double.negativeInfinity;
+      for (final p in s) {
+        expect(p.value, greaterThanOrEqualTo(prev - 1e-9));
+        prev = p.value;
+      }
+      expect(s.first.value, closeTo(0, 1e-6));
+      expect(s.last.value, closeTo(100, 1e-6));
+    });
+
+    test('axisTickValues spaces four labels inside the range', () {
+      final ticks = axisTickValues(0, 100);
+      expect(ticks.length, 4);
+      expect(ticks.first, closeTo(20, 1e-9));
+      expect(ticks.last, closeTo(80, 1e-9));
+    });
+
+    test('propUnit reads the transform units', () {
+      expect(propUnit('scale_x'), '%');
+      expect(propUnit('opacity'), '%');
+      expect(propUnit('rotation'), '°');
+      expect(propUnit('position_x'), '');
+    });
+
+    test('snapGraphFrame rounds a value key and snaps a retime boundary', () {
+      // Value key: rounds to a whole comp frame, magnet on or off.
+      expect(
+          snapGraphFrame(30.4,
+              magnet: true, fps: 60, beats: const [], pxPerFrame: 10, retime: false),
+          30);
+      expect(
+          snapGraphFrame(30.4,
+              magnet: false, fps: 60, beats: const [], pxPerFrame: 10, retime: false),
+          30);
+      // Retime boundary near a beat marker snaps onto it (within ~6 px).
+      expect(
+          snapGraphFrame(58,
+              magnet: true, fps: 60, beats: const [60], pxPerFrame: 1, retime: true),
+          60);
+      // Too far from any beat: the rounded frame.
+      expect(
+          snapGraphFrame(30,
+              magnet: true, fps: 60, beats: const [60], pxPerFrame: 1, retime: true),
+          30);
+    });
+  });
+
+  group('graph_maths — Time lens', () {
+    test('sampleSourceCurve rises through the boundary source positions', () {
+      final rt = _heroRetime();
+      final s = sampleSourceCurve(rt, 0, 120, samples: 60);
+      expect(s, isNotEmpty);
+      // Source starts at 0 s and ends at 3.5 s (the last boundary).
+      expect(s.first.secs, closeTo(0.0, 1e-6));
+      expect(s.last.secs, closeTo(3.5, 1e-6));
+      // Monotone (the retime never reverses here).
+      var prev = double.negativeInfinity;
+      for (final p in s) {
+        expect(p.secs, greaterThanOrEqualTo(prev - 1e-9));
+        prev = p.secs;
+      }
+    });
+
+    test('the Time-lens boundary points are the store joins', () {
+      final pts = sourceBoundaryPoints(_heroRetime());
+      expect(pts.length, 3);
+      expect(pts[1].frame, closeTo(60, 1e-9));
+      expect(pts[1].secs, closeTo(1.5, 1e-9));
+    });
+  });
+
+  group('GraphEditor — value & Time lenses', () {
+    Future<void> wide(WidgetTester tester) async {
+      await tester.binding.setSurfaceSize(const Size(1200, 700));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+    }
+
+    testWidgets('lens switching moves between the value graph and the Retime lenses',
+        (tester) async {
+      await wide(tester);
+      final app = AppStateStub(bridge: _GraphFake())
+        ..toggleGraphMode()
+        ..selectLayer('hero');
+      await tester.pumpWidget(_host(app));
+      await tester.pump();
+
+      // The default lens is the value graph (egui's graph_retime/speed both off).
+      expect(app.graphLens, 'value');
+      // Switch to the Time lens.
+      await tester.tap(find.text('Time'));
+      await tester.pump();
+      expect(find.byType(GraphTimeLens), findsOneWidget);
+      // Switch to the speed lens (its →Rate sub-header appears).
+      await tester.tap(find.text('Speed'));
+      await tester.pump();
+      expect(find.text('→Rate'), findsOneWidget);
+    });
+
+    testWidgets('the Vegas toggle flips the active Retime lens', (tester) async {
+      await wide(tester);
+      final app = AppStateStub(bridge: _GraphFake())
+        ..toggleGraphMode()
+        ..selectLayer('hero')
+        ..setGraphLens('time');
+      await tester.pumpWidget(_host(app));
+      await tester.pump();
+
+      await tester.tap(find.text('Vegas'));
+      await tester.pump();
+      expect(app.vegasDefaultLens, isTrue);
+      expect(app.graphLens, 'speed'); // Vegas opens the speed-% lens
+    });
+
+    testWidgets('the value graph renders for a keyed transform property',
+        (tester) async {
+      await wide(tester);
+      final app = AppStateStub(bridge: _GraphFake(json: _valueJson))
+        ..toggleGraphMode()
+        ..selectLayer('box');
+      await tester.pumpWidget(_host(app));
+      await tester.pump();
+      expect(find.byType(GraphValueLens), findsOneWidget);
+      expect(app.graphLens, 'value');
+    });
+
+    testWidgets('the Time lens renders for a retimed footage layer',
+        (tester) async {
+      await wide(tester);
+      final app = AppStateStub(bridge: _GraphFake())
+        ..toggleGraphMode()
+        ..selectLayer('hero')
+        ..setGraphLens('time');
+      await tester.pumpWidget(_host(app));
+      await tester.pump();
+      expect(find.byType(GraphTimeLens), findsOneWidget);
+    });
+
+    testWidgets('a Time-lens boundary drag commits dragBoundary', (tester) async {
+      await wide(tester);
+      final fake = _GraphFake();
+      final app = AppStateStub(bridge: fake)
+        ..toggleGraphMode()
+        ..selectLayer('hero')
+        ..setGraphLens('time');
+      await tester.pumpWidget(_host(app));
+      await tester.pump();
+
+      final editor = tester.state(find.byType(GraphEditor)) as dynamic;
+      final scale = editor.widget.scale;
+      final startX = scale.xOfFrame(60) as double;
+      final targetX = scale.xOfFrame(45) as double;
+      final top = tester.getTopLeft(find.byType(GraphTimeLens));
+      final y = top.dy + 100;
+      final g = await tester.startGesture(Offset(startX, y));
+      await tester.pump();
+      await g.moveTo(Offset(targetX, y));
+      await tester.pump();
+      await g.up();
+      await tester.pump();
+
+      expect(
+        fake.ops.any((o) => o.startsWith('drag_boundary:hero/1@')),
+        isTrue,
+        reason: 'ops were: ${fake.ops}',
+      );
+    });
+
+    testWidgets('a value-key drag commits the keyframe value', (tester) async {
+      await wide(tester);
+      final fake = _GraphFake(json: _valueJson);
+      final app = AppStateStub(bridge: fake)
+        ..toggleGraphMode()
+        ..selectLayer('box');
+      await tester.pumpWidget(_host(app));
+      await tester.pump();
+
+      final rect = tester.getRect(find.byType(GraphValueLens));
+      final editor = tester.state(find.byType(GraphEditor)) as dynamic;
+      final scale = editor.widget.scale;
+      final keys = app.frontComp!.layers
+          .firstWhere((l) => l.id == 'box')
+          .transform!['rotation']!
+          .keys;
+      final frameHi = (scale.viewStartFrame as double) +
+          (scale.trackWidth as double) / (scale.pxPerFrame as double);
+      final range = fitValueRange(
+          keys, 60, scale.viewStartFrame as double, frameHi, staticValue: 0);
+      double yOf(double v) {
+        final (lo, hi) = range;
+        final span = (hi - lo).abs() < 1e-9 ? 1.0 : hi - lo;
+        return rect.height - ((v - lo) / span) * rect.height;
+      }
+
+      // Key 1 (frame 60, value 90): drag straight down (value only), in steps
+      // so the pan updates the provisional value before release.
+      final start = Offset(scale.xOfFrame(60) as double, rect.top + yOf(90));
+      final g = await tester.startGesture(start);
+      await tester.pump();
+      await g.moveBy(const Offset(0, 25));
+      await tester.pump();
+      await g.moveBy(const Offset(0, 25));
+      await tester.pump();
+      await g.up();
+      await tester.pump();
+      // Drain the double-tap recogniser's pending timer before teardown.
+      await tester.pump(const Duration(milliseconds: 400));
+
+      expect(fake.ops, contains('add_key'), reason: 'ops were: ${fake.ops}');
+    });
+
+    testWidgets('a tangent-handle drag commits setKeyframeInterp',
+        (tester) async {
+      await wide(tester);
+      final fake = _GraphFake(json: _valueJson);
+      final app = AppStateStub(bridge: fake)
+        ..toggleGraphMode()
+        ..selectLayer('box');
+      await tester.pumpWidget(_host(app));
+      await tester.pump();
+
+      final rect = tester.getRect(find.byType(GraphValueLens));
+      final editor = tester.state(find.byType(GraphEditor)) as dynamic;
+      final scale = editor.widget.scale;
+      final keys = app.frontComp!.layers
+          .firstWhere((l) => l.id == 'box')
+          .transform!['rotation']!
+          .keys;
+      final frameHi = (scale.viewStartFrame as double) +
+          (scale.trackWidth as double) / (scale.pxPerFrame as double);
+      final range = fitValueRange(
+          keys, 60, scale.viewStartFrame as double, frameHi, staticValue: 0);
+      double yOf(double v) {
+        final (lo, hi) = range;
+        final span = (hi - lo).abs() < 1e-9 ? 1.0 : hi - lo;
+        return rect.height - ((v - lo) / span) * rect.height;
+      }
+
+      // Select key 1 (frame 60, value 90) so its handles show. Grabbing a key
+      // selects it (onPanStart), and the fake returns the same store, so key 1
+      // stays at (60, 90) with its handles on for the following handle drag.
+      // (Key 0 sits under the outline-resize divider, so key 1 is used.)
+      final k1 = Offset(scale.xOfFrame(60) as double, rect.top + yOf(90));
+      final sel = await tester.startGesture(k1);
+      await tester.pump();
+      await sel.moveBy(const Offset(0, 25));
+      await tester.pump();
+      await sel.up();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+
+      // Its in-handle sits at (frame 40, value 90); drag it (steeper slope).
+      final e = handleEndpoint(
+          keyFrame: 60,
+          keyValue: 90,
+          neighbourFrame: 0,
+          isOut: false,
+          speed: 0,
+          influence: 1 / 3,
+          fps: 60);
+      final handle =
+          Offset(scale.xOfFrame(e.frame) as double, rect.top + yOf(e.value));
+      final g = await tester.startGesture(handle);
+      await tester.pump();
+      await g.moveBy(const Offset(0, -18));
+      await tester.pump();
+      await g.moveBy(const Offset(0, -18));
+      await tester.pump();
+      await g.up();
+      await tester.pump();
+      // Drain the double-tap recogniser's pending timer before teardown.
+      await tester.pump(const Duration(milliseconds: 400));
+
+      expect(fake.ops, contains('key_interp'), reason: 'ops were: ${fake.ops}');
     });
   });
 }
