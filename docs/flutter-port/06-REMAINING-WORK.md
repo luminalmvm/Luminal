@@ -458,3 +458,25 @@ annotated honestly rather than faked.
     (a keyed mutex or shared fence around the D3D12 copy — the named K-177
     follow-up — and/or the descriptor/`MarkTextureFrameAvailable` ordering in
     `viewer_texture_bridge.cpp`).
+
+## Desk-test round 4 (owner, 2026-07-22)
+
+- **The blank shared-texture Viewer is RESOLVED by observation**: after the
+  round-3 rebuild the picture shows on Windows with the GPU switch on and off.
+  The root cause was never pinned (the fence/keyed-mutex handshake remains
+  unbuilt), so the kill-switch and the GPU/CPU indicator STAY, and if a blank
+  frame, stutter or tearing ever recurs the handshake is the first fix.
+- **Pop-out round 1 findings (owner: "a later issue", logged not fixed):**
+  1. *The popped-out panel's tab stays visible in the main window* — the
+     hide-while-floating behaviour (the egui `Shell::floating` contract the
+     pop-out was built to honour) is not taking effect; the dock still shows
+     the panel. Defect, later.
+  2. *Dragging footage from a popped-out Project into the main window does
+     nothing* — architectural: `Draggable`/`DragTarget` cannot cross Flutter
+     engines (each window is its own engine). A cross-window drop needs a
+     bridge-mediated hand-off (or OS-level drag). Caveat recorded; the
+     in-window drag and double-click placement still work.
+- **The Linux build WORKS** (verified live — the CI-pending caveat is
+  retired). The Viewer runs on the CPU path there; the owner now wants the
+  **Linux zero-copy texture path (DMA-BUF)** — promoted from the platform-pass
+  list to scheduled work.
