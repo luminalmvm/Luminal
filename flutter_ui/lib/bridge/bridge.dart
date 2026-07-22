@@ -1135,21 +1135,50 @@ class DecodedFrame {
   });
 }
 
-/// A frame that stayed on the GPU (the zero-copy Viewer path, K-177): the NT
-/// [handle] of the shared texture it lives in, plus its dimensions. No pixels
-/// cross — the Windows runner opens the handle and Flutter samples it directly.
-/// The handle is stable across frames (the same texture is re-used) and changes
+/// A frame that stayed on the GPU (the zero-copy Viewer path, K-177). No pixels
+/// cross — the runner opens the shared resource and Flutter samples it directly.
+/// The identity is stable across frames (the same texture is re-used) and changes
 /// only when the composition is resized.
+///
+/// Two platform shapes share this one type:
+/// - **Windows** (DXGI shared handle): [handle] names the texture; the DMA-BUF
+///   fields are null.
+/// - **Linux** (Vulkan DMA-BUF): [fd] is the exported file descriptor, with
+///   [stride], [offset], [fourcc] and [modifier] describing the buffer; [handle]
+///   is 0. [isDmabuf] distinguishes them.
 class SharedFrame {
   final int handle;
   final int width;
   final int height;
 
+  /// The exported DMA-BUF file descriptor (Linux), or null on Windows.
+  final int? fd;
+
+  /// The DMA-BUF row stride in bytes (Linux), else null.
+  final int? stride;
+
+  /// The DMA-BUF plane offset in bytes (Linux), else null.
+  final int? offset;
+
+  /// The DRM fourcc of the DMA-BUF (Linux), else null.
+  final int? fourcc;
+
+  /// The DRM format modifier of the DMA-BUF (Linux; 0 = linear), else null.
+  final int? modifier;
+
   const SharedFrame({
     required this.handle,
     required this.width,
     required this.height,
+    this.fd,
+    this.stride,
+    this.offset,
+    this.fourcc,
+    this.modifier,
   });
+
+  /// True for the Linux DMA-BUF shape (an exported [fd] is present).
+  bool get isDmabuf => fd != null;
 }
 
 /// One node in the Project panel tree. Folders carry nested [children]; every
@@ -1404,6 +1433,31 @@ typedef _RenderSharedC = Bool Function(Pointer<Char>, Uint64, Pointer<Uint64>,
     Pointer<Uint32>, Pointer<Uint32>);
 typedef _RenderSharedDart = bool Function(
     Pointer<Char>, int, Pointer<Uint64>, Pointer<Uint32>, Pointer<Uint32>);
+// The Linux DMA-BUF sibling (K-177): renders comp `id` at `frame` into a Vulkan
+// image exported as a DMA-BUF, writing the fd + DRM metadata into the
+// out-pointers (fd, width, height, stride, offset, fourcc, modifier), returning
+// true on success. A separate export from the Windows one so the Windows ABI is
+// untouched; Dart picks the entry point by platform.
+typedef _RenderSharedDmabufC = Bool Function(
+    Pointer<Char>,
+    Uint64,
+    Pointer<Int32>,
+    Pointer<Uint32>,
+    Pointer<Uint32>,
+    Pointer<Uint32>,
+    Pointer<Uint32>,
+    Pointer<Uint32>,
+    Pointer<Uint64>);
+typedef _RenderSharedDmabufDart = bool Function(
+    Pointer<Char>,
+    int,
+    Pointer<Int32>,
+    Pointer<Uint32>,
+    Pointer<Uint32>,
+    Pointer<Uint32>,
+    Pointer<Uint32>,
+    Pointer<Uint32>,
+    Pointer<Uint64>);
 
 // GPU scope pass (K-096 v1): like the comp render, but keyed by a scope kind
 // and five packed 0x00RRGGBB colours, returning the fixed 256×256 RGBA8 trace.
@@ -2073,6 +2127,10 @@ class LumitBridge
   /// [supportsSharedTexture] is false and the Viewer keeps the read-back path.
   _SharedSupportedDart? _sharedSupported;
   _RenderSharedDart? _renderToShared;
+  // The Linux DMA-BUF render entry point (K-177), bound defensively alongside the
+  // Windows one. On Linux [renderToShared] prefers this; on Windows it is null and
+  // the handle path is used.
+  _RenderSharedDmabufDart? _renderToSharedDmabuf;
 
   /// The GPU scope-pass symbol (K-096 v1). Bound defensively like
   /// [_renderCompFrame]: an older `.dll` lacks it, so it stays null and
@@ -2361,6 +2419,17 @@ class LumitBridge
     } catch (_) {
       _sharedSupported = null;
       _renderToShared = null;
+    }
+    // The Linux DMA-BUF render entry point is a newer, separate symbol — bind it
+    // independently so a library that has the Windows shared symbol but not this
+    // one (or vice versa) still binds what it can.
+    try {
+      _renderToSharedDmabuf =
+          lib.lookupFunction<_RenderSharedDmabufC, _RenderSharedDmabufDart>(
+        'lumit_bridge_render_to_shared_dmabuf',
+      );
+    } catch (_) {
+      _renderToSharedDmabuf = null;
     }
     // The ABI-8 cache/cancel/thumbnail symbols are optional (an older library
     // omits them). Bind each independently so a partial upgrade still offers
@@ -3179,13 +3248,28 @@ class LumitBridge
   bool get supportsSharedTexture {
     final supported = _sharedSupported;
     // Both the presence of the symbol AND the engine's own answer must agree:
-    // an old library has no symbol; a feature-less or non-Windows build has the
-    // symbol but answers false. `renderToShared` must also be bound to use it.
-    return supported != null && _renderToShared != null && supported();
+    // an old library has no symbol; a feature-less or unsupported-platform build
+    // has the symbol but answers false. The per-platform render entry point must
+    // also be bound — the DMA-BUF one on Linux, the shared-handle one elsewhere.
+    if (supported == null || !supported()) return false;
+    return Platform.isLinux
+        ? _renderToSharedDmabuf != null
+        : _renderToShared != null;
   }
 
   @override
   SharedFrame? renderToShared(String compId, int frame) {
+    // Linux renders into a Vulkan image exported as a DMA-BUF; every other
+    // platform uses the DXGI shared-handle path. The Windows ABI is untouched —
+    // the two are separate engine exports and the platform picks between them.
+    return Platform.isLinux
+        ? _renderSharedViaDmabuf(compId, frame)
+        : _renderToSharedHandle(compId, frame);
+  }
+
+  /// The Windows/DXGI shared-handle render (K-177): comp `id` at `frame` into the
+  /// shared texture, returning its NT handle and size. Null on failure.
+  SharedFrame? _renderToSharedHandle(String compId, int frame) {
     final render = _renderToShared;
     if (render == null) return null; // old library without the symbol
     final id = compId.toNativeUtf8();
@@ -3207,6 +3291,49 @@ class LumitBridge
       malloc.free(outHandle);
       malloc.free(outW);
       malloc.free(outH);
+    }
+  }
+
+  /// The Linux DMA-BUF render (K-177): comp `id` at `frame` into the exported
+  /// image, returning its fd + DRM metadata as a [SharedFrame]. Null on failure
+  /// (no capable Vulkan adapter, missing extensions, a transient error), which
+  /// sends the Viewer back to the read-back path for that frame.
+  SharedFrame? _renderSharedViaDmabuf(String compId, int frame) {
+    final render = _renderToSharedDmabuf;
+    if (render == null) return null; // library without the DMA-BUF symbol
+    final id = compId.toNativeUtf8();
+    final outFd = malloc<Int32>();
+    final outW = malloc<Uint32>();
+    final outH = malloc<Uint32>();
+    final outStride = malloc<Uint32>();
+    final outOffset = malloc<Uint32>();
+    final outFourcc = malloc<Uint32>();
+    final outModifier = malloc<Uint64>();
+    try {
+      final ok = render(id.cast(), frame, outFd, outW, outH, outStride,
+          outOffset, outFourcc, outModifier);
+      if (!ok || outFd.value < 0 || outW.value == 0 || outH.value == 0) {
+        return null;
+      }
+      return SharedFrame(
+        handle: 0,
+        width: outW.value,
+        height: outH.value,
+        fd: outFd.value,
+        stride: outStride.value,
+        offset: outOffset.value,
+        fourcc: outFourcc.value,
+        modifier: outModifier.value,
+      );
+    } finally {
+      malloc.free(id);
+      malloc.free(outFd);
+      malloc.free(outW);
+      malloc.free(outH);
+      malloc.free(outStride);
+      malloc.free(outOffset);
+      malloc.free(outFourcc);
+      malloc.free(outModifier);
     }
   }
 

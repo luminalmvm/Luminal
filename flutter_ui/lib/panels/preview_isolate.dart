@@ -59,6 +59,29 @@ typedef _RenderSharedC = Bool Function(
     Pointer<Char>, Uint64, Pointer<Uint64>, Pointer<Uint32>, Pointer<Uint32>);
 typedef _RenderSharedDart = bool Function(
     Pointer<Char>, int, Pointer<Uint64>, Pointer<Uint32>, Pointer<Uint32>);
+// The Linux DMA-BUF sibling (K-177): the frame stays on the GPU as a DMA-BUF; the
+// reply carries the exported fd + DRM metadata (fd, width, height, stride,
+// offset, fourcc, modifier) instead of an NT handle.
+typedef _RenderSharedDmabufC = Bool Function(
+    Pointer<Char>,
+    Uint64,
+    Pointer<Int32>,
+    Pointer<Uint32>,
+    Pointer<Uint32>,
+    Pointer<Uint32>,
+    Pointer<Uint32>,
+    Pointer<Uint32>,
+    Pointer<Uint64>);
+typedef _RenderSharedDmabufDart = bool Function(
+    Pointer<Char>,
+    int,
+    Pointer<Int32>,
+    Pointer<Uint32>,
+    Pointer<Uint32>,
+    Pointer<Uint32>,
+    Pointer<Uint32>,
+    Pointer<Uint32>,
+    Pointer<Uint64>);
 
 /// What the isolate needs to boot: the port to hand its own receive port back
 /// on, and the candidate library paths to open (the UI isolate resolved these).
@@ -152,16 +175,32 @@ class IsolateFrameRenderer implements FrameRenderer {
     }
     if (message is! List) return;
     // A shared-texture reply is tagged; an RGBA (comp/decode) reply is a bare
-    // 4-tuple `[generation, width, height, ttd]`.
-    if (message.length == 5 && message[0] == 'shared') {
+    // 4-tuple `[generation, width, height, ttd]`. The shared reply carries both
+    // shapes: the Windows handle and the Linux DMA-BUF fields (fd -1 / handle 0
+    // for the shape not in use).
+    if (message.isNotEmpty && message[0] == 'shared' && message.length == 10) {
       final generation = message[1] as int;
       final handle = message[2] as int;
       final width = message[3] as int;
       final height = message[4] as int;
+      final fd = message[5] as int;
+      final stride = message[6] as int;
+      final offset = message[7] as int;
+      final fourcc = message[8] as int;
+      final modifier = message[9] as int;
       final onFrame = _awaitingShared.remove(generation);
       if (onFrame == null) return; // superseded/unknown — drop it
-      if (handle != 0 && width > 0 && height > 0) {
-        onFrame(SharedFrame(handle: handle, width: width, height: height));
+      if (width > 0 && height > 0 && (handle != 0 || fd >= 0)) {
+        onFrame(SharedFrame(
+          handle: handle,
+          width: width,
+          height: height,
+          fd: fd >= 0 ? fd : null,
+          stride: fd >= 0 ? stride : null,
+          offset: fd >= 0 ? offset : null,
+          fourcc: fd >= 0 ? fourcc : null,
+          modifier: fd >= 0 ? modifier : null,
+        ));
       } else {
         onFrame(null);
       }
@@ -292,7 +331,7 @@ void _workerMain(_WorkerInit init) {
       if (message is! List || message.length != 5) return;
       final generation = message[4] as int;
       if (message[0] == 'shared') {
-        init.mainPort.send(['shared', generation, 0, 0, 0]);
+        init.mainPort.send(_emptySharedReply(generation));
       } else {
         init.mainPort.send([generation, 0, 0, null]);
       }
@@ -304,6 +343,7 @@ void _workerMain(_WorkerInit init) {
   _RenderGenDart? renderGen;
   _DecodeDart? decode;
   _RenderSharedDart? renderShared;
+  _RenderSharedDmabufDart? renderSharedDmabuf;
   _FreeBufferDart? freeBuffer;
   try {
     render = lib.lookupFunction<_RenderC, _RenderDart>(
@@ -330,6 +370,13 @@ void _workerMain(_WorkerInit init) {
     renderShared = null;
   }
   try {
+    renderSharedDmabuf =
+        lib.lookupFunction<_RenderSharedDmabufC, _RenderSharedDmabufDart>(
+            'lumit_bridge_render_to_shared_dmabuf');
+  } catch (_) {
+    renderSharedDmabuf = null;
+  }
+  try {
     freeBuffer = lib.lookupFunction<_FreeBufferC, _FreeBufferDart>(
         'lumit_bridge_free_buffer');
   } catch (_) {
@@ -345,8 +392,8 @@ void _workerMain(_WorkerInit init) {
     final generation = message[4] as int;
 
     if (kind == 'shared') {
-      final shared = _renderShared(renderShared, id, frame);
-      init.mainPort.send(['shared', generation, shared.$1, shared.$2, shared.$3]);
+      init.mainPort
+          .send(_renderShared(renderShared, renderSharedDmabuf, id, frame, generation));
       return;
     }
     final reply = (kind == 'comp')
@@ -356,20 +403,81 @@ void _workerMain(_WorkerInit init) {
   });
 }
 
-/// Render one comp into the shared GPU texture on the worker; returns
-/// `(handle, width, height)` — zeros on failure. No buffer to free: the frame
-/// stays on the GPU (K-177).
-(int, int, int) _renderShared(
-    _RenderSharedDart? renderShared, String compId, int frame) {
-  if (renderShared == null) return (0, 0, 0);
+/// The empty shared reply (nothing rendered): handle 0, fd -1. Length matches a
+/// real reply so the UI-isolate parser reads a consistent shape.
+List<Object?> _emptySharedReply(int generation) =>
+    ['shared', generation, 0, 0, 0, -1, 0, 0, 0, 0];
+
+/// Render one comp into the shared GPU texture on the worker, returning the wire
+/// reply `['shared', generation, handle, width, height, fd, stride, offset,
+/// fourcc, modifier]`. No buffer to free: the frame stays on the GPU (K-177).
+/// The Linux DMA-BUF export is preferred when its symbol is present and succeeds
+/// (Windows builds answer false for it); otherwise the Windows shared-handle
+/// export is tried. On Windows the DMA-BUF fields carry `fd -1`; on Linux the
+/// handle carries `0`.
+List<Object?> _renderShared(_RenderSharedDart? renderShared,
+    _RenderSharedDmabufDart? renderSharedDmabuf, String compId, int frame,
+    int generation) {
+  // Prefer the DMA-BUF export (Linux). It returns false off Linux / without the
+  // feature, so this falls through to the handle export there.
+  if (renderSharedDmabuf != null) {
+    final id = compId.toNativeUtf8();
+    final outFd = malloc<Int32>();
+    final outW = malloc<Uint32>();
+    final outH = malloc<Uint32>();
+    final outStride = malloc<Uint32>();
+    final outOffset = malloc<Uint32>();
+    final outFourcc = malloc<Uint32>();
+    final outModifier = malloc<Uint64>();
+    try {
+      final ok = renderSharedDmabuf(id.cast(), frame, outFd, outW, outH,
+          outStride, outOffset, outFourcc, outModifier);
+      if (ok && outFd.value >= 0 && outW.value > 0 && outH.value > 0) {
+        return [
+          'shared',
+          generation,
+          0,
+          outW.value,
+          outH.value,
+          outFd.value,
+          outStride.value,
+          outOffset.value,
+          outFourcc.value,
+          outModifier.value,
+        ];
+      }
+    } finally {
+      malloc.free(id);
+      malloc.free(outFd);
+      malloc.free(outW);
+      malloc.free(outH);
+      malloc.free(outStride);
+      malloc.free(outOffset);
+      malloc.free(outFourcc);
+      malloc.free(outModifier);
+    }
+  }
+
+  if (renderShared == null) return _emptySharedReply(generation);
   final id = compId.toNativeUtf8();
   final outHandle = malloc<Uint64>();
   final outW = malloc<Uint32>();
   final outH = malloc<Uint32>();
   try {
     final ok = renderShared(id.cast(), frame, outHandle, outW, outH);
-    if (!ok) return (0, 0, 0);
-    return (outHandle.value, outW.value, outH.value);
+    if (!ok || outHandle.value == 0) return _emptySharedReply(generation);
+    return [
+      'shared',
+      generation,
+      outHandle.value,
+      outW.value,
+      outH.value,
+      -1,
+      0,
+      0,
+      0,
+      0,
+    ];
   } finally {
     malloc.free(id);
     malloc.free(outHandle);

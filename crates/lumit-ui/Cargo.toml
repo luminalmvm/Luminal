@@ -37,6 +37,11 @@ media = ["dep:lumit-media", "dep:lumit-audio", "dep:lumit-cache", "dep:lumit-eva
 # bridge turns it on for the shipped build. Needs the GPU renderer, so it
 # implies `media`, and forwards to lumit-gpu's own `shared-texture` feature.
 shared-texture = ["media", "lumit-gpu/shared-texture"]
+# The Linux DMA-BUF sibling of `shared-texture` (K-177): the headless renderer
+# can draw into a Vulkan image exported as a DMA-BUF for the GTK embedder. Off by
+# default; the bridge turns it on for the shipped Linux build. Implies `media`
+# and forwards to lumit-gpu's own `shared-texture-linux` feature.
+shared-texture-linux = ["media", "lumit-gpu/shared-texture-linux"]
 
 [target.'cfg(target_os = "macos")'.dependencies]
 muda = "0.15"

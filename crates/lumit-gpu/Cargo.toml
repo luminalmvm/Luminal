@@ -19,8 +19,17 @@ wgpu = "24"
 # backend already uses — a mismatched major would be a *different* type and the
 # hal hand-off would not compile). The actual D3D code is additionally
 # `cfg(windows)`-gated, so enabling the feature on a non-Windows target is inert.
+#
+# `shared-texture-linux` (K-177-linux) is the Vulkan/DMA-BUF sibling for the
+# owner's Linux collaborator. Off by default; the bridge turns it on to build the
+# shipped Linux `.so`. It pulls `ash` (pinned to 0.38 so its `vk::*` handle types
+# unify with the ones wgpu-hal's Vulkan backend already uses — the same
+# major-version-must-match reasoning the `windows` pin documents). The Vulkan
+# interop is additionally `cfg(target_os = "linux")`-gated, so enabling the
+# feature off Linux is inert.
 [features]
 shared-texture = ["dep:windows"]
+shared-texture-linux = ["dep:ash"]
 
 [target.'cfg(windows)'.dependencies.windows]
 version = "0.58"
@@ -32,6 +41,16 @@ features = [
     "Win32_Graphics_Direct3D12",
     "Win32_Graphics_Dxgi_Common",
 ]
+
+# ash for the Linux DMA-BUF path only. Pinned to 0.38 to match the version
+# wgpu-hal 24 already links, so `vk::Image`/`vk::DeviceMemory` and the Vulkan
+# loaders unify with wgpu-hal's Vulkan backend (a different major would be a
+# distinct, incompatible type set). Linux-only and optional, so no other target
+# or build pulls it.
+[target.'cfg(target_os = "linux")'.dependencies.ash]
+version = "0.38"
+optional = true
+default-features = false
 
 [dev-dependencies]
 # The CPU oracle the WGSL kernels are held to (docs/08 §1.6).

@@ -2227,6 +2227,38 @@ still need the actual numbers, and the fast path deliberately keeps the picture
 *off* ordinary memory, so the engine also does a slow copy a few times a second
 just to feed the Scopes, while the fast texture drives the Viewer itself.
 
+**Linux gets the same fast path, via DMA-BUF (K-177).** Windows shares GPU memory
+by an "NT handle"; Linux's equivalent is a **DMA-BUF** — a file descriptor (a
+small number the operating system uses to name an open resource) that names a
+piece of graphics memory. The Linux build does exactly what the Windows one does,
+with that primitive instead: the engine (running on Vulkan rather than Direct3D)
+makes a special *exportable* image, draws the finished frame into it, and asks
+the graphics driver for a descriptor naming its memory. It hands Flutter that
+descriptor plus a few numbers describing the buffer's layout (its width, how many
+bytes each row takes — the "stride" — and a code naming the pixel format). The
+Linux runner imports that descriptor into an OpenGL texture (through a mechanism
+called EGLImage) and shows it with the same `Texture` widget — again, no pixels
+copied. It is switched on with its own build flag (`--features
+shared-texture-linux`) and, exactly like the Windows path, degrades to the
+copy-the-bytes way whenever it cannot be used: an old library, no capable
+graphics card, or the specific graphics-memory-sharing features not being
+available. The Settings kill-switch and the GPU/CPU transport indicator work
+unchanged — the same controls cover both platforms. One honest caveat: the
+authoring machine for this code runs Windows and *cannot build or run the Linux
+half at all*, so CI only proves it **compiles** (both the Rust Vulkan code and the
+GTK plugin). Whether the picture actually appears is the Linux collaborator's
+check — the verification recipe is in §9.
+
+**The DMA-BUF format we ship.** The exported image is 8-bit RGBA holding the
+already-display-encoded bytes (byte-for-byte the same pixels the Windows path and
+the slow copy path produce), laid out with plain "linear" tiling — no vendor-
+specific memory scrambling. That keeps the graphics-driver requirements minimal:
+we do not use the more advanced "format modifier" route the reference
+implementation took, only the widely-supported external-memory feature. The
+format is reported to Flutter as the DRM code `DRM_FORMAT_ABGR8888` (which, in
+DRM's little-endian naming, means bytes in memory order red, green, blue, alpha —
+matching what Flutter samples) with a "linear" modifier.
+
 **The Scopes are computed on the graphics card now (the GPU scope pass, K-096
 v1).** A scope reads the picture's brightness and colour — a waveform, a
 histogram, a vectorscope. Both frontends used to work those out on the ordinary
@@ -2356,14 +2388,49 @@ for the same crate that becomes `lumit_bridge.dll` on Windows). Run the app with
 `flutter analyze`. If a run or test complains it cannot fetch packages offline,
 add `--no-pub` after a successful `flutter pub get` to reuse the resolved
 packages. Two things behave differently on Linux by design, both degrading
-cleanly rather than failing: the Viewer uses the **CPU frame path** (the
-copy-the-bytes way) because the zero-copy shared-texture path is Windows/D3D12
-only — DMA-BUF is the future Linux equivalent, not built yet — so scrubbing is a
-little heavier but everything draws; and **popping a panel out into its own OS
-window works** — the `desktop_multi_window` plugin ships a first-class Linux
-(GTK) implementation, so pop-out is *not* gated off Linux. Because this box
-cannot build Flutter-for-Linux, the Linux build is proven by the CI
-`flutter-linux` job, not locally — treat a green run of that job as the gate.
+cleanly rather than failing: the Viewer's zero-copy Viewer path uses **DMA-BUF**
+rather than the Windows DXGI shared handle (built behind
+`--features shared-texture-linux`, K-177 — see the DMA-BUF sections in §9 above);
+if that flag is off or the graphics card cannot support it, the Viewer falls back
+to the **CPU frame path** (the copy-the-bytes way), a little heavier but
+everything still draws; and **popping a panel out into its own OS window works** —
+the `desktop_multi_window` plugin ships a first-class Linux (GTK) implementation,
+so pop-out is *not* gated off Linux. Because this box cannot build
+Flutter-for-Linux, the Linux build is proven by the CI `flutter-linux` job, not
+locally — treat a green run of that job as the gate.
+
+**Verifying the Linux zero-copy Viewer (the collaborator's checklist, K-177).**
+CI proves the Rust Vulkan/DMA-BUF code and the GTK plugin *compile*; whether the
+picture actually reaches the screen can only be checked on a real Linux machine
+with a GPU. If you are that collaborator, here is the recipe (it mirrors how the
+Windows path was proven):
+
+1. **Build the engine with the flag.** From the repo root, build the bridge
+   library with the Linux zero-copy feature on:
+   `cargo build -p lumit-bridge --features shared-texture-linux --release`. This
+   is the `.so` the Flutter app loads. Then build and run the app:
+   `cd flutter_ui && flutter run -d linux --release` (the runner links EGL +
+   GLESv2 for the DMA-BUF import — the CI `flutter-linux` job installs
+   `libgles-dev`/`libegl-dev` for this).
+2. **Open a composition and scrub the Viewer.** The picture should look identical
+   to the CPU path — same colours, same framing. A washed-out, too-dark, or
+   swapped-channel picture means the DRM format is wrong (report it — see below).
+3. **Check the GPU/CPU transport indicator** (Settings, the same indicator the
+   Windows path added in round 3). On the zero-copy path it should read **GPU**.
+   If it reads **CPU**, the DMA-BUF path declined and fell back — that is safe but
+   means the fast path is not active; note what the console logged.
+4. **Toggle the Settings kill-switch off and on.** Off must drop the Viewer to the
+   CPU path (indicator reads CPU) with the picture unchanged; on must return it to
+   GPU. This proves the fallback is reachable without a rebuild.
+5. **What to report if the Viewer is blank or wrong.** A blank Viewer on the GPU
+   path most likely means the exported image did not import: capture any console
+   line mentioning `eglCreateImageKHR`, `dma-buf`, `vkGetMemoryFdKHR`, or
+   `device_from_raw`. The two most likely causes are (a) the GPU/driver did not
+   enable the external-memory Vulkan extensions (the engine then falls back to a
+   plain device and the indicator should read CPU, not blank), or (b) the DRM
+   format/stride does not match what the driver produced. Report the GPU model,
+   the Mesa/driver version, and whether the indicator read GPU or CPU — that is
+   enough to tell a format mismatch from an extension-support gap.
 
 **What the bridge carries now (v0.2).** The first bridge only described the
 project as a tree of item names. It now also carries the *inside* of things, so

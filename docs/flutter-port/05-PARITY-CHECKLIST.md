@@ -164,6 +164,35 @@ where the row is logic).
   render cancellation (below) are still open. The C++ runner plugin compiles only
   under `flutter build windows` on the owner's machine (the docs-first sandbox
   cannot run the Windows app toolchain).
+- ☑ Shared-texture path on **Linux** (zero-copy via **DMA-BUF**, K-177) — **built,
+  pending the collaborator's runtime verification**, opt-in `shared-texture-linux`
+  feature. The engine (on Vulkan via wgpu-hal's `as_hal`) creates an **exportable
+  `VkImage`** — linear tiling, `VkExternalMemoryImageCreateInfo` +
+  `VkExportMemoryAllocateInfo` with the DMA-BUF handle type — exports its fd
+  (`vkGetMemoryFdKHR` through ash's `khr::external_memory_fd`), reads its
+  stride/offset, and wraps it back into wgpu with `create_texture_from_hal`
+  (`crates/lumit-gpu/src/shared_linux.rs`). Because wgpu 24 does not enable the
+  external-memory device extensions by default, `GpuContext::headless` opens the
+  Vulkan device itself with them appended (replicating wgpu-hal's `open()`), and
+  falls back to a plain device if the adapter cannot — the read-back path then
+  still works. The bridge hands the fd + DRM metadata across as a **separate
+  export** so the Windows ABI is untouched (`lumit_bridge_render_to_shared_dmabuf`;
+  `shared_supported` now reports Windows-or-Linux), the GTK runner imports it into
+  a GL texture via `EGLImage`/`EGL_EXT_image_dma_buf_import` inside an `FlTextureGL`
+  subclass (`linux/runner/viewer_texture_bridge.{h,cc}`, wired in
+  `my_application.cc`, EGL+GLESv2 on the link line), and the Dart side branches the
+  same `ViewerTextureController.ensureRegistered` by platform to send the DMA-BUF
+  `register` payload. The DRM story shipped: **RGBA8 (`R8G8B8A8_UNORM`), linear
+  tiling, `DRM_FORMAT_ABGR8888`, `DRM_FORMAT_MOD_LINEAR`** — the simpler route the
+  reference (`flutter_wgpu_texture`) offered as an alternative to its full
+  format-modifier path. **What CI proves vs what awaits the collaborator:** CI
+  compiles the Rust half (`cargo check -p lumit-bridge --features
+  shared-texture-linux` in the `flutter-linux` job) and the GTK plugin (via
+  `flutter build linux`), and the Dart fallback chain is fake-channel tested for
+  the Linux branch; **actually seeing the picture — GPU indicator, correct colours,
+  kill-switch behaviour — is the Linux collaborator's runtime gate** (recipe in
+  GUIDE §9). Same airtight read-back fallback, kill-switch and GPU/CPU indicator as
+  Windows.
 - ☑ CPU RGBA fallback — **single-layer footage preview** (the fallback when comp
   render is unavailable: an old library, or no GPU adapter). The Viewer resolves
   the front comp's topmost visible footage layer whose span covers the playhead,

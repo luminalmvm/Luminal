@@ -85,6 +85,12 @@ pub struct HeadlessRenderer {
     /// `render_to_shared` call. Present only in the opt-in shared-texture build.
     #[cfg(all(windows, feature = "shared-texture"))]
     shared: Option<lumit_gpu::shared::SharedTexture>,
+    /// The Linux zero-copy Viewer target (K-177), the DMA-BUF sibling of
+    /// [`Self::shared`]. Held for the session and re-created only when the comp's
+    /// dimensions change. `None` until the first `render_to_shared_dmabuf` call.
+    /// Present only in the opt-in shared-texture-linux build.
+    #[cfg(all(target_os = "linux", feature = "shared-texture-linux"))]
+    shared_dmabuf: Option<lumit_gpu::shared_linux::SharedDmabuf>,
 }
 
 /// A rendered frame that stayed on the GPU: the NT handle of the shared texture
@@ -102,6 +108,25 @@ pub struct SharedFrameInfo {
     /// Always RGBA8888 (`DXGI_FORMAT_R8G8B8A8_UNORM` holding sRGB-encoded bytes),
     /// the identical pixels the read-back path produces.
     pub format: &'static str,
+}
+
+/// A rendered frame that stayed on the GPU as a DMA-BUF (the Linux zero-copy
+/// Viewer path, K-177): the exported file descriptor plus the dimensions, stride,
+/// offset and DRM format/modifier the GTK embedder needs to import it as an
+/// `EGLImage`. The Linux sibling of [`SharedFrameInfo`]. The fd stays valid
+/// across frames (the same texture is re-used) and only changes when the comp is
+/// resized.
+#[cfg(all(target_os = "linux", feature = "shared-texture-linux"))]
+pub struct SharedFrameInfoLinux {
+    pub fd: i32,
+    pub width: u32,
+    pub height: u32,
+    pub stride: u32,
+    pub offset: u32,
+    /// The DRM fourcc (`DRM_FORMAT_ABGR8888`, memory order R,G,B,A).
+    pub drm_fourcc: u32,
+    /// The DRM modifier (`DRM_FORMAT_MOD_LINEAR` = 0 on the linear-tiling path).
+    pub modifier: u64,
 }
 
 /// The inputs one export needs, built through the headless seam (K-175) so the
@@ -139,6 +164,8 @@ impl HeadlessRenderer {
             audio_cache: HashMap::new(),
             #[cfg(all(windows, feature = "shared-texture"))]
             shared: None,
+            #[cfg(all(target_os = "linux", feature = "shared-texture-linux"))]
+            shared_dmabuf: None,
         })
     }
 
@@ -441,6 +468,70 @@ impl HeadlessRenderer {
         out
     }
 
+    /// Render composition `comp_id` at integer `frame` into the Linux DMA-BUF GPU
+    /// texture, returning its exported fd and DRM metadata ([`SharedFrameInfoLinux`],
+    /// K-177) — the Linux sibling of [`Self::render_to_shared`]. The frame never
+    /// leaves the graphics card: it is composited and display-encoded exactly as
+    /// `render_rgba` does (preview == export == Flutter, K-031), then copied into
+    /// the DMA-BUF texture instead of being read back.
+    ///
+    /// The texture is created on the first call and re-used across frames (a
+    /// stable fd); a comp of different dimensions re-creates it and reports the new
+    /// fd. `Err` on an unknown comp, when wgpu is not on the Vulkan backend, when
+    /// the external-memory extensions were not enabled, or any Vulkan failure — the
+    /// bridge turns that into "no shared frame" and Dart falls back to read-back.
+    #[cfg(all(target_os = "linux", feature = "shared-texture-linux"))]
+    pub fn render_to_shared_dmabuf(
+        &mut self,
+        doc: &Document,
+        comp_id: Uuid,
+        frame: u64,
+    ) -> Result<SharedFrameInfoLinux, String> {
+        let comp = doc
+            .comp(comp_id)
+            .ok_or_else(|| "headless render: unknown composition".to_string())?;
+        let (cw, ch) = (comp.width, comp.height);
+        self.sync_items(doc, (cw, ch));
+        let fps = comp.frame_rate.fps().max(1.0);
+        let t = frame as f64 / fps;
+
+        let Some(parts) = self.parts.take() else {
+            return Err("headless render: renderer is unavailable after an earlier fault".into());
+        };
+        let mut renderer = Renderer {
+            doc,
+            items: &self.items,
+            gpu: &self.gpu,
+            colour: parts.colour,
+            compositor: parts.compositor,
+            decoders: parts.decoders,
+            flow: parts.flow,
+            fx: parts.fx,
+            lut_cache: parts.lut_cache,
+        };
+        let mut visited = vec![comp_id];
+        let out = render_display_into_shared_dmabuf(
+            &mut renderer,
+            comp,
+            t,
+            &mut visited,
+            &self.gpu,
+            &mut self.shared_dmabuf,
+            cw,
+            ch,
+        );
+        // Return the engines and warm decoders to the pool, even on error.
+        self.parts = Some(Parts {
+            colour: renderer.colour,
+            compositor: renderer.compositor,
+            fx: renderer.fx,
+            flow: renderer.flow,
+            lut_cache: renderer.lut_cache,
+            decoders: renderer.decoders,
+        });
+        out
+    }
+
     /// Rebuild the `ItemInfo` map from the document's footage, probing any item
     /// not already in `probe_cache`. Slate items are sized to `slate` (the
     /// comp's dimensions this call), matching export's `item_infos`.
@@ -556,6 +647,53 @@ fn render_display_into_shared(
         width,
         height,
         format: "rgba8888",
+    })
+}
+
+/// The Linux DMA-BUF twin of [`render_display_into_shared`]: composite once,
+/// display-encode, and copy the result into the DMA-BUF texture (creating/resizing
+/// it as needed), returning its fd and DRM metadata. The composite + display
+/// passes are byte-for-byte what `render_to_rgba` runs; only the final step
+/// differs (a GPU-to-GPU copy into the exported image instead of a read-back).
+#[cfg(all(target_os = "linux", feature = "shared-texture-linux"))]
+#[allow(clippy::too_many_arguments)]
+fn render_display_into_shared_dmabuf(
+    renderer: &mut Renderer,
+    comp: &lumit_core::model::Composition,
+    t: f64,
+    visited: &mut Vec<Uuid>,
+    gpu: &lumit_gpu::GpuContext,
+    shared: &mut Option<lumit_gpu::shared_linux::SharedDmabuf>,
+    width: u32,
+    height: u32,
+) -> Result<SharedFrameInfoLinux, String> {
+    let linear = renderer.render_comp_linear(comp, t, visited)?;
+    let shown = renderer.colour.display(gpu, &linear);
+
+    // Re-create the DMA-BUF texture when it is missing or the comp changed size —
+    // a new fd is reported then, which the bridge relays so Dart re-registers.
+    let needs_new = match shared.as_ref() {
+        Some(s) => s.width != width || s.height != height,
+        None => true,
+    };
+    if needs_new {
+        *shared = Some(lumit_gpu::shared_linux::SharedDmabuf::new(
+            gpu, width, height,
+        )?);
+    }
+    let target = shared
+        .as_ref()
+        .ok_or_else(|| "headless render: dmabuf texture missing after create".to_string())?;
+    target.present(gpu, &shown);
+    let info = target.info();
+    Ok(SharedFrameInfoLinux {
+        fd: info.fd,
+        width: info.width,
+        height: info.height,
+        stride: info.stride,
+        offset: info.offset,
+        drm_fourcc: info.drm_fourcc,
+        modifier: info.modifier,
     })
 }
 

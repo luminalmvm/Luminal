@@ -295,6 +295,23 @@ plugin (`viewer_texture_bridge.cpp`) compiles only under `flutter build windows`
 on a real machine; it was written against the actual `flutter_windows` /
 texture-registrar headers but cannot be compiled in the docs-first sandbox.
 
+**Linux has the same path via DMA-BUF (K-177).** The zero-copy Viewer is no
+longer Windows-only. Behind the sibling opt-in feature `shared-texture-linux`, the
+engine (on Vulkan through wgpu-hal) creates an exportable `VkImage`, exports a
+DMA-BUF fd (`vkGetMemoryFdKHR`), and the GTK runner
+(`linux/runner/viewer_texture_bridge.{h,cc}`) imports it into a GL external
+texture via `EGLImage`/`EGL_EXT_image_dma_buf_import` inside an `FlTextureGL`
+subclass. It uses the **same `lumit/viewer_texture` channel protocol** as Windows,
+but `register` carries `{fd, width, height, stride, offset, fourcc, modifier}`
+instead of an NT handle; the bridge exposes it through a separate export
+(`lumit_bridge_render_to_shared_dmabuf`) so the Windows ABI is untouched, and the
+Dart controller branches the `register` payload by platform. DRM story: RGBA8,
+linear tiling, `DRM_FORMAT_ABGR8888`, `DRM_FORMAT_MOD_LINEAR`. Like the Windows
+plugin, the GTK plugin compiles only under `flutter build linux` on a real
+machine; CI compiles both halves (`cargo check --features shared-texture-linux` +
+`flutter build linux`), and runtime verification is the Linux collaborator's
+(GUIDE §9).
+
 This is the only part of the port with real platform-specific plumbing; it is
 why the Viewer is its own phase.
 

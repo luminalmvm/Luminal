@@ -420,6 +420,36 @@ void main() {
       expect(c.available, isFalse);
       expect(c.textureId, isNull);
     });
+
+    testWidgets('the Linux branch sends the DMA-BUF register payload',
+        (tester) async {
+      // When an fd is supplied (the Linux DMA-BUF shape), `register` carries the
+      // fd + DRM metadata instead of a handle — the platform-conditional argument
+      // pack. The channel name and lifecycle are unchanged.
+      Map<Object?, Object?>? registerArgs;
+      tester.binding.defaultBinaryMessenger
+          .setMockMethodCallHandler(_defaultTextureChannel, (call) async {
+        if (call.method == 'register') {
+          registerArgs = call.arguments as Map<Object?, Object?>;
+          return 7;
+        }
+        return null;
+      });
+      final c = ViewerTextureController(channel: _defaultTextureChannel);
+      final id = await c.ensureRegistered(0, 32, 18,
+          fd: 42, stride: 128, offset: 0, fourcc: 0x34324241, modifier: 0);
+      expect(id, 7);
+      expect(registerArgs, isNotNull);
+      expect(registerArgs!['fd'], 42);
+      expect(registerArgs!['stride'], 128);
+      expect(registerArgs!['fourcc'], 0x34324241);
+      expect(registerArgs!.containsKey('handle'), isFalse,
+          reason: 'the DMA-BUF payload carries no NT handle');
+      // The same fd/size is a no-op (no second register).
+      expect(await c.ensureRegistered(0, 32, 18, fd: 42), 7);
+      tester.binding.defaultBinaryMessenger
+          .setMockMethodCallHandler(_defaultTextureChannel, null);
+    });
   });
 
   group('resolvePreview', () {
@@ -741,6 +771,55 @@ void main() {
       expect(source.displayedFrame, isNotNull,
           reason: 'a throttled read-back still feeds the Scopes their pixels');
       removeChannel();
+      source.dispose();
+    });
+
+    testWidgets('the Linux DMA-BUF frame registers via the fd payload',
+        (tester) async {
+      // A shared frame carrying DMA-BUF fields (the Linux shape) drives the same
+      // orchestration; the register call must carry the fd, not a handle.
+      const channel = MethodChannel(ViewerTextureController.channelName);
+      Map<Object?, Object?>? registerArgs;
+      tester.binding.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, (call) async {
+        if (call.method == 'register') {
+          registerArgs = call.arguments as Map<Object?, Object?>;
+          return 55;
+        }
+        return null;
+      });
+      final bridge = _SharedBridge(
+        snap,
+        decodeResult: _solid(4, 4, 1, 1, 1),
+        sharedResult: const SharedFrame(
+          handle: 0,
+          width: 32,
+          height: 18,
+          fd: 77,
+          stride: 128,
+          offset: 0,
+          fourcc: 0x34324241,
+          modifier: 0,
+        ),
+        compResult: _solid(8, 8, 20, 120, 200),
+      );
+      final app = AppStateStub(bridge: bridge);
+      late PreviewSource source;
+      await tester.runAsync(() async {
+        source = PreviewSource(app,
+            textureController:
+                ViewerTextureController(channel: _defaultTextureChannel));
+        await Future<void>.delayed(const Duration(milliseconds: 80));
+      });
+
+      expect(source.sharedActive, isTrue);
+      expect(source.textureId, 55);
+      expect(registerArgs, isNotNull);
+      expect(registerArgs!['fd'], 77);
+      expect(registerArgs!['fourcc'], 0x34324241);
+      expect(registerArgs!.containsKey('handle'), isFalse);
+      tester.binding.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, null);
       source.dispose();
     });
 

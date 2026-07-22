@@ -319,8 +319,20 @@ class PreviewSource extends ChangeNotifier {
         _drainWanted();
         return;
       }
+      // The platform-conditional argument pack: on Linux the shared frame carries
+      // the DMA-BUF fd + DRM metadata, on Windows just the handle. The controller
+      // sends the right `register` payload; the channel name and lifecycle are the
+      // same either way.
       final id = await controller.ensureRegistered(
-          shared.handle, shared.width, shared.height);
+        shared.handle,
+        shared.width,
+        shared.height,
+        fd: shared.fd,
+        stride: shared.stride,
+        offset: shared.offset,
+        fourcc: shared.fourcc,
+        modifier: shared.modifier,
+      );
       if (_disposed) return;
       if (id == null) {
         // The runner has no viewer-texture bridge (or registration failed): the

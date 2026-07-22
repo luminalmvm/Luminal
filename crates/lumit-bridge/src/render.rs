@@ -152,6 +152,41 @@ pub(crate) fn render_to_shared(comp_id: &str, frame: u64) -> Option<(u64, u32, u
     .flatten()
 }
 
+/// The DMA-BUF metadata one Linux zero-copy frame carries (K-177): the exported
+/// fd, dimensions, stride, offset, DRM fourcc and modifier.
+#[cfg(all(target_os = "linux", feature = "shared-texture-linux"))]
+pub(crate) type DmabufFrame = (i32, u32, u32, u32, u32, u32, u64);
+
+/// Render composition `comp_id` at `frame` into the Linux DMA-BUF GPU texture
+/// (K-177), returning its fd + DRM metadata — the zero-copy sibling of
+/// [`render_to_shared`] for Linux. `None` on any failure (an unknown/invalid comp
+/// id, no Vulkan adapter, missing external-memory extensions, or a Vulkan error),
+/// which the FFI turns into `false` so Dart falls back to the read-back path. The
+/// fd is stable across frames (the same texture is re-used) and changes only on a
+/// comp resize. Present only in the opt-in shared-texture-linux build on Linux.
+#[cfg(all(target_os = "linux", feature = "shared-texture-linux"))]
+pub(crate) fn render_to_shared_dmabuf(comp_id: &str, frame: u64) -> Option<DmabufFrame> {
+    let comp = Uuid::parse_str(comp_id).ok()?;
+    let doc = with_bridge(|b| b.store.snapshot());
+    with_ready(|renderer| {
+        renderer
+            .render_to_shared_dmabuf(&doc, comp, frame)
+            .ok()
+            .map(|info| {
+                (
+                    info.fd,
+                    info.width,
+                    info.height,
+                    info.stride,
+                    info.offset,
+                    info.drm_fourcc,
+                    info.modifier,
+                )
+            })
+    })
+    .flatten()
+}
+
 /// Compute a scope trace (waveform/vectorscope/histogram, K-096 v1) for the
 /// frame the Viewer shows — `comp_id` at `frame`, at the same `scale` — and
 /// return the `256×256` RGBA8 trace bytes. `kind` is `0` luma / `1` RGB waveform

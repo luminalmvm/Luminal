@@ -860,14 +860,20 @@ fn render_to_buffer(_comp_id: &str, _frame: u64, _scale: f32) -> Option<(u32, u3
     None
 }
 
-/// Whether this build offers the Windows zero-copy shared-texture Viewer path
-/// (K-177): `true` only when compiled with the `shared-texture` feature on
-/// Windows. Dart calls this once to decide whether to attempt the `Texture`
-/// widget path at all; `false` keeps it on the read-back path (an old `.dll`,
-/// a non-Windows build, or a build without the feature). Stateless, never fails.
+/// Whether this build offers a zero-copy shared-texture Viewer path (K-177):
+/// `true` when compiled with the `shared-texture` feature on Windows (the DXGI
+/// shared-handle path) OR the `shared-texture-linux` feature on Linux (the Vulkan
+/// DMA-BUF path). Dart calls this once to decide whether to attempt the `Texture`
+/// widget path at all; `false` keeps it on the read-back path (an old library, an
+/// unsupported platform, or a build without the feature). Dart then picks the
+/// per-platform render entry point (`lumit_bridge_render_to_shared` on Windows,
+/// `lumit_bridge_render_to_shared_dmabuf` on Linux). Stateless, never fails.
 #[no_mangle]
 pub extern "C" fn lumit_bridge_shared_supported() -> bool {
-    cfg!(all(windows, feature = "shared-texture"))
+    cfg!(any(
+        all(windows, feature = "shared-texture"),
+        all(target_os = "linux", feature = "shared-texture-linux")
+    ))
 }
 
 /// Render composition `comp_id` at `frame` into the Windows shared GPU texture
@@ -948,6 +954,115 @@ fn render_to_shared_buffer(comp_id: &str, frame: u64) -> Option<(u64, u32, u32)>
 
 #[cfg(not(all(windows, feature = "shared-texture")))]
 fn render_to_shared_buffer(_comp_id: &str, _frame: u64) -> Option<(u64, u32, u32)> {
+    None
+}
+
+/// Render composition `comp_id` at `frame` into the Linux DMA-BUF GPU texture and
+/// report its exported fd and DRM metadata through the out-pointers (K-177) — the
+/// Linux sibling of [`lumit_bridge_render_to_shared`]. Returns `true` on success;
+/// on any failure returns `false` and zeroes the out-pointers (fd to -1), so Dart
+/// falls back to [`lumit_bridge_render_comp_frame`] for that frame. Like the
+/// Windows shared call this returns no buffer to free — the pixels never leave the
+/// GPU. The reported fd is stable across frames (the same texture is re-used) and
+/// changes only when the comp is resized. Without the `shared-texture-linux`
+/// feature, off Linux, or with no capable Vulkan adapter, this always returns
+/// `false` calmly (never a crash, never a retry storm). The Windows ABI is
+/// untouched — this is a separate export the Dart side branches to by platform.
+///
+/// # Safety
+/// `comp_id` must be null or a valid NUL-terminated UTF-8 C string. `out_fd` must
+/// be null or a valid, writable pointer to an `i32`; `out_w`, `out_h`,
+/// `out_stride`, `out_offset` and `out_fourcc` must each be null or a valid,
+/// writable pointer to a `u32`; `out_modifier` must be null or a valid, writable
+/// pointer to a `u64`.
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn lumit_bridge_render_to_shared_dmabuf(
+    comp_id: *const c_char,
+    frame: u64,
+    out_fd: *mut i32,
+    out_w: *mut u32,
+    out_h: *mut u32,
+    out_stride: *mut u32,
+    out_offset: *mut u32,
+    out_fourcc: *mut u32,
+    out_modifier: *mut u64,
+) -> bool {
+    let write_zero = || {
+        if !out_fd.is_null() {
+            *out_fd = -1;
+        }
+        for p in [out_w, out_h, out_stride, out_offset, out_fourcc] {
+            if !p.is_null() {
+                *p = 0;
+            }
+        }
+        if !out_modifier.is_null() {
+            *out_modifier = 0;
+        }
+    };
+
+    let Some(id) = c_str_to_string(comp_id) else {
+        write_zero();
+        return false;
+    };
+
+    // A panic anywhere in the compositor or Vulkan interop becomes `false`, never
+    // an unwind into Dart. The renderer serialises itself behind its own lock.
+    let rendered = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        render_to_shared_dmabuf_buffer(&id, frame)
+    }))
+    .ok()
+    .flatten();
+
+    match rendered {
+        Some((fd, w, h, stride, offset, fourcc, modifier)) => {
+            if !out_fd.is_null() {
+                *out_fd = fd;
+            }
+            if !out_w.is_null() {
+                *out_w = w;
+            }
+            if !out_h.is_null() {
+                *out_h = h;
+            }
+            if !out_stride.is_null() {
+                *out_stride = stride;
+            }
+            if !out_offset.is_null() {
+                *out_offset = offset;
+            }
+            if !out_fourcc.is_null() {
+                *out_fourcc = fourcc;
+            }
+            if !out_modifier.is_null() {
+                *out_modifier = modifier;
+            }
+            true
+        }
+        None => {
+            write_zero();
+            false
+        }
+    }
+}
+
+/// Render `comp_id` at `frame` into the DMA-BUF texture, returning
+/// `(fd, width, height, stride, offset, fourcc, modifier)`. `None` on any failure.
+/// Without the `shared-texture-linux` feature (or off Linux) this is always `None`.
+#[cfg(all(target_os = "linux", feature = "shared-texture-linux"))]
+fn render_to_shared_dmabuf_buffer(
+    comp_id: &str,
+    frame: u64,
+) -> Option<(i32, u32, u32, u32, u32, u32, u64)> {
+    crate::render::render_to_shared_dmabuf(comp_id, frame)
+}
+
+#[cfg(not(all(target_os = "linux", feature = "shared-texture-linux")))]
+fn render_to_shared_dmabuf_buffer(
+    _comp_id: &str,
+    _frame: u64,
+) -> Option<(i32, u32, u32, u32, u32, u32, u64)> {
     None
 }
 

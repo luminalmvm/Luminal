@@ -6,6 +6,7 @@
 #endif
 
 #include "flutter/generated_plugin_registrant.h"
+#include "viewer_texture_bridge.h"
 
 // Multi-window (pop-out panels). NOTE: this and its callback below compile only
 // in a real `flutter build linux` on a machine with the Flutter Linux toolchain
@@ -86,14 +87,25 @@ static void my_application_activate(GApplication* application) {
 
   fl_register_plugins(FL_PLUGIN_REGISTRY(view));
 
+  // The zero-copy Viewer bridge (K-177): register the 'lumit/viewer_texture'
+  // channel on the main engine so Dart can hand it engine-drawn DMA-BUF frames to
+  // show as GL external textures — the Linux twin of the Windows runner's
+  // ViewerTextureBridge (flutter_window.cpp OnCreate). Only the main window shows
+  // the Viewer, so — exactly as on Windows — the bridge is registered here alone,
+  // not on the popped-out panels below. A build of the engine `.so` without the
+  // `shared-texture-linux` feature simply never calls the channel (Dart keeps the
+  // read-back path), so this registration is inert then.
+  FlEngine* engine = fl_view_get_engine(view);
+  viewer_texture_bridge_register(fl_engine_get_binary_messenger(engine),
+                                 fl_engine_get_texture_registrar(engine));
+
   // Each popped-out panel is a second Flutter engine in THIS process. Register
   // the app's plugins on every sub-window engine as it is created, so a popout
   // has the same plugin surface (file_selector, etc.) as the main window. The
   // engine bridge itself is dart:ffi, not a plugin, so it needs no registrant —
   // the sub-window opens the same already-loaded liblumit_bridge.so directly.
   // (The Windows runner does the equivalent with
-  // DesktopMultiWindowSetWindowCreatedCallback in flutter_window.cpp.) Linux
-  // uses the CPU Viewer path, so there is no shared-texture bridge to port here.
+  // DesktopMultiWindowSetWindowCreatedCallback in flutter_window.cpp.)
   desktop_multi_window_plugin_set_window_created_callback(
       [](FlPluginRegistry* registry) { fl_register_plugins(registry); });
 

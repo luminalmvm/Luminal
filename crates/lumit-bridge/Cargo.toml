@@ -37,6 +37,15 @@ render = ["media", "dep:lumit-ui", "dep:lumit-audio"]
 # D3D interop is `cfg(windows)`-gated on top, so enabling it off Windows is
 # inert. `lumit_bridge_shared_supported()` reports whether this build has it.
 shared-texture = ["render", "lumit-ui/shared-texture"]
+# The Linux zero-copy Viewer path (K-177), the DMA-BUF sibling of
+# `shared-texture`. OFF by default so the standard build and every gate stay
+# identical to today; the owner builds the shipped Linux `.so` with
+# `--features shared-texture-linux`. It implies `render` and forwards to
+# lumit-ui's own `shared-texture-linux` feature (the Vulkan/DMA-BUF GPU code).
+# The Vulkan interop is `cfg(target_os = "linux")`-gated on top, so enabling it
+# off Linux is inert. `lumit_bridge_shared_supported()` reports whether this build
+# has it; `lumit_bridge_render_to_shared_dmabuf` is its render entry point.
+shared-texture-linux = ["render", "lumit-ui/shared-texture-linux"]
 
 [dependencies]
 lumit-core = { path = "../lumit-core" }

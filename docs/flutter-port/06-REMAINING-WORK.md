@@ -343,12 +343,36 @@ annotated honestly rather than faked.
 ## Platform passes and engine enhancements (recorded 2026-07-22, from the
 ## owner's friend's review — outside this branch's parity scope, never lost)
 
-- **Shared-texture on Linux and macOS.** The zero-copy Viewer path is
-  Windows/D3D12 only, and rightly so today: the Flutter frontend itself builds
-  only for Windows (the project was scaffolded `--platforms windows`). When the
-  Linux/macOS Flutter passes happen, the texture path needs DMA-BUF (Linux) and
-  IOSurface/Metal (macOS) implementations — both already named in
-  03-ARCHITECTURE. The CPU path is the portable fallback by design.
+- **Shared-texture on Linux — BUILT, pending the collaborator's runtime
+  verification (2026-07-22, K-177).** The zero-copy Viewer path now has its Linux
+  equivalent: Vulkan → DMA-BUF fd → the GTK embedder's GL external texture, the
+  mirror of the Windows DXGI path. Engine: `crates/lumit-gpu/src/shared_linux.rs`
+  (exportable `VkImage`, linear tiling, `vkGetMemoryFdKHR` via ash; the device is
+  opened with the external-memory extensions appended since wgpu 24 does not
+  enable them by default), `render_to_shared_dmabuf` through the headless seam and
+  the bridge (`lumit_bridge_render_to_shared_dmabuf`, a separate export so the
+  Windows ABI is untouched; `shared_supported` now Windows-or-Linux). Runner:
+  `linux/runner/viewer_texture_bridge.{h,cc}` — an `FlTextureGL` subclass importing
+  the DMA-BUF via `EGLImage`/`EGL_EXT_image_dma_buf_import`, the same
+  `lumit/viewer_texture` channel protocol as Windows but with `{fd, width, height,
+  stride, offset, fourcc, modifier}` on `register`. Dart branches
+  `ViewerTextureController.ensureRegistered` by platform. DRM story shipped: RGBA8,
+  **linear tiling**, `DRM_FORMAT_ABGR8888`, `DRM_FORMAT_MOD_LINEAR` (the simpler
+  route the `flutter_wgpu_texture` reference offered alongside its full
+  format-modifier path).
+  - **What CI proves:** the Rust half compiles (`cargo check -p lumit-bridge
+    --features shared-texture-linux` in the `flutter-linux` job), the GTK plugin
+    compiles and links (`flutter build linux`, EGL+GLESv2 on the line), `flutter
+    analyze` + the full `flutter test` (the DMA-BUF register branch is fake-channel
+    tested), and the three Windows-runnable Rust configs stay byte-identical (the
+    Linux code is behind `cfg(target_os = "linux")` + the feature).
+  - **What awaits the collaborator:** the picture actually appearing on a real
+    Linux GPU — the GPU/CPU indicator reading GPU, correct colours, kill-switch
+    behaviour, and reporting a blank/wrong Viewer. Recipe in GUIDE §9. The authoring
+    box is Windows and cannot build or run any of the Linux native code.
+- **Shared-texture on macOS.** Still Windows+Linux only; the macOS texture path
+  needs an IOSurface/Metal implementation (named in 03-ARCHITECTURE) when the macOS
+  Flutter pass happens. The CPU path is the portable fallback by design.
 - **GPU-side scope pass — BUILT (2026-07-22, K-096 v1).** The Scopes are now
   computed on the GPU: a new WGSL pass in lumit-gpu (`crates/lumit-gpu/src/
   scope.rs` + `scope.wgsl`) bins the displayed frame into per-scope counters
@@ -387,8 +411,11 @@ annotated honestly rather than faked.
      `.metadata` restored to list *both* windows and linux (flutter create had
      replaced the windows entry). The generated `my_application.cc` gains the
      `desktop_multi_window` sub-window plugin-registration callback (mirroring
-     `windows/runner/flutter_window.cpp`); the Windows-only viewer-texture
-     bridge is deliberately *not* ported (Linux uses the CPU path).
+     `windows/runner/flutter_window.cpp`). *(Update, K-177: the viewer-texture
+     bridge is now ported to Linux via DMA-BUF —
+     `linux/runner/viewer_texture_bridge.{h,cc}`, registered on the main engine in
+     `my_application.cc`. The CPU path remains the fallback when the
+     `shared-texture-linux` feature is off or the GPU cannot support it.)*
    - **Platform-portable bridge loader** (`lib/bridge/bridge.dart`
      `_candidatePaths`): the base name branches on `Platform` —
      `lumit_bridge.dll` on Windows (byte-identical to before),
@@ -396,17 +423,21 @@ annotated honestly rather than faked.
      render isolate and popout inherit it through `candidateLibraryPaths()`.
      Covered by a new group in `test/bridge_test.dart` that runs green on both
      the Windows host and the Linux CI.
-   - **Windows-only surfaces degrade cleanly.** Shared texture → CPU path
-     (the bridge's D3D interop is `cfg(all(windows, feature = "shared-texture"))`
-     and off by default, so default features carry nothing Windows-only). The
-     settings RAM probe gains a Linux `/proc/meminfo` branch. **Pop-out is NOT
-     gated off Linux** — `desktop_multi_window` 0.3.0 has a first-class Linux
-     (GTK) implementation.
+   - **Windows-only surfaces degrade cleanly.** The shared texture falls back to
+     the CPU path when its feature is off (the D3D interop is
+     `cfg(all(windows, feature = "shared-texture"))` and off by default, so default
+     features carry nothing Windows-only). *(Update, K-177: Linux now has its own
+     zero-copy path behind `shared-texture-linux`; with that feature off — the
+     default — the CPU fallback is unchanged.)* The settings RAM probe gains a
+     Linux `/proc/meminfo` branch. **Pop-out is NOT gated off Linux** —
+     `desktop_multi_window` 0.3.0 has a first-class Linux (GTK) implementation.
    - **CI:** a `flutter-linux` job in `.github/workflows/ci.yml` (existing jobs
      untouched) copies the `linux` job's apt + FFmpeg + libclang steps, adds the
      GTK/clang/cmake/ninja Flutter toolchain, pins Flutter 3.44.7, and runs
      `flutter pub get` / `analyze` / `test`, `cargo build -p lumit-bridge`, and
-     `flutter build linux --release`.
+     `flutter build linux --release`. *(Update, K-177: it also installs
+     `libgles-dev` and runs `cargo check -p lumit-bridge --features
+     shared-texture-linux`, compiling the Linux DMA-BUF Rust and GTK plugin.)*
    - **Local gates (green here):** `flutter analyze` clean, full `flutter test`
      (411 tests) green on Windows, `cargo check -p lumit-bridge` clean.
 2. **GPU scope pass** — DONE (2026-07-22, K-096 v1). A WGSL scope pass in

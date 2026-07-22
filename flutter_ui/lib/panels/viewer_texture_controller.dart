@@ -31,6 +31,9 @@ class ViewerTextureController {
   int? _handle;
   int? _width;
   int? _height;
+  // The DMA-BUF fd this texture was registered with (Linux), part of the identity
+  // for the no-op-on-unchanged check. Null on Windows.
+  int? _fd;
 
   /// False once a channel call reports the runner has no handler (an unwired or
   /// old build). Sticky for the session: the Viewer then stays on the read-back
@@ -46,33 +49,61 @@ class ViewerTextureController {
   /// True until the platform channel is found to be missing.
   bool get available => _available;
 
-  /// Register (or re-register) the shared texture named by [handle] with the
-  /// given [width]/[height], returning its `textureId`. A no-op returning the
-  /// existing id when the handle and size are unchanged. Returns null — and
-  /// latches [available] to false — when the runner has no handler for the
-  /// channel (so the Viewer falls back to the read-back path for the session).
-  Future<int?> ensureRegistered(int handle, int width, int height) async {
+  /// Register (or re-register) the shared texture with the given [width]/[height],
+  /// returning its `textureId`. The texture is named by [handle] on Windows (the
+  /// DXGI shared handle) or by the DMA-BUF fields on Linux — pass [fd] plus
+  /// [stride], [offset], [fourcc] and [modifier] to send the DMA-BUF `register`
+  /// payload instead of the handle one (the "platform-conditional argument pack";
+  /// the channel name and lifecycle are identical). A no-op returning the existing
+  /// id when the identity (handle-or-fd + size) is unchanged. Returns null — and
+  /// latches [available] to false — when the runner has no handler for the channel
+  /// (so the Viewer falls back to the read-back path for the session).
+  Future<int?> ensureRegistered(
+    int handle,
+    int width,
+    int height, {
+    int? fd,
+    int? stride,
+    int? offset,
+    int? fourcc,
+    int? modifier,
+  }) async {
     if (!_available) return null;
+    // Identity is the fd on Linux (DMA-BUF) or the handle on Windows, plus size.
     if (_textureId != null &&
         _handle == handle &&
+        _fd == fd &&
         _width == width &&
         _height == height) {
       return _textureId;
     }
     try {
-      // A changed handle/size means a new shared texture: drop the old id first.
+      // A changed identity/size means a new shared texture: drop the old id (the
+      // Linux runner closes the old fd on unregister) before registering anew.
       if (_textureId != null) {
         await _channel
             .invokeMethod<void>('unregister', {'textureId': _textureId});
         _textureId = null;
       }
-      final id = await _channel.invokeMethod<int>('register', {
-        'handle': handle,
-        'width': width,
-        'height': height,
-      });
+      final args = fd != null
+          ? <String, Object?>{
+              'fd': fd,
+              'width': width,
+              'height': height,
+              'stride': stride ?? 0,
+              'offset': offset ?? 0,
+              'fourcc': fourcc ?? 0,
+              'modifier': modifier ?? 0,
+            }
+          : <String, Object?>{
+              'handle': handle,
+              'width': width,
+              'height': height,
+            };
+      final id = await _channel.invokeMethod<int>('register', args);
       _textureId = id;
       _handle = handle;
+      _fd = fd;
       _width = width;
       _height = height;
       return id;
@@ -107,6 +138,7 @@ class ViewerTextureController {
     final id = _textureId;
     _textureId = null;
     _handle = null;
+    _fd = null;
     _width = null;
     _height = null;
     if (id == null) return;

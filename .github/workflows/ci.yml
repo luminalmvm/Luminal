@@ -158,11 +158,15 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            pkg-config libasound2-dev libgl-dev libegl-dev \
+            pkg-config libasound2-dev libgl-dev libegl-dev libgles-dev \
             libxkbcommon-dev libxkbcommon-x11-dev \
             libx11-dev libxcursor-dev libxi-dev libxrandr-dev libxcb1-dev \
             libwayland-dev mesa-vulkan-drivers libclang-18-dev \
             clang cmake ninja-build libgtk-3-dev
+          # libgles-dev provides GLES2/gl2*.h + glesv2.pc; libegl-dev provides
+          # EGL/egl*.h + egl.pc. The Linux zero-copy Viewer plugin
+          # (linux/runner/viewer_texture_bridge.cc, K-177) imports engine DMA-BUF
+          # frames into GL external textures, so it links EGL + GLESv2.
       # Same FFmpeg 7.1 install the `linux` job uses (its .pc prefix rewrite +
       # env exports), so the bridge's `media` feature links here identically.
       - name: Install FFmpeg 7.1 (BtbN shared build)
@@ -210,6 +214,14 @@ jobs:
       # `--features shared-texture`, off here.
       - name: Build the bridge (liblumit_bridge.so)
         run: cargo build -p lumit-bridge
+      # Compile the Linux DMA-BUF zero-copy Viewer path (K-177): the Vulkan/ash
+      # export code lives behind `shared-texture-linux` and cfg(target_os =
+      # "linux"), so it is only ever type-checked here (the authoring box is
+      # Windows). This is the CI gate that proves the Rust half of the Linux
+      # shared-texture path builds; the runtime verification is the collaborator's
+      # (docs/GUIDE §9).
+      - name: Compile-check the Linux DMA-BUF path (shared-texture-linux)
+        run: cargo check -p lumit-bridge --features shared-texture-linux
       # The real gate: the Flutter Linux runner (linux/, GTK, the multi-window
       # plugin's Linux side) compiles and links.
       - name: flutter build linux --release

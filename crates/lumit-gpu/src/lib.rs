@@ -63,7 +63,18 @@ impl GpuContext {
             backends: wgpu::Backends::DX12,
             ..Default::default()
         });
-        #[cfg(not(all(windows, feature = "shared-texture")))]
+        // On Linux the DMA-BUF hand-off reaches through wgpu to its Vulkan device,
+        // so pin the Vulkan backend in the opt-in build (the analogue of pinning
+        // D3D12 on Windows). Every other build is unchanged.
+        #[cfg(all(target_os = "linux", feature = "shared-texture-linux"))]
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::VULKAN,
+            ..Default::default()
+        });
+        #[cfg(not(any(
+            all(windows, feature = "shared-texture"),
+            all(target_os = "linux", feature = "shared-texture-linux")
+        )))]
         let instance = wgpu::Instance::default();
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::HighPerformance,
@@ -74,6 +85,20 @@ impl GpuContext {
             adapter.get_info().device_type,
             wgpu::DeviceType::Cpu | wgpu::DeviceType::Other
         );
+        // The Linux DMA-BUF path needs the external-memory device extensions
+        // enabled at device-creation time, which wgpu's default Vulkan device does
+        // not do (K-177). Open the device ourselves with them appended; if the
+        // adapter cannot enable them, fall back to a plain device so the read-back
+        // path still works (the DMA-BUF path then reports unavailable).
+        #[cfg(all(target_os = "linux", feature = "shared-texture-linux"))]
+        let (device, queue) = match shared_linux::open_device(&adapter) {
+            Ok(dq) => dq,
+            Err(_) => {
+                pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default(), None))
+                    .map_err(|e| GpuError::Device(e.to_string()))?
+            }
+        };
+        #[cfg(not(all(target_os = "linux", feature = "shared-texture-linux")))]
         let (device, queue) =
             pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default(), None))
                 .map_err(|e| GpuError::Device(e.to_string()))?;
@@ -425,6 +450,11 @@ pub mod scope;
 /// all, exactly as it had no D3D interop before.
 #[cfg(all(windows, feature = "shared-texture"))]
 pub mod shared;
+/// The Linux-only zero-copy Viewer target via DMA-BUF (K-177). Present only in
+/// the opt-in `shared-texture-linux` build on Linux; every other build has no
+/// DMA-BUF interop at all, exactly as it had no Vulkan external memory before.
+#[cfg(all(target_os = "linux", feature = "shared-texture-linux"))]
+pub mod shared_linux;
 pub use composite::{
     camera_matrix, concat_place, place_matrix, Blend, CompositeLayer, Compositor, MatteInput,
     MbSample,
