@@ -995,3 +995,29 @@ Recorded 2026-07-21, from the owner:
   feedback, 2026-07-21).
 - Menus animate per AnimationLevel (egui's could not animate at all).
 - macOS native menu bar deferred with the rest of the macOS pass.
+
+## Desk-test round 3 findings (owner, 2026-07-22, first full run of the built app)
+
+1. **The Viewer still showed the "comp preview arrives later" placeholder.**
+   The composited-comp path (K-175/K-177) is built and its wording was updated,
+   so the owner seeing stale text means one of: an old library on the loader
+   path, the comp-render probe failing on the release dll, or the render
+   failing and the placeholder (rather than an error state) showing. Needs
+   LIVE diagnosis on the owner's machine — the boot splash's engine log and
+   the status line are the first things to read. Recorded as the top open
+   defect; the placeholder text should also name the failure reason rather
+   than a stale promise.
+2. **The Scopes are "super laggy".** They compute traces on the CPU from a
+   throttled readback — parity with egui's shipped scopes, but the owner has
+   now explicitly requested the GPU scope pass (the K-096 v1 future-work note)
+   ON THIS BRANCH, overriding the earlier "belongs on main" scoping. Promoted
+   from post-parity enhancement to scheduled work (after the Linux build).
+3. **The Linux build is now a priority**: the owner's Linux-based collaborator
+   will work on the UI, so `flutter_ui` must build and run on Linux. New
+   scheduled work, first in line.
+4. **Build-tooling note:** on the owner's interactive shell, `flutter run`'s
+   implicit pub phase correlates with kernel-compile failures resolving a
+   relative pub-cache path; every explicit-pub invocation succeeds. Standing
+   workaround until root-caused: `flutter run -d windows --profile --no-pub`
+   (after any dependency change run `flutter pub get` once first), or run the
+   built exe directly.

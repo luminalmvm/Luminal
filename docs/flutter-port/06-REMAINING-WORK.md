@@ -359,3 +359,22 @@ annotated honestly rather than faked.
 - **Thumbnails stay CPU-decoded on purpose**: the egui frontend also decodes
   thumbnails on the CPU; they are tiny one-off images, not per-frame streams —
   parity holds and zero-copy would buy nothing.
+
+## Scheduled work (owner priorities, 2026-07-22 round 3)
+
+1. **Linux build of the Flutter frontend** (top priority — the Linux
+   collaborator's UI work depends on it): linux/ runner scaffolding, a
+   platform-portable bridge loader (liblumit_bridge.so search paths), the
+   Windows-only surfaces degrading cleanly (shared texture → CPU path;
+   texture plugin absent), and a CI job on the existing Linux runner proving
+   the build — this Windows box cannot build Flutter-for-Linux locally, so CI
+   is the gate.
+2. **GPU scope pass** (owner override of the earlier main-branch scoping): a
+   WGSL scope pass in lumit-gpu rendering waveform/vectorscope/histogram
+   traces engine-side, delivered to the Scopes panel over the same
+   shared-texture pipeline as the Viewer (CPU fallback retained). Closes the
+   round-3 "scopes super laggy" report and the K-096 v1 note.
+3. **Viewer comp-preview placeholder defect** (round 3, top open defect):
+   diagnose live why the built app showed the stale placeholder; make the
+   placeholder name its reason (library too old / no adapter / render error)
+   instead of promising future work.
