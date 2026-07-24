@@ -4,8 +4,8 @@
 
 import 'dart:async';
 
+import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:flutter/widgets.dart';
 
 import '../theme/theme.dart';
 
@@ -101,10 +101,12 @@ class _HouseButtonState extends State<HouseButton> {
           decoration: BoxDecoration(
             color: fill,
             borderRadius: BorderRadius.circular(t.tokens.controlRadius),
-            border: edge == null ? null : Border.all(color: edge, width: 1),
+            border: Border.all(color: edge ?? Colors.transparent, width: 1),
           ),
           child: DefaultTextStyle(
-            style: enabled ? t.bodyPrimary : t.body.copyWith(color: t.textDisabled),
+            style: enabled
+                ? t.bodyPrimary
+                : t.body.copyWith(color: t.textDisabled),
             child: widget.child,
           ),
         ),
@@ -320,7 +322,8 @@ class _PopupCompleter<T> {
 class HouseCheckbox extends StatelessWidget {
   final bool value;
   final ValueChanged<bool> onChanged;
-  const HouseCheckbox({super.key, required this.value, required this.onChanged});
+  const HouseCheckbox(
+      {super.key, required this.value, required this.onChanged});
 
   @override
   Widget build(BuildContext context) {
@@ -336,9 +339,7 @@ class HouseCheckbox extends StatelessWidget {
           borderRadius: BorderRadius.circular(3),
           border: Border.all(color: value ? t.accent : t.hairlineStrong),
         ),
-        child: value
-            ? CustomPaint(painter: _TickPainter(t.surface0))
-            : null,
+        child: value ? CustomPaint(painter: _TickPainter(t.surface0)) : null,
       ),
     );
   }
@@ -512,6 +513,7 @@ class _DragValueFieldState extends State<DragValueField> {
         ),
       );
     }
+
     return MouseRegion(
       cursor: SystemMouseCursors.resizeLeftRight,
       onEnter: (_) => setState(() => _hover = true),
@@ -543,8 +545,9 @@ class _DragValueFieldState extends State<DragValueField> {
           decoration: BoxDecoration(
             color: _hover ? t.surface4 : t.surface3,
             borderRadius: BorderRadius.circular(t.tokens.controlRadius),
-            border:
-                _hover ? Border.all(color: t.hairlineStrong, width: 1) : null,
+            border: Border.all(
+                color: _hover ? t.hairlineStrong : Colors.transparent,
+                width: 1),
           ),
           child: Text(_format(widget.value), style: t.bodyPrimary),
         ),
@@ -598,7 +601,8 @@ class _HouseSliderState extends State<HouseSlider> {
   Widget build(BuildContext context) {
     final t = ThemeScope.of(context).theme;
     const width = 140.0;
-    final frac = ((_shown - widget.min) / (widget.max - widget.min)).clamp(0.0, 1.0);
+    final frac =
+        ((_shown - widget.min) / (widget.max - widget.min)).clamp(0.0, 1.0);
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
@@ -686,66 +690,7 @@ class LumitTooltip extends StatelessWidget {
   Widget build(BuildContext context) {
     final scope = ThemeScope.of(context);
     if (!scope.showTooltips) return child;
-    return _HoverTip(message: message, child: child);
+
+    return Tooltip(message: message, child: child);
   }
-}
-
-class _HoverTip extends StatefulWidget {
-  final String message;
-  final Widget child;
-  const _HoverTip({required this.message, required this.child});
-
-  @override
-  State<_HoverTip> createState() => _HoverTipState();
-}
-
-class _HoverTipState extends State<_HoverTip> {
-  OverlayEntry? _entry;
-
-  void _show(PointerEnterEvent e) async {
-    await Future<void>.delayed(const Duration(milliseconds: 500));
-    if (!mounted || _entry != null) return;
-    final box = context.findRenderObject() as RenderBox?;
-    if (box == null || !box.attached) return;
-    final origin = box.localToGlobal(Offset(0, box.size.height + 4));
-    final scope = ThemeScope.of(context);
-    final t = scope.theme;
-    _entry = OverlayEntry(
-      builder: (_) => Positioned(
-        left: origin.dx,
-        top: origin.dy,
-        child: IgnorePointer(
-          child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-            decoration: BoxDecoration(
-              color: t.surface3,
-              borderRadius: BorderRadius.circular(t.tokens.floatRadius),
-              border: Border.all(color: t.hairline),
-              boxShadow: t.floatShadow,
-            ),
-            child: Text(widget.message, style: t.body),
-          ),
-        ),
-      ),
-    );
-    Overlay.of(context).insert(_entry!);
-  }
-
-  void _hide() {
-    _entry?.remove();
-    _entry = null;
-  }
-
-  @override
-  void dispose() {
-    _hide();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) => MouseRegion(
-        onEnter: _show,
-        onExit: (_) => _hide(),
-        child: widget.child,
-      );
 }

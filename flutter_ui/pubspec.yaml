@@ -3,8 +3,8 @@ description: "Lumit's Flutter frontend alternative (K-174) — the chrome over t
 publish_to: 'none'
 version: 0.1.0+1
 
-environment:
-  sdk: ^3.12.2
+environment: 
+  sdk: '>=3.6.0 <4.0.0'
 
 dependencies:
   flutter:
@@ -17,14 +17,23 @@ dependencies:
   # and therefore the same engine document (see lib/popout/). Apache-2.0, no
   # third-party deps, SDK >=3.5.0 — compatible with this package's ^3.12.2.
   desktop_multi_window: ^0.3.0
+  lumit_bridge:
+    path: rust_builder
+  flutter_rust_bridge: 2.12.0
+  provider: ^6.1.5+1
+  freezed_annotation: ^3.1.0
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^6.0.0
+  freezed: ^3.2.5
+  build_runner: ^2.15.1
+  integration_test:
+    sdk: flutter
 
 flutter:
-  uses-material-design: false
+  uses-material-design: true
   fonts:
     - family: Inter
       fonts:

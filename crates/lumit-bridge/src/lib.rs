@@ -64,6 +64,8 @@
 //! - [`ffi`] — the `extern "C"` surface: pointer marshalling, `catch_unwind`
 //!   guards, and the string/buffer ownership contracts.
 
+mod frb_generated;
+
 mod assets;
 #[cfg(all(feature = "media", feature = "render"))]
 mod audio;
@@ -87,6 +89,8 @@ mod retime;
 mod sequence;
 mod snapshot;
 mod state;
+
+pub mod api;
 
 use serde_json::json;
 

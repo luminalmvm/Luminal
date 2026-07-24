@@ -62,10 +62,14 @@ pub struct AudioEngine {
 impl AudioEngine {
     pub fn new() -> Result<Self, AudioError> {
         let host = cpal::default_host();
-        let device = host.default_output_device().ok_or(AudioError::NoDevice)?;
+
+        let mut devices = host.output_devices().map_err(|_| AudioError::NoDevice)?;
+        let device = devices.nth(0).ok_or(AudioError::NoDevice)?;
+
         let config = device
             .default_output_config()
             .map_err(|e| AudioError::Device(e.to_string()))?;
+        
         let device_rate = config.sample_rate().0;
         let channels = usize::from(config.channels());
 

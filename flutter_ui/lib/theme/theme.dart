@@ -8,7 +8,7 @@
 // The numbers are carried over digit-for-digit so the two frontends can be
 // compared side by side.
 
-import 'package:flutter/widgets.dart';
+import 'package:flutter/material.dart';
 
 Color _rgb(int r, int g, int b) => Color.fromARGB(0xff, r, g, b);
 
@@ -285,7 +285,8 @@ class LumitTheme {
     ThemeShape shape, {
     Color? accentOverride,
   }) {
-    var t = scheme.build().copyWith(shape: shape, tokens: ShapeTokens.of(shape));
+    var t =
+        scheme.build().copyWith(shape: shape, tokens: ShapeTokens.of(shape));
     if (accentOverride != null) t = t.withAccent(accentOverride);
     return t;
   }
@@ -545,18 +546,34 @@ class LumitTheme {
   static const String fontFamily = 'Inter';
 
   TextStyle get heading => TextStyle(
-      fontFamily: fontFamily, fontSize: 16, color: textPrimary, decoration: TextDecoration.none, fontWeight: FontWeight.w500);
+      fontFamily: fontFamily,
+      fontSize: 16,
+      color: textPrimary,
+      decoration: TextDecoration.none,
+      fontWeight: FontWeight.w500);
   TextStyle get body => TextStyle(
-      fontFamily: fontFamily, fontSize: 12, color: textSecondary, decoration: TextDecoration.none, fontWeight: FontWeight.w500);
+      fontFamily: fontFamily,
+      fontSize: 12,
+      color: textSecondary,
+      decoration: TextDecoration.none,
+      fontWeight: FontWeight.w500);
   TextStyle get bodyPrimary => body.copyWith(color: textPrimary);
   TextStyle get small => TextStyle(
-      fontFamily: fontFamily, fontSize: 11, color: textMuted, decoration: TextDecoration.none, fontWeight: FontWeight.w500);
+      fontFamily: fontFamily,
+      fontSize: 11,
+      color: textMuted,
+      decoration: TextDecoration.none,
+      fontWeight: FontWeight.w500);
   TextStyle get mono => TextStyle(
-      fontFamily: 'monospace', fontSize: 12, color: textSecondary, decoration: TextDecoration.none);
+      fontFamily: 'monospace',
+      fontSize: 12,
+      color: textSecondary,
+      decoration: TextDecoration.none);
 
   /// The float shadow (menus, dialogs): rerun's offset 0/15, blur 50.
   List<BoxShadow> get floatShadow => const [
-        BoxShadow(offset: Offset(0, 15), blurRadius: 50, color: Color(0x80000000)),
+        BoxShadow(
+            offset: Offset(0, 15), blurRadius: 50, color: Color(0x80000000)),
       ];
 
   /// The dimmed backdrop behind a true modal (Settings, the palette).
@@ -567,3 +584,24 @@ class LumitTheme {
 /// background) rather than the design system — the one sanctioned
 /// constructor outside the scheme tables.
 Color documentColour(int r, int g, int b, int a) => Color.fromARGB(a, r, g, b);
+
+extension LumitMaterialTheme on ThemeData {
+  static ThemeData fromLumitTheme(LumitTheme theme) {
+    return ThemeData(
+        brightness:
+            theme.mode == ThemeMode2.dark ? Brightness.dark : Brightness.light,
+        tooltipTheme: TooltipThemeData(
+            textStyle: theme.small,
+            decoration: BoxDecoration(
+                color: theme.surface1,
+                borderRadius: BorderRadius.circular(5),
+                border: BoxBorder.all(color: theme.surface2, width: 1))),
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: theme.accent,
+          surface: theme.surface3,
+          brightness: theme.mode == ThemeMode2.dark
+              ? Brightness.dark
+              : Brightness.light,
+        ));
+  }
+}

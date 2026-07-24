@@ -1,5 +1,5 @@
 [package]
-name = "lumit-bridge"
+name = "lumit_bridge"
 version = "0.1.0"
 edition = "2021"
 license = "GPL-3.0-only"
@@ -7,7 +7,7 @@ license = "GPL-3.0-only"
 # A cdylib the Flutter Windows runner loads over dart:ffi, plus an rlib so the
 # in-crate tests (and any future Rust consumer) can link the same code.
 [lib]
-crate-type = ["cdylib", "rlib"]
+crate-type = ["cdylib", "staticlib"]
 
 # The `media` feature (default on) pulls lumit-media so the bridge can probe
 # footage and decode frames for the F2 CPU path. `--no-default-features` drops
@@ -65,6 +65,7 @@ lumit-ui = { path = "../lumit-ui", optional = true, default-features = false, fe
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 uuid = { version = "1", features = ["v7", "serde"] }
+flutter_rust_bridge = "=2.12.0"
 
 [dev-dependencies]
 tempfile = "3"
@@ -82,3 +83,5 @@ unimplemented = "deny"
 
 [lints.rust]
 unsafe_code = "allow"
+
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(frb_expand)'] }

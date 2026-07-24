@@ -42,9 +42,16 @@ struct Journal {
     redo: Vec<JournalEntry>,
 }
 
+pub struct DocumentChange {
+    pub op: Op,
+}
+
+type ChangeCallback = Arc<dyn Fn(DocumentChange) + Send + Sync>;
+
 pub struct DocumentStore {
     current: ArcSwap<Document>,
     journal: Mutex<Journal>,
+    on_change: Option<ChangeCallback>,
 }
 
 impl DocumentStore {
@@ -52,7 +59,12 @@ impl DocumentStore {
         Self {
             current: ArcSwap::from_pointee(doc),
             journal: Mutex::new(Journal::default()),
+            on_change: None,
         }
+    }
+
+    pub fn set_callback(&mut self, callback: ChangeCallback) {
+        self.on_change = Some(callback);
     }
 
     /// Lock-free snapshot for readers (render jobs capture this at schedule time).
@@ -65,6 +77,8 @@ impl DocumentStore {
         let mut journal = self.journal.lock();
         let mut doc = Document::clone(&self.snapshot());
         let inverse = apply(&mut doc, &op)?;
+
+        let o = op.clone();
         journal.undo.push(JournalEntry { op, inverse });
         journal.redo.clear();
         // Compaction (docs/14 §5): keep the history bounded by dropping the
@@ -76,6 +90,12 @@ impl DocumentStore {
         }
         let arc = Arc::new(doc);
         self.current.store(arc.clone());
+
+        match &self.on_change {
+            Some(callback) => callback(DocumentChange { op: o }),
+            None => todo!(),
+        }
+
         Ok(arc)
     }
 
@@ -88,12 +108,19 @@ impl DocumentStore {
         let mut doc = Document::clone(&self.snapshot());
         // Applying the inverse yields the original op again — symmetry by construction.
         let op = apply(&mut doc, &entry.inverse)?;
+        let o = entry.inverse.clone();
         journal.redo.push(JournalEntry {
             op,
             inverse: entry.inverse.clone(),
         });
         let arc = Arc::new(doc);
         self.current.store(arc.clone());
+
+        match &self.on_change {
+            Some(callback) => callback(DocumentChange {op: o}),
+            None => todo!(),
+        }
+
         Ok(Some(arc))
     }
 
@@ -104,6 +131,9 @@ impl DocumentStore {
             return Ok(None);
         };
         let mut doc = Document::clone(&self.snapshot());
+
+        let o = entry.op.clone();
+        
         let inverse = apply(&mut doc, &entry.op)?;
         journal.undo.push(JournalEntry {
             op: entry.op,
@@ -111,6 +141,12 @@ impl DocumentStore {
         });
         let arc = Arc::new(doc);
         self.current.store(arc.clone());
+
+        match &self.on_change {
+            Some(callback) => callback(DocumentChange {op: o}),
+            None => todo!(),
+        }
+
         Ok(Some(arc))
     }
 
